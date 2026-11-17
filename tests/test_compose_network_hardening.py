@@ -16,6 +16,7 @@ from orchestrator.database_url import (
     resolve_database_url,
     validate_database_credentials,
 )
+from tests.native_fence_support import install_fake_fence
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -277,6 +278,7 @@ async def test_backend_pool_uses_postgres_env_derived_database_url(
         raise OSError("expected test stop")
 
     monkeypatch.setattr(db_module.asyncpg, "create_pool", fail_after_capture)
+    fences = install_fake_fence(monkeypatch)
     settings = Settings(
         database_url=None,
         redis_url=None,
@@ -288,6 +290,9 @@ async def test_backend_pool_uses_postgres_env_derived_database_url(
     with pytest.raises(JournalError, match="database_required"):
         await db_module.init_app_state(settings)
     assert captured["dsn"] == "postgresql://daemon:unique%40secret@postgres:5432/daemon"
+    # #731: presence uses the same DSN, opens first, and is closed on failure.
+    assert [f.dsn for f in fences] == [captured["dsn"]] and fences[0].closed
+    assert captured["setup"] == fences[0].guard
 
 
 @pytest.mark.asyncio
@@ -312,6 +317,7 @@ async def test_worker_pool_uses_postgres_env_derived_database_url(
 
     monkeypatch.setattr(worker_module, "get_settings", lambda: settings)
     monkeypatch.setattr(worker_module.asyncpg, "create_pool", fail_after_capture)
+    fences = install_fake_fence(monkeypatch)
 
     from orchestrator.services.deletion_journal.errors import JournalError
 
@@ -320,6 +326,9 @@ async def test_worker_pool_uses_postgres_env_derived_database_url(
 
     assert settings.database_url == "postgresql://daemon:unique%40secret@postgres:5432/daemon"
     assert captured["dsn"] == settings.database_url
+    # #731: presence uses the same DSN, opens first, and is closed on failure.
+    assert [f.dsn for f in fences] == [captured["dsn"]] and fences[0].closed
+    assert captured["setup"] == fences[0].guard
 
 
 @pytest.mark.parametrize(

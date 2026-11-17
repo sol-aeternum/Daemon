@@ -1,7 +1,7 @@
 {
   "schema": "exact-worker-privileges/v1",
   "baseline": "808744bb76883f3ef63526febc12b6f8e46a8ca7",
-  "proposal_sha256": "9837d7bc67e50e5730d624eaf9134a0e338e955d8304a1f024e8a5788ef500e5",
+  "proposal_sha256": "9df1ae5223d95b0262fca3471be7a04dd5f0dbf9916331c6df2aee8d52537df3",
   "ordinary_tables": [
     {
       "table": "public.account_deletions",
@@ -343,6 +343,14 @@
       "update_columns": []
     },
     {
+      "table": "public.reminders",
+      "table_privileges": [
+        "SELECT",
+        "INSERT"
+      ],
+      "update_columns": []
+    },
+    {
       "table": "public.retrieval_log",
       "table_privileges": [
         "SELECT",
@@ -359,6 +367,17 @@
         "DELETE"
       ],
       "update_columns": []
+    },
+    {
+      "table": "public.shipped_skill_catalogue",
+      "table_privileges": [
+        "SELECT",
+        "INSERT"
+      ],
+      "update_columns": [
+        "applied_at",
+        "version"
+      ]
     },
     {
       "table": "public.signup_invites",
@@ -396,6 +415,56 @@
         "DELETE"
       ],
       "update_columns": []
+    },
+    {
+      "table": "public.skill_revisions",
+      "table_privileges": [
+        "SELECT",
+        "INSERT",
+        "DELETE"
+      ],
+      "update_columns": [
+        "body_encrypted",
+        "description_encrypted",
+        "name_encrypted",
+        "trigger_conditions_encrypted"
+      ]
+    },
+    {
+      "table": "public.skill_store_key",
+      "table_privileges": [
+        "SELECT",
+        "INSERT"
+      ],
+      "update_columns": [
+        "bound_at",
+        "verifier"
+      ]
+    },
+    {
+      "table": "public.skills",
+      "table_privileges": [
+        "SELECT",
+        "INSERT",
+        "DELETE"
+      ],
+      "update_columns": [
+        "allow_autonomous_edit",
+        "body_encrypted",
+        "complexity_origin",
+        "description_encrypted",
+        "embedding",
+        "embedding_revision",
+        "enabled",
+        "last_used_at",
+        "name_encrypted",
+        "revision",
+        "slug_encrypted",
+        "slug_lookup",
+        "trigger_conditions_encrypted",
+        "updated_at",
+        "use_count"
+      ]
     },
     {
       "table": "public.system_state",

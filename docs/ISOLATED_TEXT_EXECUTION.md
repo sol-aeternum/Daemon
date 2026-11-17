@@ -7,6 +7,10 @@ production activation or a new user-facing execution mode. The rollout tracker
 
 ## Scope and authorities
 
+The next bounded application-interface qualification is described in
+[ISOLATED_APP_TEXT_FLOW.md](ISOLATED_APP_TEXT_FLOW.md). It reuses this runner and
+does not promote production execution or general history recovery.
+
 The approved slice connects the explicitly constructed authenticated acceptance
 host to the **original** durable text runner. It preserves the original task,
 claim, account generation, attempt identity, invocation, financial reservation,

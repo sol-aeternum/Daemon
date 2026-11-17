@@ -25,6 +25,7 @@ from orchestrator.services.deletion_journal.barrier import (
 from orchestrator.services.deletion_journal.errors import JournalError
 from orchestrator.services.restore_history.configuration import configured_history
 from orchestrator.services.restore_history.model import HistoryError
+from orchestrator.services.restore_history.native_fence import NativeFence
 from orchestrator.services.restore_history.runtime import (
     HistoryRuntime,
     physical_completion,
@@ -50,6 +51,8 @@ class AppState:
     # H selects observation-only startup; no mutating collaborator is installed.
     history_observation: object | None = field(default=None)
     history_runtime: HistoryRuntime | None = field(default=None)
+    # Unselected hosts only (#731): L1 presence and the L2 pool guard.
+    native_fence: NativeFence | None = field(default=None, repr=False)
     _history_shutdown_task: asyncio.Task[None] | None = field(default=None, repr=False)
 
 
@@ -87,6 +90,16 @@ async def init_app_state(settings: Settings) -> AppState:
             async def init_connection(conn):
                 await conn.execute("SET ivfflat.probes = 10")
 
+            if history_config is None:
+                # L1 before any other database work; refusals stay typed.
+                state.native_fence = NativeFence()
+                try:
+                    await state.native_fence.open(database_url)
+                except HistoryError:
+                    raise
+                except Exception:
+                    raise JournalError("database_required") from None
+            guard = state.native_fence.guard if state.native_fence is not None else None
             try:
                 pool = asyncpg.create_pool(
                     dsn=database_url,
@@ -95,6 +108,7 @@ async def init_app_state(settings: Settings) -> AppState:
                     min_size=1 if history_config is not None else 5,
                     max_size=20,
                     init=init_connection,
+                    setup=guard,
                 )
                 if history_config is not None:
                     state.db_pool = pool  # retain even partial/late initialization
@@ -117,6 +131,7 @@ async def init_app_state(settings: Settings) -> AppState:
                     min_size=1 if history_config is not None else 2,
                     max_size=5,
                     init=init_connection,
+                    setup=guard,
                 )
                 if history_config is not None:
                     state.task_acceptor_pool = pool
@@ -190,7 +205,13 @@ async def close_app_state(state: AppState) -> None:
         await physical_completion(state._history_shutdown_task, deadline=startup_deadline())
         return
     try:
-        await _close_database_pools(state)
+        try:
+            await _close_database_pools(state)
+        finally:
+            # Presence outlives every pooled connection it fences.
+            fence = getattr(state, "native_fence", None)
+            if isinstance(fence, NativeFence):
+                await fence.close()
     finally:
         if state.redis is not None:
             await state.redis.close()

@@ -84,7 +84,11 @@ _PRIVILEGE_CALL_RE = re.compile(
     re.IGNORECASE,
 )
 _ALTER_TABLE_RE = re.compile(
-    r"\balter\s+table\s+" + _TABLE_IDENTIFIER + r"(?=\s+(?:add|alter|drop)\s+[a-z_])",
+    r"\balter\s+table\s+"
+    + _TABLE_IDENTIFIER
+    # ENABLE ALWAYS TRIGGER (#731 073) changes firing mode only: no column,
+    # reference or writer, so it adds no dependency edge.
+    + r"(?=\s+(?:(?:add|alter|drop)\s+[a-z_]|enable\s+always\s+trigger\s+[a-z_]))",
     re.IGNORECASE,
 )
 TABLE_TARGET_RE = re.compile(
