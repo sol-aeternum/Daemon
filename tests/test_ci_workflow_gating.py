@@ -17,6 +17,7 @@ LOCAL_CI = REPO_ROOT / "scripts" / "local_ci.sh"
 ALLOWED_CONTINUE_ON_ERROR_STEPS = {
     ("backend", "Bandit full inventory"),
     ("browser-inventory", "Browser regression inventory"),
+    ("postgres-inventory", "PostgreSQL opt-in inventory"),
 }
 
 BLOCKING_GATE_STEPS = {

@@ -214,6 +214,78 @@ jobs:
           path: frontend/test-results/
           retention-days: 7
 
+  postgres-inventory:
+    name: PostgreSQL opt-in inventory
+    # Real-PostgreSQL suites that skip unless --compute-metadata-postgres is
+    # passed (#717). Reported, not blocking, until the lane has a passing record.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    env:
+      UV_PROJECT_ENVIRONMENT: .uv-venv
+    services:
+      tasks-postgres:
+        image: pgvector/pgvector@sha256:33198da2828a14c30348d2ccb4750833d5ed9a44c88d840a0e523d7417120337 # pg16
+        env:
+          POSTGRES_USER: tasks
+          POSTGRES_PASSWORD: tasks-ci-only
+          POSTGRES_DB: tasks_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U tasks -d tasks_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          enable-cache: true
+          resolution-strategy: lowest
+          cache-dependency-glob: |
+            pyproject.toml
+            uv.lock
+
+      - name: Sync backend dependencies
+        run: uv sync --locked
+
+      - name: Provision pinned fixture PostgreSQL image
+        # The owned fixture runs with --pull=never under this tag.
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker pull pgvector/pgvector@sha256:33198da2828a14c30348d2ccb4750833d5ed9a44c88d840a0e523d7417120337
+          docker tag pgvector/pgvector@sha256:33198da2828a14c30348d2ccb4750833d5ed9a44c88d840a0e523d7417120337 pgvector/pgvector:pg16
+
+      - name: PostgreSQL opt-in inventory
+        continue-on-error: true
+        timeout-minutes: 80
+        shell: bash
+        env:
+          TASKS_TEST_DATABASE_URL: postgresql://tasks:tasks-ci-only@127.0.0.1:5432/tasks_test
+        run: |
+          set -euo pipefail
+          work="$RUNNER_TEMP/pg-opt-in"
+          mkdir -p "$work/test" "$work/evidence" "$work/tmp" pytest-diagnostics
+          export OPENCODE_WORK_TEST_DIR="$work/test" OPENCODE_WORK_EVIDENCE_DIR="$work/evidence" TMPDIR="$work/tmp"
+          mapfile -t files < <(grep -lE 'metadata_cluster|compute_metadata_support|--compute-metadata-postgres' tests/test_*.py | sort)
+          echo "Opt-in files: ${#files[@]}"
+          PYTHONPATH=. uv run pytest -q -p no:cacheprovider --compute-metadata-postgres \
+            --junitxml=pytest-diagnostics/postgres-opt-in.xml "${files[@]}"
+
+      - name: Upload PostgreSQL opt-in results
+        if: always()
+        timeout-minutes: 3
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: postgres-opt-in-results
+          path: pytest-diagnostics/postgres-opt-in.xml
+          if-no-files-found: warn
+          retention-days: 7
+
   feature-matrix:
     name: Feature matrix gate
     runs-on: ubuntu-latest
