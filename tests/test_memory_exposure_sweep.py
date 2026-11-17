@@ -425,12 +425,22 @@ class FakePool:
                 ORDER BY embedding <=> $2::vector LIMIT $6
             """,
             "bm25": """
-                SELECT *, ts_rank(content_tsv, bm25_query.tsq) AS bm25_score
+                SELECT *,
+                CASE WHEN $12::bool AND content_tsv @@ bm25_query.plain
+                    THEN ts_rank(content_tsv, bm25_query.plain)
+                    ELSE ts_rank(content_tsv, bm25_query.tsq) END AS bm25_score,
+                (NOT $12::bool OR content_tsv @@ bm25_query.plain) AS bm25_full,
+                CASE WHEN NOT $12::bool OR content_tsv @@ bm25_query.plain THEN 1.0::float8
+                    ELSE (SELECT count(*) FROM unnest(bm25_query.qlex) AS lexeme
+                        WHERE lexeme = ANY(tsvector_to_array(content_tsv)))::float8
+                        / cardinality(bm25_query.qlex) END AS bm25_coverage
                 FROM memory_current_assertions,
-                (SELECT CASE WHEN $11::bool
+                (SELECT CASE WHEN $11::bool OR $12::bool
                     THEN (SELECT string_agg(quote_literal(lexeme), ' | ')
                         FROM unnest(tsvector_to_array(to_tsvector('english', $2))) AS lexeme)::tsquery
-                    ELSE plainto_tsquery('english', $2) END AS tsq) AS bm25_query
+                    ELSE plainto_tsquery('english', $2) END AS tsq,
+                    plainto_tsquery('english', $2) AS plain,
+                    tsvector_to_array(to_tsvector('english', $2)) AS qlex) AS bm25_query
                 WHERE user_id = $1 AND status != 'deleted'
                 AND ($3::bool OR valid_to IS NULL)
                 AND ($4::bool OR local_only = FALSE)
@@ -440,7 +450,7 @@ class FakePool:
                 AND ($10::bool OR tier != 'l0')
                 AND content_tsv IS NOT NULL AND content_tsv @@ bm25_query.tsq
                 AND ($5::text IS NULL OR memory_slot = $5)
-                ORDER BY bm25_score DESC LIMIT $6
+                ORDER BY bm25_full DESC, bm25_score DESC LIMIT $6
             """,
             "l0": """
                 SELECT * FROM memory_current_assertions
@@ -459,10 +469,10 @@ class FakePool:
         assert kind in expected
         assert " ".join(sql.split()) == " ".join(expected[kind].split()), sql
         assert isinstance(args[0], uuid.UUID)
-        assert len(args) == {"vector": 10, "bm25": 11, "l0": 2, "summary": 3}[kind]
+        assert len(args) == {"vector": 10, "bm25": 12, "l0": 2, "summary": 3}[kind]
         boolean_positions = {
             "vector": (3, 4, 7),
-            "bm25": (2, 3, 6, 9, 10),
+            "bm25": (2, 3, 6, 9, 10, 11),
             "l0": (1,),
             "summary": (2,),
         }

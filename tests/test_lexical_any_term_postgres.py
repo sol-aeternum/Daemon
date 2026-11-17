@@ -126,3 +126,47 @@ async def test_any_term_keeps_the_source_conversation_filter(env):
         env.alice, QUESTION, match_any_term=True, source_conversation_ids=[allowed["id"]]
     )
     assert [row["id"] for row in rows] == [kept["id"]]
+
+
+@pytest.mark.asyncio
+async def test_term_coverage_keeps_all_terms_rows_and_scores_first(env):
+    # Hybrid passes (#580): every-term rows keep the all-terms score and lead;
+    # partial rows follow with the share of query lexemes they contain.
+    full = await env.memory.insert_memory(
+        env.alice, "User is currently reading a book about sailing", "fact", "manual"
+    )
+    partial = await env.memory.insert_memory(env.alice, "User bought a new book", "fact", "manual")
+    await env.memory.insert_memory(env.alice, "User plays guitar on weekends", "fact", "manual")
+    baseline = await env.memory.search_memories_bm25(env.alice, QUESTION)
+    rows = await env.memory.search_memories_bm25(env.alice, QUESTION, term_coverage=True)
+    assert [row["id"] for row in rows] == [full["id"], partial["id"]]
+    assert [row["id"] for row in baseline] == [full["id"]]
+    assert rows[0]["bm25_score"] == pytest.approx(baseline[0]["bm25_score"])
+    assert (rows[0]["bm25_full"], rows[0]["bm25_coverage"]) == (True, 1.0)
+    # "book" is one of the question's three lexemes: book, current, read.
+    assert rows[1]["bm25_full"] is False
+    assert rows[1]["bm25_coverage"] == pytest.approx(1 / 3)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("category", [None, "fact"])
+async def test_default_search_reports_every_row_as_a_full_match(env, category):
+    await env.memory.insert_memory(
+        env.alice, "User is currently reading a book about sailing", "fact", "manual"
+    )
+    rows = await env.memory.search_memories_bm25(env.alice, QUESTION, category=category)
+    assert [(row["bm25_full"], row["bm25_coverage"]) for row in rows] == [(True, 1.0)]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("kind", ["local", "deleted", "historical"])
+async def test_term_coverage_keeps_visibility_filters(env, kind):
+    reading = await _seed(env)
+    hidden, reveal = await _hidden_row(env, kind)
+    rows = await env.memory.search_memories_bm25(env.alice, QUESTION, term_coverage=True)
+    assert [row["id"] for row in rows] == [reading["id"]]
+    if reveal is not None:
+        rows = await env.memory.search_memories_bm25(
+            env.alice, QUESTION, term_coverage=True, **reveal
+        )
+        assert {row["id"] for row in rows} == {reading["id"], hidden["id"]}
