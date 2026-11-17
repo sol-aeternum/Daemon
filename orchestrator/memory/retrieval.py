@@ -389,12 +389,25 @@ def _hybrid_score(
 
 
 def _normalize_bm25_scores(candidates: list[dict[str, object]]) -> None:
+    """Max-normalise BM25 scores, discounting rows that match only some terms.
+
+    Rows without ``bm25_full=False`` are all-terms matches and normalise exactly
+    as before. Partial rows (#580) are normalised against the best all-terms row
+    when there is one, capped at 1, then multiplied by their term coverage, so a
+    one-word match never reaches full lexical weight.
+    """
     if not candidates:
         return
-    max_bm25 = max(_as_float(c.get("bm25_score"), 0.0) for c in candidates)
+    full = [c for c in candidates if c.get("bm25_full", True) is not False]
+    reference = full if any(_as_float(c.get("bm25_score"), 0.0) > 0 for c in full) else candidates
+    max_bm25 = max(_as_float(c.get("bm25_score"), 0.0) for c in reference)
     if max_bm25 > 0:
         for c in candidates:
-            c["bm25_normalized"] = _as_float(c.get("bm25_score"), 0.0) / max_bm25
+            normalized = _as_float(c.get("bm25_score"), 0.0) / max_bm25
+            if c.get("bm25_full", True) is False:
+                coverage = min(max(_as_float(c.get("bm25_coverage"), 0.0), 0.0), 1.0)
+                normalized = min(normalized, 1.0) * coverage
+            c["bm25_normalized"] = normalized
     else:
         for c in candidates:
             c["bm25_normalized"] = 0.0
@@ -1042,10 +1055,13 @@ async def retrieve_memories(
                 include_dream_observations=include_dream_observations,
                 source_conversation_ids=allowed_source_conversation_ids,
                 embedding_models=_bm25_storage_models(effective_embedding_model),
-                # With a query vector, BM25 keeps the all-terms match the hybrid
-                # weights were calibrated on. Without one, lexical rank is the
-                # only signal, so a whole question matches on any term (#580).
+                # Without a query vector, lexical rank is the only signal, so a
+                # whole question matches on any term (#580). With one, rows the
+                # vector can reach still need every term, as the hybrid weights
+                # were calibrated on. Rows it cannot reach (no vector in this
+                # space) may match some terms, discounted by term coverage.
                 match_any_term=not query_embedding,
+                term_coverage_space=effective_embedding_model if query_embedding else None,
             ),
         )
 
@@ -1066,6 +1082,9 @@ async def retrieve_memories(
         if memory_id:
             if memory_id in candidate_map:
                 candidate_map[memory_id]["bm25_score"] = _as_float(c.get("bm25_score"), 0.0)
+                for key in ("bm25_full", "bm25_coverage"):
+                    if key in c:
+                        candidate_map[memory_id][key] = c[key]
                 candidate_map[memory_id]["source"] = "hybrid"
             else:
                 entry = dict(c)
