@@ -1,18 +1,21 @@
-"""The live provisioning maps on the FULL migration chain, against real startup.
+"""The live provisioning maps against real startup, on every non-H migration.
 
 The shared quarantine fixture keeps its broad synthetic acceptor. Here the
-database carries every migration, A and W receive ONLY the pinned maps from
-config/task_privileges, and existing real-PostgreSQL startup, acceptance,
+database carries every migration except restore history (H), A and W receive
+ONLY the pinned maps from config/task_privileges (granted with the script's
+own statement builder), and existing real-PostgreSQL startup, acceptance,
 worker and exact-W suites run unchanged against it (their ``db`` resolves to
-this module's fixture). A separate test runs the script's own ``apply`` and
-``verify`` as a superuser, the way the live deployment will.
+this module's fixture).
+
+This database's migration history is deliberately incomplete, so the script's
+``apply``/``verify`` refuse it; they are exercised on the real full chain in
+test_task_role_provisioning_chain_postgres.py. No test-only bypass exists.
 """
 
 import asyncio
 import os
 from uuid import uuid4
 
-import pytest
 import pytest_asyncio
 
 from scripts import provision_task_roles as provision
@@ -104,91 +107,3 @@ async def db(metadata_cluster):
         cluster.sql(f'DROP DATABASE "{name}"')
         cluster.sql("CHECKPOINT")
         cluster.databases.remove(name)
-
-
-PASSWORDS = ("Fixture-acceptor-0001", "Fixture-worker-00002")
-
-
-class _Undo(Exception):
-    """Roll back a deliberate drift after observing the refusal."""
-
-
-@pytest.mark.asyncio
-async def test_apply_creates_exact_roles_and_verify_detects_drift(db):
-    acceptor, worker = "rp_" + uuid4().hex[:8], "rp_" + uuid4().hex[:8]
-    try:
-        async with db.connection("postgres") as owner:
-            await provision.apply(
-                owner,
-                acceptor,
-                worker,
-                provision.scram_verifier(PASSWORDS[0]),
-                provision.scram_verifier(PASSWORDS[1]),
-            )
-            stored = await owner.fetch(
-                "SELECT rolname, left(rolpassword, 19) AS kind FROM pg_authid "
-                "WHERE rolname = ANY($1::name[]) ORDER BY 1",
-                [acceptor, worker],
-            )
-            assert {row["kind"] for row in stored} == {"SCRAM-SHA-256$4096:"}
-            async with owner.transaction():
-                await provision.verify(owner, ACCEPTOR_MAP, MAP, acceptor, worker)
-            # A second apply never adopts or alters existing roles.
-            with pytest.raises(provision.ProvisionError, match="role_already_exists"):
-                await provision.apply(
-                    owner,
-                    acceptor,
-                    worker,
-                    provision.scram_verifier(PASSWORDS[0]),
-                    provision.scram_verifier(PASSWORDS[1]),
-                )
-            for drift, code in (
-                (f"GRANT DELETE ON public.messages TO {acceptor}", "table_privileges_differ"),
-                (f"GRANT SELECT ON public._migrations TO {worker}", "table_privileges_differ"),
-                (
-                    f"GRANT INSERT(task_id) ON public.task_inference_recovery TO {worker}",
-                    "column_privileges_differ",
-                ),
-                (f"GRANT {worker} TO {acceptor}", "role_attributes_refused"),
-            ):
-                with pytest.raises(_Undo):
-                    async with owner.transaction():
-                        await owner.execute(drift)
-                        with pytest.raises(provision.ProvisionError, match=code):
-                            await provision.verify(owner, ACCEPTOR_MAP, MAP, acceptor, worker)
-                        raise _Undo
-            async with owner.transaction():
-                await provision.verify(owner, ACCEPTOR_MAP, MAP, acceptor, worker)
-    finally:
-        async with db.connection("postgres") as owner:
-            for role in (acceptor, worker):
-                await owner.execute(
-                    f"DO $$ BEGIN IF EXISTS(SELECT 1 FROM pg_roles WHERE rolname='{role}') THEN "
-                    f"EXECUTE 'DROP OWNED BY {role}'; EXECUTE 'DROP ROLE {role}'; END IF; END $$"
-                )
-
-
-@pytest.mark.asyncio
-async def test_apply_refuses_partial_schema_without_creating_roles(db):
-    acceptor, worker = "rp_" + uuid4().hex[:8], "rp_" + uuid4().hex[:8]
-    async with db.connection("postgres") as owner:
-        latest = provision.expected_latest_migration()
-        await owner.execute("DELETE FROM public._migrations WHERE filename=$1", latest)
-        try:
-            with pytest.raises(provision.ProvisionError, match="schema_not_at_latest_migration"):
-                await provision.apply(
-                    owner,
-                    acceptor,
-                    worker,
-                    provision.scram_verifier(PASSWORDS[0]),
-                    provision.scram_verifier(PASSWORDS[1]),
-                )
-            assert (
-                await owner.fetchval(
-                    "SELECT count(*) FROM pg_roles WHERE rolname = ANY($1::name[])",
-                    [acceptor, worker],
-                )
-                == 0
-            )
-        finally:
-            await owner.execute("INSERT INTO public._migrations(filename) VALUES($1)", latest)

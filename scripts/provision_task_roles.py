@@ -34,10 +34,10 @@ from pathlib import Path
 from typing import Any
 
 from orchestrator.tasks.composition import _RESULTS as _PROTECTED_RESULTS
+from scripts import migrate
 
 ROOT = Path(__file__).resolve().parents[1]
 MAPS = ROOT / "config" / "task_privileges"
-MIGRATIONS = ROOT / "migrations"
 
 _ROLE = re.compile(r"[a-z_][a-z0-9_]{0,62}\Z")
 _TABLE = re.compile(r"public\.[a-z_][a-z0-9_]*\Z")
@@ -168,15 +168,31 @@ def read_secret(path: str) -> str:
     return value
 
 
-def expected_latest_migration() -> str:
-    return sorted(p.name for p in MIGRATIONS.glob("*.sql"))[-1]
+def expected_migrations() -> list[str]:
+    """The migration runner's own complete set, in its apply order."""
+    return sorted(p.name for p in migrate.MIGRATIONS_DIR.glob("*.sql"))
 
 
 async def require_complete_schema(conn: Any) -> None:
-    """The maps describe the full chain; refuse a partially migrated database."""
-    latest = await conn.fetchval("SELECT max(filename) FROM public._migrations")
-    if latest != expected_latest_migration():
-        raise ProvisionError("schema_not_at_latest_migration")
+    """The maps describe the full chain; refuse any other migration history.
+
+    Uses the runner's bookkeeping contract: ``_migrations`` holds exactly one
+    row per applied file and nothing else (filenames only; the runner records no
+    checksum). A hole, an unknown/newer row or a missing table refuses. The
+    caller's transaction also holds the runner's advisory lock (transaction
+    scope), so no migration can apply between this check and COMMIT.
+    """
+    if not conn.is_in_transaction():
+        raise ProvisionError("transaction_required")
+    if not await conn.fetchval(
+        "SELECT pg_catalog.pg_try_advisory_xact_lock($1)", migrate.MIGRATION_ADVISORY_LOCK_ID
+    ):
+        raise ProvisionError("migration_in_progress")
+    if await conn.fetchval("SELECT pg_catalog.to_regclass('public._migrations')") is None:
+        raise ProvisionError("migration_history_incomplete")
+    rows = await conn.fetch("SELECT filename FROM public._migrations ORDER BY filename")
+    if [row["filename"] for row in rows] != expected_migrations():
+        raise ProvisionError("migration_history_incomplete")
 
 
 async def verify(
@@ -341,6 +357,14 @@ async def apply(
         await verify(conn, acceptor_map, worker_map, acceptor, worker)
 
 
+async def verify_deployment(conn: Any, acceptor: str, worker: str) -> None:
+    """The ``verify`` command: complete history, then exact maps, read-only."""
+    acceptor_map, worker_map = load_maps()
+    async with conn.transaction(readonly=True):
+        await require_complete_schema(conn)
+        await verify(conn, acceptor_map, worker_map, acceptor, worker)
+
+
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=(__doc__ or "").splitlines()[0])
     sub = parser.add_subparsers(dest="command", required=True)
@@ -379,9 +403,7 @@ async def _run(args: argparse.Namespace) -> None:
                 scram_verifier(read_secret(args.worker_password_file)),
             )
         else:
-            async with conn.transaction(readonly=True):
-                await require_complete_schema(conn)
-                await verify(conn, acceptor_map, worker_map, args.acceptor_role, args.worker_role)
+            await verify_deployment(conn, args.acceptor_role, args.worker_role)
     finally:
         await conn.close()
     print(

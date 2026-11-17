@@ -126,7 +126,12 @@ transaction. Before COMMIT it checks every public table, view and sequence for
 each role: effective table and column privileges must equal the map exactly,
 mapped functions must be executable, and the protected task functions must not be
 executable except where W's map lists them. `verify` repeats that check read-only.
-It refuses a database whose last applied migration is not the latest file, an
+Both commands first require the migration runner's complete history:
+`_migrations` must equal the sorted `migrations/*.sql` set exactly (a hole, an
+unknown row or a missing table refuses with `migration_history_incomplete`; the
+runner records filenames only, no checksums). They hold the runner's advisory
+lock for the transaction, so a concurrent migration refuses
+(`migration_in_progress`) and none can land before COMMIT. It also refuses an
 existing role, a tampered map digest, and secret files that are not private
 regular files. Passwords are sent as client-computed SCRAM-SHA-256 verifiers.
 
@@ -140,9 +145,13 @@ backend creates the first binding); and the four-column INSERT on
 `tests/test_task_role_provisioning_postgres.py` applies both maps to a database
 with every migration except the restore-history ones (056, 057, 064, 065; see
 #731) and reruns the real startup, acceptance, worker and exact-W suites against
-it, plus the script's own `apply`/`verify` as a superuser. A database that holds
-the restore-history schema refuses unselected startup, so this is not evidence
-that a fully migrated host can run.
+it. That history is deliberately incomplete, so `apply`/`verify` refuse it and
+have no test-only bypass. `tests/test_task_role_provisioning_chain_postgres.py`
+runs them, as a superuser and through the CLI, on a database migrated by the
+real runner through the latest file (H included), including the hole, unknown
+row and concurrent-migration refusals. A database that holds the
+restore-history schema refuses unselected startup, so neither is evidence that a
+fully migrated host can run.
 
 The real-PostgreSQL tests cover the effective ACL map, ordinary lifespan/auth,
 owner isolation, budget settlement, seeded-spend refunds, projections, audit,
