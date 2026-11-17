@@ -71,9 +71,16 @@ async def db(metadata_cluster):
         database=name,
         role="md_owner",
     )
-    # The memory revision and summary provenance schema exists before W's map is
-    # granted, after A's grant above, so A's existing fixture privileges are unchanged.
-    for migration in ("066_memory_bitemporal.sql", "072_summary_provenance.sql"):
+    # The memory revision, reminder, skill and summary provenance schema exists
+    # before W's map is granted, after A's grant above, so A's existing fixture
+    # privileges are unchanged.
+    for migration in (
+        "066_memory_bitemporal.sql",
+        "067_account_reminders.sql",
+        "068_account_owned_skills.sql",
+        "070_shipped_skill_catalogue.sql",
+        "072_summary_provenance.sql",
+    ):
         cluster.sql(
             "BEGIN;" + (ROOT / "migrations" / migration).read_text() + "COMMIT;",
             database=name,

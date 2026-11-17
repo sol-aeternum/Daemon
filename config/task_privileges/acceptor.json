@@ -1,0 +1,109 @@
+{
+  "schema": "exact-acceptor-privileges/v1",
+  "baseline": "deb7091d239f48d4bdc4ab3813fb8c088d95c453",
+  "proposal_sha256": "d2a64f57b0d0f95da7c6f56305ec7d2983fcb974802584ce6376be743a55e735",
+  "ordinary_tables": [
+    {
+      "table": "public.account_deletions",
+      "table_privileges": [
+        "SELECT"
+      ],
+      "update_columns": [],
+      "insert_columns": []
+    },
+    {
+      "table": "public.account_suspension_causes",
+      "table_privileges": [
+        "SELECT"
+      ],
+      "update_columns": [],
+      "insert_columns": []
+    },
+    {
+      "table": "public.conversations",
+      "table_privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE"
+      ],
+      "update_columns": [],
+      "insert_columns": []
+    },
+    {
+      "table": "public.deletion_journal_applied",
+      "table_privileges": [
+        "SELECT"
+      ],
+      "update_columns": [],
+      "insert_columns": []
+    },
+    {
+      "table": "public.deletion_journal_binding",
+      "table_privileges": [
+        "SELECT",
+        "INSERT"
+      ],
+      "update_columns": [],
+      "insert_columns": []
+    },
+    {
+      "table": "public.entitlement_accounts",
+      "table_privileges": [
+        "SELECT",
+        "UPDATE"
+      ],
+      "update_columns": [],
+      "insert_columns": []
+    },
+    {
+      "table": "public.messages",
+      "table_privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE"
+      ],
+      "update_columns": [],
+      "insert_columns": []
+    },
+    {
+      "table": "public.task_attempts",
+      "table_privileges": [
+        "SELECT"
+      ],
+      "update_columns": [],
+      "insert_columns": []
+    },
+    {
+      "table": "public.task_events",
+      "table_privileges": [
+        "SELECT",
+        "INSERT"
+      ],
+      "update_columns": [],
+      "insert_columns": []
+    },
+    {
+      "table": "public.task_inference_recovery",
+      "table_privileges": [],
+      "update_columns": [],
+      "insert_columns": [
+        "account_generation",
+        "account_id",
+        "protocol_version",
+        "task_id"
+      ]
+    },
+    {
+      "table": "public.tasks",
+      "table_privileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE"
+      ],
+      "update_columns": [],
+      "insert_columns": []
+    }
+  ],
+  "sequences_usage_only": [],
+  "function_execute": []
+}

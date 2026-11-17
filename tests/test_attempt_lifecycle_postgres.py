@@ -41,9 +41,13 @@ async def db(metadata_cluster):
     cluster.sql("BEGIN;" + SQL + "COMMIT;", database=name, role="md_owner")
     # Actual current TaskStore acceptance also requires the message foundation,
     # and conversation deletion consumes memory and summary provenance; the
-    # rest of this lane stays pinned to its existing lifecycle boundary.
+    # rest of this lane stays pinned to its existing lifecycle boundary. The
+    # reminder and skill tables exist so the exact W map can be granted here.
     for migration in (
         "066_memory_bitemporal.sql",
+        "067_account_reminders.sql",
+        "068_account_owned_skills.sql",
+        "070_shipped_skill_catalogue.sql",
         "071_message_correction_admission.sql",
         "072_summary_provenance.sql",
     ):
