@@ -16,11 +16,11 @@ from dataclasses import dataclass
 import math
 import os
 import time
-from typing import Any, TypeVar
+from typing import Any, Literal, TypeVar
 from uuid import UUID
 
 import asyncpg
-from fastapi import FastAPI, HTTPException, Request, Response
+from fastapi import FastAPI, HTTPException, Query, Request, Response
 from fastapi.responses import StreamingResponse
 
 from orchestrator.auth import (
@@ -38,8 +38,29 @@ from orchestrator.routes.tasks import (
     CancelOut,
     TaskOut,
     historical_task_out,
+    task_out,
 )
-from orchestrator.services.account_control.guard import WriteGuardRefusal, capture_generation
+from orchestrator.routes.conversations import (
+    ConversationListResponse,
+    ConversationWithMessagesOut,
+    ConversationOut,
+    HistoryPageOut,
+    MessageOut,
+    _normalize_conversation,
+    _normalize_message,
+)
+from orchestrator.history_pagination import (
+    HistoryBoundary,
+    InvalidHistoryCursor,
+    decode_cursor,
+    encode_cursor,
+)
+from orchestrator.services.account_control.guard import (
+    CapturedGeneration,
+    WriteGuardRefusal,
+    capture_generation,
+    guard_content_write,
+)
 from orchestrator.services.connection_cleanup import pool_connection, retain_pool_cleanup
 from orchestrator.session_cleanup import lock_session_cleanup
 from orchestrator.tasks._invocation import block
@@ -65,7 +86,7 @@ from .read_supervisor import _observe, qualify_read_history
 from .store import _check_time
 from .terminal_projection import TerminalHistoryProjection
 from .text_execution import HistoryTextExecution
-from .model import AcceptPrepare
+from .model import AcceptPrepare, StopIntent, TerminalOutputPrepare
 
 T = TypeVar("T")
 HEADERS = {"Cache-Control": "no-store"}
@@ -554,6 +575,353 @@ class IsolatedAcceptanceHost:
         # actual identities. Initial token proof never substitutes for that check.
         return await self._reader.lookup(auth, client_key, deadline=deadline)
 
+    async def ui_read(
+        self,
+        authorization: str | None,
+        kind: Literal["task", "conversation", "list"],
+        ident: UUID | None,
+        *,
+        deadline: float,
+        limit: int = 100,
+        offset: int = 0,
+        pagination: str | None = None,
+        before: str | None = None,
+        through: str | None = None,
+        search: str | None = None,
+    ) -> Any:
+        """Only the explicitly constructed UI app calls this bounded read."""
+        self._admit(deadline)
+        token = _extract_bearer_token(authorization)
+        if token is None:
+            raise HTTPException(401, "Missing or invalid authorization header", headers=HEADERS)
+        try:
+            result = await self._run(
+                self._ui_read(
+                    token, kind, ident, deadline, limit, offset, pagination, before, through, search
+                ),
+                deadline,
+                writing=False,
+            )
+            _check_time(deadline)
+            if self._reader._history._blocked:
+                raise _unavailable()
+        except BaseException:
+            self._reader._history._blocked = True
+            raise
+        if isinstance(result, HTTPException):
+            raise result
+        return result
+
+    async def _ui_read(
+        self,
+        token: str,
+        kind: str,
+        ident: UUID | None,
+        deadline: float,
+        limit: int,
+        offset: int,
+        pagination: str | None,
+        before: str | None,
+        through: str | None,
+        search: str | None,
+    ) -> Any:
+        reader = self._reader
+        async with reader._history.operation(deadline=deadline) as operation, retain_pool_cleanup():
+            async with pool_connection(reader._tasks._pool) as conn:
+                if conn.is_in_transaction():
+                    raise HistoryError("auth_transaction_owner_refused")
+                async with conn.transaction(isolation="read_committed"):
+                    auth = await self._auth(conn, token, deadline)
+                    if auth is None:
+                        return HTTPException(
+                            status_code=401,
+                            detail="Invalid or expired access token",
+                            headers=HEADERS,
+                        )
+                    xid = await conn.fetchval("SELECT txid_current()")
+                    state = await operation.verify()
+                    parity = await reader._parity_owned(operation, conn, xid, state, deadline)
+                    accepted_entries = [
+                        e
+                        for e in state.entries
+                        if type(e.command.data) is AcceptPrepare
+                        and e.command.data.account_id == auth.user_id
+                    ]
+                    try:
+                        # Current account health is required even for a truly empty fixture.
+                        original = (
+                            accepted_entries[0].command.data if len(accepted_entries) == 1 else None
+                        )
+                        current = (
+                            CapturedGeneration(auth.user_id, original.account_generation)
+                            if type(original) is AcceptPrepare
+                            else await capture_generation(conn, auth.user_id)
+                        )
+                        async with guard_content_write(conn, current):
+                            if not parity:
+                                return _unavailable()
+                            if len(accepted_entries) > 1:
+                                return self._ui_recovery()
+                            entry = accepted_entries[0] if accepted_entries else None
+                            accepted = entry.command.data if entry else None
+                            if accepted is not None and (
+                                type(accepted) is not AcceptPrepare
+                                or accepted.account_generation != current.generation
+                            ):
+                                return self._ui_recovery()
+                            # Native rows restrict completeness; they never select the original.
+                            conversations = await conn.fetch(
+                                "SELECT * FROM public.conversations WHERE user_id=$1 ORDER BY id FOR SHARE",
+                                auth.user_id,
+                            )
+                            if accepted is None:
+                                content = await conn.fetchval(
+                                    "SELECT EXISTS(SELECT 1 FROM public.tasks WHERE user_id=$1) OR EXISTS(SELECT 1 FROM public.messages WHERE user_id=$1)",
+                                    auth.user_id,
+                                )
+                                if conversations or content:
+                                    return self._ui_recovery()
+                                conv, messages, snapshot = None, [], None
+                            else:
+                                assert entry is not None
+                                if (
+                                    len(conversations) != 1
+                                    or conversations[0]["id"] != accepted.conversation_id
+                                ):
+                                    return self._ui_recovery()
+                                row = await reader._task_owned(
+                                    operation, conn, xid, auth, accepted, None, deadline
+                                )
+                                if row is None:
+                                    return self._ui_recovery()
+                                tasks = await conn.fetch(
+                                    "SELECT id FROM public.tasks WHERE user_id=$1 OR conversation_id=$2 ORDER BY id FOR SHARE",
+                                    auth.user_id,
+                                    accepted.conversation_id,
+                                )
+                                pair = await conn.fetch(
+                                    "SELECT * FROM public.messages WHERE user_id=$1 OR conversation_id=$2 ORDER BY created_at,id FOR SHARE",
+                                    auth.user_id,
+                                    accepted.conversation_id,
+                                )
+                                if len(tasks) != 1 or tasks[0]["id"] != accepted.task_id:
+                                    return self._ui_recovery()
+                                if await conn.fetchval(
+                                    "SELECT EXISTS(SELECT 1 FROM public.task_operations WHERE task_id=$1) OR (SELECT count(*) FROM public.task_attempts WHERE task_id=$1)>1",
+                                    accepted.task_id,
+                                ):
+                                    return self._ui_recovery()
+                                if row["status"] == "completed":
+                                    if not any(
+                                        type(e.command.data) is TerminalOutputPrepare
+                                        and (
+                                            e.command.data.account_id,
+                                            e.command.data.account_generation,
+                                            e.command.data.task_id,
+                                            e.command.data.result_message_id,
+                                            e.command.data.acceptance_record_id,
+                                            e.command.data.epoch,
+                                        )
+                                        == (
+                                            auth.user_id,
+                                            current.generation,
+                                            accepted.task_id,
+                                            accepted.result_message_id,
+                                            entry.command.record_id,
+                                            row["lease_epoch"],
+                                        )
+                                        for e in state.entries
+                                    ):
+                                        return self._ui_recovery()
+                                elif row["status"] == "cancelled":
+                                    execution = self._execution
+                                    if execution is None or execution.worker is None:
+                                        return self._ui_recovery()
+                                    # Only an additional current-owner restriction, never a receipt.
+                                    execution.validate_worker(execution.context(), execution.worker)
+                                    if accepted.task_id not in execution._scheduled or not any(
+                                        type(e.command.data) is StopIntent
+                                        and (
+                                            e.command.data.account_id,
+                                            e.command.data.account_generation,
+                                            e.command.data.task_id,
+                                        )
+                                        == (auth.user_id, current.generation, accepted.task_id)
+                                        for e in state.entries
+                                    ):
+                                        return self._ui_recovery()
+                                try:
+                                    conv, messages = reader._text_values(
+                                        accepted, row, conversations[0], list(pair)
+                                    )
+                                    if row["status"] == "cancelled":
+                                        await reader._cancelled_owned(
+                                            operation,
+                                            conn,
+                                            xid,
+                                            accepted,
+                                            row,
+                                            state,
+                                            messages[-1]["metadata"],
+                                            deadline,
+                                        )
+                                    snapshot = reader._tasks._snapshot_from(row)
+                                except Exception:
+                                    return self._ui_recovery()
+                            # Recheck bearer/expiry after every blocking account/content lock.
+                            final_auth = await self._auth(conn, token, deadline)
+                            if final_auth != auth:
+                                return HTTPException(
+                                    status_code=401,
+                                    detail="Invalid or expired access token",
+                                    headers=HEADERS,
+                                )
+                            await reader._check_owned(operation, conn, xid, deadline)
+                            return self._ui_response(
+                                auth,
+                                kind,
+                                ident,
+                                conv,
+                                messages,
+                                snapshot,
+                                limit,
+                                offset,
+                                pagination,
+                                before,
+                                through,
+                                search,
+                            )
+                    except WriteGuardRefusal:
+                        return self._ui_recovery()
+
+    @staticmethod
+    def _ui_recovery() -> HTTPException:
+        return HTTPException(
+            409,
+            {"code": "restore_recovery_required", "task_id": None, "retry_safe": False},
+            headers=HEADERS,
+        )
+
+    @staticmethod
+    def _ui_response(
+        auth: AuthenticatedDevice,
+        kind: str,
+        ident: UUID | None,
+        conv: Any,
+        messages: list[Any],
+        snapshot: Any,
+        limit: int,
+        offset: int,
+        pagination: str | None,
+        before: str | None,
+        through: str | None,
+        search: str | None,
+    ) -> Any:
+        if kind == "task":
+            return (
+                task_out(snapshot)
+                if snapshot is not None and snapshot.task_id == ident
+                else HTTPException(404, "Task not found", headers=HEADERS)
+            )
+        if kind == "conversation" and (conv is None or conv["id"] != ident):
+            return HTTPException(404, "Conversation not found", headers=HEADERS)
+        if pagination == "cursor" and (offset or (kind == "list" and search and search.strip())):
+            return HTTPException(400, "Cursor mode cannot use offset or search", headers=HEADERS)
+        if pagination == "cursor" and limit > 100:
+            return HTTPException(422, "Cursor page limit must be at most 100", headers=HEADERS)
+        if pagination != "cursor" and (before is not None or through is not None):
+            return HTTPException(400, {"code": "invalid_cursor"}, headers=HEADERS)
+        try:
+            upper = (
+                decode_cursor(
+                    before,
+                    user_id=auth.user_id,
+                    conversation_id=ident if kind == "conversation" else None,
+                )
+                if before is not None
+                else None
+            )
+            lower = (
+                decode_cursor(through, user_id=auth.user_id, conversation_id=ident)
+                if through is not None
+                else None
+            )
+        except InvalidHistoryCursor:
+            return HTTPException(400, {"code": "invalid_cursor"}, headers=HEADERS)
+        if conv is not None:
+            conv = ConversationOut.model_validate(_normalize_conversation(dict(conv)))
+        if kind == "list":
+            # Search is deliberately refused, not evaluated with incomplete SQL ILIKE semantics.
+            if search and search.strip():
+                return HTTPException(
+                    400, "Search is unsupported by the isolated text fixture", headers=HEADERS
+                )
+            rows = [] if conv is None else [conv]
+            total = len(rows)
+            if upper is not None:
+                rows = [
+                    c
+                    for c in rows
+                    if (c.pinned, c.last_activity_at, c.id) < (upper.pinned, upper.at, upper.id)
+                ]
+            rows = rows[offset : offset + limit]
+            boundaries = [
+                encode_cursor(
+                    HistoryBoundary(c.last_activity_at, c.id, c.pinned), user_id=auth.user_id
+                )
+                for c in rows
+            ]
+            page = (
+                {
+                    "has_more": False,
+                    "next_cursor": None,
+                    "start_cursor": boundaries[0] if boundaries else None,
+                    "end_cursor": boundaries[-1] if boundaries else None,
+                }
+                if pagination == "cursor"
+                else None
+            )
+            return ConversationListResponse(
+                conversations=rows,
+                total=total,
+                page=HistoryPageOut.model_validate(page) if page is not None else None,
+            )
+        assert conv is not None
+        selected = [
+            m
+            for m in reversed(messages)
+            if (upper is None or (m["created_at"], m["id"]) < (upper.at, upper.id))
+            and (lower is None or (m["created_at"], m["id"]) >= (lower.at, lower.id))
+        ]
+        has_more = len(selected) > offset + limit
+        selected = list(reversed(selected[offset : offset + limit]))
+        boundaries = [
+            encode_cursor(
+                HistoryBoundary(m["created_at"], m["id"]),
+                user_id=auth.user_id,
+                conversation_id=ident,
+            )
+            for m in selected
+        ]
+        page = (
+            {
+                "has_more": has_more,
+                "next_cursor": boundaries[0] if boundaries and has_more else None,
+                "start_cursor": boundaries[0] if boundaries else None,
+                "end_cursor": boundaries[-1] if boundaries else None,
+            }
+            if pagination == "cursor"
+            else None
+        )
+        task = task_out(snapshot)
+        return ConversationWithMessagesOut(
+            **conv.model_dump(),
+            messages=[MessageOut.model_validate(_normalize_message(dict(m))) for m in selected],
+            message_page=HistoryPageOut.model_validate(page) if page is not None else None,
+            active_task=task if task.status in ("queued", "running") else None,
+            latest_task=task,
+        )
+
     async def _stream(
         self, authorization: str | None, client_key: str, initial: HistoricalObservation
     ) -> AsyncIterator[str]:
@@ -765,5 +1133,78 @@ def create_isolated_acceptance_app(host: IsolatedAcceptanceHost) -> FastAPI:
                 status=outcome.status.value,
                 cancel_requested=outcome.status.value == "running",
             )
+
+    return app
+
+
+def create_isolated_ui_app(host: IsolatedAcceptanceHost) -> FastAPI:
+    """Explicit inert opt-in; default app and production startup are unchanged."""
+    if type(host._reader._projection) is not TerminalHistoryProjection:
+        raise HistoryError("isolated_ui_refused")
+    app = create_isolated_acceptance_app(host)
+
+    async def read(
+        request: Request,
+        kind: Literal["task", "conversation", "list"],
+        ident: UUID | None,
+        **bounds: Any,
+    ) -> Any:
+        try:
+            return await host.ui_read(
+                request.headers.get("Authorization"),
+                kind,
+                ident,
+                deadline=time.monotonic() + 5,
+                **bounds,
+            )
+        except HTTPException:
+            raise
+        except Exception:
+            raise _unavailable() from None
+
+    @app.get("/tasks/{task_id}", response_model=TaskOut)
+    async def task(task_id: UUID, request: Request) -> Any:
+        return await read(request, "task", task_id)
+
+    @app.get("/conversations", response_model=ConversationListResponse)
+    async def listing(
+        request: Request,
+        search: str | None = None,
+        limit: int = Query(100, ge=1, le=100),
+        offset: int = Query(0, ge=0),
+        pagination: Literal["cursor"] | None = None,
+        cursor: str | None = None,
+    ) -> Any:
+        return await read(
+            request,
+            "list",
+            None,
+            search=search,
+            limit=limit,
+            offset=offset,
+            pagination=pagination,
+            before=cursor,
+        )
+
+    @app.get("/conversations/{conversation_id}", response_model=ConversationWithMessagesOut)
+    async def conversation(
+        conversation_id: UUID,
+        request: Request,
+        limit: int = Query(100, ge=1, le=500),
+        offset: int = Query(0, ge=0),
+        pagination: Literal["cursor"] | None = None,
+        before: str | None = None,
+        through: str | None = None,
+    ) -> Any:
+        return await read(
+            request,
+            "conversation",
+            conversation_id,
+            limit=limit,
+            offset=offset,
+            pagination=pagination,
+            before=before,
+            through=through,
+        )
 
     return app
