@@ -66,7 +66,9 @@ before `npm ci` and validates installed bytes before building.
 
 **The new identity will not inherit the upstream package's name-based npm advisory
 matches. An audit pass alone does NOT prove this vulnerability is repaired.** The
-original full `npm audit --audit-level=high` gate remains unchanged. A mandatory
+original full `npm audit --audit-level=high` gate keeps its threshold; it now
+runs through `scripts/audit-ci.cjs` with one temporary, expiring picomatch
+exception (see `FRONTEND_AUDIT_EXCEPTIONS.md`, #735). A mandatory
 additive `npm run security:braces` gate in CI and `scripts/local_ci.sh` verifies:
 
 - original tarball integrity and unchanged MIT attribution;

@@ -1,0 +1,53 @@
+{
+  "schemaVersion": 1,
+  "exception": {
+    "advisory": "GHSA-fc5q-39xc-vjpf",
+    "aliases": ["CVE-2026-112366"],
+    "url": "https://github.com/advisories/GHSA-fc5q-39xc-vjpf",
+    "npmAdvisorySource": 1247710,
+    "package": "picomatch",
+    "severity": "high",
+    "range": "<=4.0.7",
+    "tracking": "https://github.com/sol-aeternum/Daemon/issues/735",
+    "owner": "sol-aeternum (repository owner)",
+    "createdAt": "2026-11-17T21:30:00Z",
+    "expiresAt": "2026-12-01T21:30:00Z",
+    "rationale": "No fixed picomatch release exists (latest is 4.0.7). The ReDoS needs an attacker-supplied glob pattern. Reachability review in docs/FRONTEND_AUDIT_EXCEPTIONS.md: the production server compiles only fixed configuration patterns (Next's default image localPatterns '**') with its bundled copy, and every npm-installed copy is build, lint or test tooling given repository-authored patterns.",
+    "removalCondition": "Remove this record and restore the plain npm audit when a picomatch release fixing GHSA-fc5q-39xc-vjpf, or an authoritative advisory correction, is available and verified; or on expiry, whichever comes first. A change to the advisory's range or severity, or a new affected package or path, fails closed and needs a fresh reachability review.",
+    "affectedPaths": {
+      "@next/eslint-plugin-next": ["node_modules/@next/eslint-plugin-next"],
+      "@typescript-eslint/typescript-estree": [
+        "node_modules/@typescript-eslint/typescript-estree"
+      ],
+      "@vitejs/plugin-react": ["node_modules/@vitejs/plugin-react"],
+      "@vitest/mocker": ["node_modules/@vitest/mocker"],
+      "anymatch": ["node_modules/anymatch"],
+      "chokidar": ["node_modules/chokidar"],
+      "eslint-config-next": ["node_modules/eslint-config-next"],
+      "eslint-import-resolver-typescript": [
+        "node_modules/eslint-import-resolver-typescript"
+      ],
+      "fast-glob": [
+        "node_modules/fast-glob",
+        "node_modules/tailwindcss/node_modules/fast-glob"
+      ],
+      "fdir": [
+        "node_modules/tinyglobby/node_modules/fdir",
+        "node_modules/vite/node_modules/fdir"
+      ],
+      "micromatch": ["node_modules/micromatch"],
+      "picomatch": [
+        "node_modules/picomatch",
+        "node_modules/tinyglobby/node_modules/picomatch",
+        "node_modules/vite/node_modules/picomatch",
+        "node_modules/vitest/node_modules/picomatch"
+      ],
+      "readdirp": ["node_modules/readdirp"],
+      "sucrase": ["node_modules/sucrase"],
+      "tailwindcss": ["node_modules/tailwindcss"],
+      "tinyglobby": ["node_modules/tinyglobby"],
+      "vite": ["node_modules/vite"],
+      "vitest": ["node_modules/vitest"]
+    }
+  }
+}
