@@ -130,3 +130,47 @@ def test_plan_prints_sql_and_digests_but_no_secret(capsys):
 def test_cli_refusals_print_codes_only(capsys):
     assert provision.main(["plan", "--acceptor-role", "same", "--worker-role", "Bad"]) == 2
     assert capsys.readouterr().err.strip() == "refused: invalid_role_name"
+
+
+class _History:
+    """Offline stand-in for the owner connection's bookkeeping reads."""
+
+    def __init__(self, rows, *, locked=True, in_tx=True, table=True):
+        self.rows, self.locked, self.in_tx, self.table = rows, locked, in_tx, table
+
+    def is_in_transaction(self):
+        return self.in_tx
+
+    async def fetchval(self, sql, *args):
+        return self.locked if "advisory" in sql else ("_migrations" if self.table else None)
+
+    async def fetch(self, sql, *args):
+        assert sql == "SELECT filename FROM _migrations"  # the runner's own read
+        return [{"filename": name} for name in self.rows]
+
+
+@pytest.mark.asyncio
+async def test_history_check_is_set_equality_independent_of_collation():
+    expected = provision.expected_migrations()
+    # en_US-style orders differ from codepoint order; any order of the full set passes.
+    await provision.require_complete_schema(_History(list(reversed(expected))))
+    for rows, code in (
+        (expected[:-1], "migration_history_incomplete"),
+        ([n for n in expected if not n.startswith("036_memory")], "migration_history_incomplete"),
+        ([*expected, "999_unknown.sql"], "migration_history_incomplete"),
+    ):
+        with pytest.raises(provision.ProvisionError, match=code):
+            await provision.require_complete_schema(_History(rows))
+    for history, code in (
+        (_History(expected, locked=False), "migration_in_progress"),
+        (_History(expected, in_tx=False), "transaction_required"),
+        (_History(expected, table=False), "migration_history_incomplete"),
+    ):
+        with pytest.raises(provision.ProvisionError, match=code):
+            await provision.require_complete_schema(history)
+
+
+def test_missing_migration_files_refuse_instead_of_matching_empty_history(monkeypatch, tmp_path):
+    monkeypatch.setattr(provision.migrate, "MIGRATIONS_DIR", tmp_path)
+    with pytest.raises(provision.ProvisionError, match="migrations_unavailable"):
+        provision.expected_migrations()

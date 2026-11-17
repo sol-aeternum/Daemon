@@ -170,28 +170,32 @@ def read_secret(path: str) -> str:
 
 def expected_migrations() -> list[str]:
     """The migration runner's own complete set, in its apply order."""
-    return sorted(p.name for p in migrate.MIGRATIONS_DIR.glob("*.sql"))
+    names = sorted(p.name for p in migrate.MIGRATIONS_DIR.glob("*.sql"))
+    if not names:
+        raise ProvisionError("migrations_unavailable")
+    return names
 
 
 async def require_complete_schema(conn: Any) -> None:
     """The maps describe the full chain; refuse any other migration history.
 
-    Uses the runner's bookkeeping contract: ``_migrations`` holds exactly one
-    row per applied file and nothing else (filenames only; the runner records no
-    checksum). A hole, an unknown/newer row or a missing table refuses. The
-    caller's transaction also holds the runner's advisory lock (transaction
-    scope), so no migration can apply between this check and COMMIT.
+    Uses the runner's own bookkeeping read (``migrate.get_applied_migrations``):
+    the recorded set must equal the file set exactly (filenames only; the runner
+    records no checksum, and ``filename`` is UNIQUE). A hole, an unknown/newer
+    row or a missing table refuses. Set equality is independent of the
+    database collation. The caller's transaction also holds the runner's
+    advisory lock (transaction scope), so no migration can apply before COMMIT.
     """
+    expected = set(expected_migrations())
     if not conn.is_in_transaction():
         raise ProvisionError("transaction_required")
     if not await conn.fetchval(
         "SELECT pg_catalog.pg_try_advisory_xact_lock($1)", migrate.MIGRATION_ADVISORY_LOCK_ID
     ):
         raise ProvisionError("migration_in_progress")
-    if await conn.fetchval("SELECT pg_catalog.to_regclass('public._migrations')") is None:
+    if await conn.fetchval("SELECT pg_catalog.to_regclass('_migrations')") is None:
         raise ProvisionError("migration_history_incomplete")
-    rows = await conn.fetch("SELECT filename FROM public._migrations ORDER BY filename")
-    if [row["filename"] for row in rows] != expected_migrations():
+    if await migrate.get_applied_migrations(conn) != expected:
         raise ProvisionError("migration_history_incomplete")
 
 
@@ -205,6 +209,10 @@ async def verify(
     checked positively for mapped entries and negatively for the 18 protected
     task functions startup catalogues; other functions keep PostgreSQL's default
     PUBLIC EXECUTE.
+
+    Privileges only: this does NOT check migration history. Deployment
+    verification is ``verify_deployment`` (the ``verify`` command), and
+    ``apply`` checks history itself.
     """
     acceptor, worker = _role(acceptor), _role(worker)
     if acceptor == worker:
