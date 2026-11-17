@@ -68,21 +68,75 @@ async def physical_completion(call: Awaitable[T], *, deadline: float) -> T:
         raise
 
 
-async def require_unselected_history(pool: asyncpg.Pool) -> None:
-    """Positive catalog absence, before any native recovery write.
+_H_TRIGGERS = (
+    "task_history_binding_immutable",
+    "task_history_binding_no_truncate",
+    "task_history_acceptance_immutable",
+    "task_history_acceptance_no_truncate",
+    "task_history_projection_immutable",
+    "task_history_projection_no_truncate",
+)
 
-    Partial H schema cannot silently become a legacy host by dropping settings.
+# True only on positive evidence that no H binding (and so no H acceptance or
+# projection row) can exist: either no H object at all, or the exact 056/057
+# tables with every main fork at zero bytes. A visible heap tuple needs at least
+# one page, so size 0 cannot hide a row; an aborted insert leaves a page and
+# refuses until VACUUM truncates it. The proof needs no table privilege, so A, W
+# and a legacy owner role read the same evidence. Inheritance children (rows in
+# a child are visible through the parent) and unlogged tables (crash truncation)
+# refuse, as do views, partitions, extra H relations and changed FKs/triggers.
+# Decision record: docs/RESTORE_HISTORY_UNBOUND_START_PROPOSAL.md (#731).
+UNSELECTED_HISTORY_SQL = """WITH h AS (SELECT
+  pg_catalog.to_regclass('public.task_history_binding') AS b,
+  pg_catalog.to_regclass('public.task_history_acceptance') AS a,
+  pg_catalog.to_regclass('public.task_history_projection') AS p),
+present AS (SELECT
+  EXISTS (SELECT 1 FROM pg_catalog.pg_class c
+    JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace
+    WHERE n.nspname='public' AND left(c.relname,13)='task_history_')
+  OR EXISTS (SELECT 1 FROM pg_catalog.pg_proc f
+    JOIN pg_catalog.pg_namespace n ON n.oid=f.pronamespace
+    WHERE n.nspname='public' AND left(f.proname,13)='task_history_') AS any_h)
+SELECT CASE WHEN NOT present.any_h THEN true ELSE COALESCE(
+  h.b IS NOT NULL AND h.a IS NOT NULL AND h.p IS NOT NULL
+  AND (SELECT count(*) FROM pg_catalog.pg_class c WHERE c.oid IN (h.b,h.a,h.p)
+    AND c.relkind='r' AND c.relpersistence='p' AND NOT c.relispartition)=3
+  AND (SELECT count(DISTINCT c.relowner) FROM pg_catalog.pg_class c
+    WHERE c.oid IN (h.b,h.a,h.p))=1
+  AND NOT EXISTS (SELECT 1 FROM pg_catalog.pg_class c
+    JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace
+    WHERE n.nspname='public' AND left(c.relname,13)='task_history_'
+    AND c.oid NOT IN (h.b,h.a,h.p)
+    AND NOT EXISTS (SELECT 1 FROM pg_catalog.pg_index i
+      WHERE i.indexrelid=c.oid AND i.indrelid IN (h.b,h.a,h.p)))
+  AND NOT EXISTS (SELECT 1 FROM pg_catalog.pg_inherits i
+    WHERE i.inhparent IN (h.b,h.a,h.p) OR i.inhrelid IN (h.b,h.a,h.p))
+  AND (SELECT count(*) FROM pg_catalog.pg_constraint k WHERE k.contype='f'
+    AND k.confrelid=h.b AND k.conrelid IN (h.a,h.p)
+    AND k.confdeltype='r' AND k.convalidated)=2
+  AND (SELECT count(*) FROM pg_catalog.pg_trigger t
+    WHERE t.tgrelid IN (h.b,h.a,h.p) AND NOT t.tgisinternal
+    AND t.tgenabled IN ('O','A')
+    AND t.tgfoid=pg_catalog.to_regprocedure('public.task_history_immutable()')
+    AND t.tgname = ANY($1::text[]))=6
+  AND pg_catalog.pg_relation_size(h.b,'main')=0
+  AND pg_catalog.pg_relation_size(h.a,'main')=0
+  AND pg_catalog.pg_relation_size(h.p,'main')=0, false) END
+FROM h, present"""
+
+
+async def history_unselected_compatible(db: asyncpg.Pool | asyncpg.Connection) -> bool:
+    """Whether an unselected host may use native paths; any doubt is False."""
+    return await db.fetchval(UNSELECTED_HISTORY_SQL, list(_H_TRIGGERS)) is True
+
+
+async def require_unselected_history(pool: asyncpg.Pool) -> None:
+    """H absent or provably unbound, before any native recovery write.
+
+    Partial or possibly bound H schema cannot silently become a legacy host by
+    dropping settings; once a binding exists this refuses permanently.
     """
-    if (
-        await pool.fetchval("""SELECT
-        NOT EXISTS (SELECT 1 FROM pg_catalog.pg_class c
-          JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace
-          WHERE n.nspname='public' AND left(c.relname,13)='task_history_')
-        AND NOT EXISTS (SELECT 1 FROM pg_catalog.pg_proc p
-          JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
-          WHERE n.nspname='public' AND left(p.proname,13)='task_history_')""")
-        is not True
-    ):
+    if not await history_unselected_compatible(pool):
         raise HistoryError("history_configuration_required")
 
 

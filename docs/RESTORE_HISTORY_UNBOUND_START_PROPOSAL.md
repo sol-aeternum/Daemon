@@ -1,10 +1,12 @@
 # Unbound restore-history schema at unselected startup (#731): proposal
 
-**Status: proposed for owner decision, not implemented.** This changes the approved
-selection rule in `RESTORE_HISTORY_RUNTIME.md` §Selection and the by-key fallback in
-`RESTORE_HISTORY_OBSERVATION.md`. It has no code, migration, grant, environment or
-deployment change. Nothing here enables H, durable chat or execution. The rollout
-tracker #477 is unaffected.
+**Status: A1 approved by the owner in the working session (2026-11-17, "Approve A1"),
+pending the owner's confirmation on the PR, and implemented in
+`orchestrator/services/restore_history/runtime.py` (`UNSELECTED_HISTORY_SQL`).** This
+changes the selection rule in `RESTORE_HISTORY_RUNTIME.md` §Selection and the by-key
+fallback in `RESTORE_HISTORY_OBSERVATION.md`. It has no migration, grant,
+environment or deployment change. Nothing here enables H, durable chat or
+execution. The rollout tracker #477 is unaffected.
 
 ## Problem
 
@@ -139,30 +141,47 @@ running. The by-key route notices on the next request. Worker startup and
 native recovery don't, until restart. The binding procedure, once written,
 must stop the stack first. No current procedure binds H.
 
-## Implementation scope if approved (A1)
+## Implementation (A1)
 
-- A shared predicate `history_unbound_or_absent(conn)` in
+Beyond the shape list above, the implemented predicate also refuses unlogged
+tables (crash truncation could erase a binding), partitions, inheritance
+children or parents (child rows read through the parent without growing its
+heap), any other `task_history_*` relation that is not an index of the three
+tables, and immutable triggers in `REPLICA` or disabled mode.
+
+- A shared predicate `history_unselected_compatible(db)` in
   `orchestrator/services/restore_history/runtime.py`, used by
-  `require_unselected_history` and the by-key route.
+  `require_unselected_history` and the by-key route. The route's import is
+  one exact entry in the source-inventory allowlist.
 - Tests:
-  - unit tests for the SQL text and refusal codes;
-  - Postgres tests for:
-    - H schema present and unbound: backend and worker start unselected;
-    - binding row present: refuses;
-    - aborted insert: refuses;
-    - after `VACUUM`: starts;
-    - binding replaced by a view: refuses;
-    - missing FK or disabled trigger: refuses;
-    - by-key route both ways.
-- The #732 role-provisioning harness can then include the H migrations instead
-  of excluding them.
+  - `tests/test_history_unbound_route.py`: the by-key route answers natively
+    only on an exact `True`, returns 503 otherwise or on a check failure, and
+    binds the six trigger names.
+  - `tests/test_history_unbound_start_postgres.py`
+    (`--compute-metadata-postgres`), migrated through the latest migration,
+    checked as the owner and as `md_app` with no H privilege:
+    - pre-H and unbound H are compatible;
+    - a committed binding refuses, even after `VACUUM`;
+    - an aborted insert refuses until `VACUUM`;
+    - an uncommitted concurrent binding refuses;
+    - nine shape changes refuse (disabled or replica triggers, dropped FK,
+      unlogged table, inheritance child, extra table, extra view, binding
+      replaced by a view);
+    - stray or partial H objects and a 056-only schema refuse.
+  - Not covered here: full backend and worker startup on an unbound H
+    database. The #732 role-provisioning harness can cover that by including
+    the H migrations instead of excluding them.
 - Docs:
   - `RESTORE_HISTORY_RUNTIME.md` §Selection;
   - `RESTORE_HISTORY_OBSERVATION.md` (pre-H compatibility);
-  - this file becomes a record of the decision.
+  - `TASK_STARTUP_COMPOSITION.md` (unselected recovery);
+  - this file is the decision record.
 
-## Owner decisions requested
+## Owner decisions
 
-1. Approve the rule change (allow an unbound H schema on the unselected path), or keep D.
-2. Choose the proof: A1 (storage size, no schema change) or A2 (new migration and probe function).
-3. Accept the residual-risk statement above as the documented limit.
+1. Rule change approved (unbound H schema on the unselected path).
+2. Proof: A1 (storage size, no schema change).
+3. Residual-risk statement accepted with A1.
+
+All three were given in the working session as "Approve A1" and need the
+owner's own confirmation on the PR.

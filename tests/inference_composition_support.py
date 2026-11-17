@@ -499,6 +499,10 @@ def composition_violations(sources: dict[str, str]) -> list[str]:
                         ("orchestrator/routes/tasks.py", "read_supervisor"): {
                             "HistoryReadSupervisor"
                         },
+                        # #731: by-key shares the unbound-H predicate; read-only.
+                        ("orchestrator/routes/tasks.py", "runtime"): {
+                            "history_unselected_compatible"
+                        },
                     }
                     startup_read_only = (
                         isinstance(node, ast.ImportFrom)

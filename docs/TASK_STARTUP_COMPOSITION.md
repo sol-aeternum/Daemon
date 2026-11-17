@@ -126,7 +126,8 @@ The existing independent-dispatch/restore and #477 gates are not waived.
 independent H/W identity and parity checks before native recovery writes, and
 retains actual pool reset completion. Selected workers deliberately refuse
 startup after qualification: the observation-only backend is not execution
-readiness. Unselected services must prove H schema absence before recovery.
+readiness. Unselected services must prove H schema absence, or an exactly
+shaped unbound H schema (#731), before recovery.
 
 The [H bootstrap qualification](RESTORE_HISTORY_RUNTIME.md#application-startup-and-bootstrap-boundary)
 uses the full application lifespan and a fresh supported-launcher process, with
