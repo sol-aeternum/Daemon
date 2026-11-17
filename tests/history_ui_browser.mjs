@@ -26,35 +26,38 @@ async function realBootstrap(page, label) {
   // settings page and the same-origin entitlements proxy. Nothing is fulfilled
   // or synthesized here.
   phase = label + "-settings";
-  const settings = page.waitForResponse(
-    (response) =>
-      response.request().method() === "GET" &&
-      new URL(response.url()).pathname === "/users/me/settings",
+  // Match a newly issued request from the intended document, not a response
+  // still in flight from the page we are leaving (its body is then unavailable).
+  const request = (path, documentPath) => page.waitForRequest(
+    (value) =>
+      value.method() === "GET" &&
+      new URL(value.url()).pathname === path &&
+      new URL(page.url()).pathname === documentPath,
     { timeout: 60000 },
   );
+  const settings = request("/users/me/settings", "/settings/profile");
   await page.goto(ui + "/settings/profile");
-  const settingsResponse = await settings;
+  const settingsResponse = await (await settings).response();
+  assert.ok(settingsResponse);
   assert.equal(settingsResponse.status(), 200);
   assert.equal(typeof (await settingsResponse.json()).preferences, "object");
   phase = label + "-catalog-and-plan";
-  const catalog = page.waitForResponse(
-    (response) =>
-      response.request().method() === "GET" &&
-      new URL(response.url()).pathname === "/v1/catalog",
-    { timeout: 60000 },
-  );
-  const plan = page.waitForResponse(
-    (response) =>
-      response.request().method() === "GET" &&
-      new URL(response.url()).pathname === "/api/entitlements",
-    { timeout: 60000 },
-  );
+  const catalog = request("/v1/catalog", "/");
+  const plan = request("/api/entitlements", "/");
+  phase = label + "-navigate-chat";
   await page.goto(ui + "/");
-  const [catalogResponse, planResponse] = await Promise.all([catalog, plan]);
+  phase = label + "-await-catalog-and-plan";
+  const [catalogResponse, planResponse] = await Promise.all(
+    [catalog, plan].map(async (value) => (await value).response()),
+  );
+  assert.ok(catalogResponse && planResponse);
   assert.equal(catalogResponse.status(), 200);
+  phase = label + "-catalog-body";
   assert.ok("featured" in (await catalogResponse.json()));
   assert.equal(planResponse.status(), 200);
+  phase = label + "-plan-body";
   assert.equal(typeof (await planResponse.json()).plan, "string");
+  phase = label + "-chat-ready";
   await page.getByRole("textbox", { name: "Message Daemon" }).waitFor();
 }
 async function context() {
@@ -245,7 +248,14 @@ try {
   );
 } catch (error) {
   // Only a fixed failure class; credential-bearing request/response data stays out.
-  console.error(JSON.stringify({failure: error.name, phase, statuses}));
+  const diagnostic = error.message?.includes("No resource with given identifier")
+    ? "response_body_unavailable"
+    : error.message?.includes("net::ERR_ABORTED")
+      ? "navigation_aborted"
+      : error.message?.includes("Timeout") || error.name === "TimeoutError"
+        ? "timeout"
+        : "other";
+  console.error(JSON.stringify({failure: error.name, diagnostic, phase, statuses}));
   process.exitCode = 1;
 } finally {
   await closeBrowser();

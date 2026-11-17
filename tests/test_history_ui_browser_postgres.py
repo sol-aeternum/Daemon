@@ -112,7 +112,7 @@ async def test_actual_page_saved_partial_second_issued_device_and_terminal(
     redis = None
     child = None
     evidence = Path(os.environ["OPENCODE_WORK_EVIDENCE_DIR"])
-    with (evidence / f"worker-browser-{outcome}.log").open("wb") as log:
+    with (evidence / f"worker-browser-{outcome}-{uuid4().hex}.log").open("xb") as log:
         try:
             owner.start()
             redis = await owner.connect()

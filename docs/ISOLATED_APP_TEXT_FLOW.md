@@ -165,6 +165,16 @@ response. Initial anonymous refresh returns 400; actual setup/enrollment then
 issues the working sessions. The scenario uses the normal Auto/Balanced/Auto
 defaults, not model selection or broader controls.
 
+On 17 November 2026, the refreshed source passed both actual-browser scenarios
+with these three bootstrap reads, plus 90 integration tests covering the text
+runner, authenticated reads, bridge/process recovery and source inventories.
+The real-enrollment protected lost-acceptance-ACK companion passed: one original
+task committed, no runner job/attempt/reservation/provider call followed, the
+second device observed it by key, and the same-key negative probe scheduled
+nothing. This native HTTP/SQL fault proof and the separate browser completion/Stop
+and Next transport regressions are distinct layers, not one browser-to-SQL
+lost-response experiment. No historical performance/HMR diagnostic was rerun.
+
 Fresh-interpreter tests separately kill an executing producer or let it complete,
 then open the new qualified read bridge over surviving SQL with zero new provider
 calls. Those are direct bridge reads in a new process, not a restarted deployed

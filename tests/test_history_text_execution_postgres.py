@@ -56,12 +56,8 @@ async def text_host(projection_db, tmp_path, monkeypatch, request):
     database = projection_db
     install(database)
     install_terminal(database)
-    database.sql(
-        "BEGIN;"
-        + (Path(__file__).resolve().parents[1] / "migrations/066_memory_bitemporal.sql").read_text()
-        + "COMMIT;"
-    )
-    database.sql("GRANT SELECT ON memory_knowledge_clock TO md_app;")
+    # The shared inference fixture installs memory revisions and grants W's exact
+    # map before this composition; do not reapply migration 066 or add grants.
     journal = tmp_path / "j1"
     journal_id = uuid4()
     initialize(journal, journal_id)
