@@ -42,6 +42,7 @@ HISTORY = {
     "057_restore_history_effects.sql",
     "064_artifact_restore_prepare.sql",
     "065_terminal_output_prepare.sql",
+    "073_history_native_fence.sql",  # its trigger is on the H binding table
 }
 # The composition fixture records these two itself.
 RECORDED_BY_SUITE = {"049_attempt_lifecycle.sql", "050_task_inference_recovery.sql"}

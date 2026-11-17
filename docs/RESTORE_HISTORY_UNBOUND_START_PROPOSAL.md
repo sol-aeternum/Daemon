@@ -170,9 +170,15 @@ tables, and immutable triggers in `REPLICA` or disabled mode.
       unlogged table, inheritance child, extra table, extra view, binding
       replaced by a view);
     - stray or partial H objects and a 056-only schema refuse.
-  - Not covered here: full backend and worker startup on an unbound H
-    database. The #732 role-provisioning harness can cover that by including
-    the H migrations instead of excluding them.
+  - `tests/test_history_unbound_host_postgres.py`: the actual backend
+    (`init_app_state`) and worker (`on_startup`) on the runner's complete
+    chain through 073, with A/W created by `provision_task_roles.apply` from
+    the exact maps and the real native fence. Both start, run the J1 recovery
+    barrier and composition, and answer a by-key read natively. A binding is
+    refused while either host runs; after both shut down every lock and
+    session is gone and the binding succeeds; then neither host starts. The
+    metadata fixture's own `md_app` EXECUTE grants are revoked first, since
+    composition refuses any grantee besides A/W.
 - Docs:
   - `RESTORE_HISTORY_RUNTIME.md` §Selection;
   - `RESTORE_HISTORY_OBSERVATION.md` (pre-H compatibility);
