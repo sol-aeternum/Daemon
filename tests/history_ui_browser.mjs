@@ -21,6 +21,42 @@ const unexpected = [];
 const calls = [];
 const statuses = [];
 let phase = "browser-startup";
+async function realBootstrap(page, label) {
+  // Real native reads only: the public catalog, the bearer-authenticated
+  // settings page and the same-origin entitlements proxy. Nothing is fulfilled
+  // or synthesized here.
+  phase = label + "-settings";
+  const settings = page.waitForResponse(
+    (response) =>
+      response.request().method() === "GET" &&
+      new URL(response.url()).pathname === "/users/me/settings",
+    { timeout: 60000 },
+  );
+  await page.goto(ui + "/settings/profile");
+  const settingsResponse = await settings;
+  assert.equal(settingsResponse.status(), 200);
+  assert.equal(typeof (await settingsResponse.json()).preferences, "object");
+  phase = label + "-catalog-and-plan";
+  const catalog = page.waitForResponse(
+    (response) =>
+      response.request().method() === "GET" &&
+      new URL(response.url()).pathname === "/v1/catalog",
+    { timeout: 60000 },
+  );
+  const plan = page.waitForResponse(
+    (response) =>
+      response.request().method() === "GET" &&
+      new URL(response.url()).pathname === "/api/entitlements",
+    { timeout: 60000 },
+  );
+  await page.goto(ui + "/");
+  const [catalogResponse, planResponse] = await Promise.all([catalog, plan]);
+  assert.equal(catalogResponse.status(), 200);
+  assert.ok("featured" in (await catalogResponse.json()));
+  assert.equal(planResponse.status(), 200);
+  assert.equal(typeof (await planResponse.json()).plan, "string");
+  await page.getByRole("textbox", { name: "Message Daemon" }).waitFor();
+}
 async function context() {
   const value = await browser.newContext();
   value.on("response", (response) => {
@@ -66,6 +102,7 @@ try {
     if (!response.ok) throw Error("Enrollment start refused");
     return response.json();
   }, firstToken);
+  await realBootstrap(first, "first-device");
   phase = "actual-page-send";
   await first
     .getByRole("textbox", { name: "Message Daemon" })
@@ -112,6 +149,7 @@ try {
     .fill(enrollment.qr_payload);
   await second.getByRole("button", { name: "Complete Enrollment" }).click();
   await second.getByRole("textbox", { name: "Message Daemon" }).waitFor();
+  await realBootstrap(second, "second-device");
   phase = "second-device-reopen";
   await second.goto(ui + "/?id=" + conversation);
   await second
@@ -200,6 +238,7 @@ try {
       distinct_issued_devices: true,
       detached_without_stop: true,
       normal_range_refresh: true,
+      bootstrap_observed: true,
       outcome,
       statuses,
     }),

@@ -117,6 +117,12 @@ evidence from outstanding checks):
   one original task/attempt/provider call, or zero dispatch on budget refusal.
 - Revocation and expiry after waits; duplicate/conflicting sends, concurrency and
   uncertain acknowledgements without replacement or replay.
+- A real setup/enrollment companion to the lost-acknowledgement regression:
+  protected `POST /chat` under the original commit-then-lost-ACK fault commits
+  exactly one original account/key/input task with zero original runner jobs,
+  attempts, reservations or provider calls; an independently enrolled device
+  reads that same task by key, reads alone create no effects, and a deliberate
+  same-key POST adds no task or schedule.
 - Recovery/unavailability responses retaining display and original blocked keys,
   without automatic resend, settlement or alternate-backend fallback.
 - Authentication refusals remain final even with empty, malformed or timed-out
@@ -145,11 +151,19 @@ attempt and provider call, and local fake-iterator closure. Stop displays the
 existing provider-activity/charges uncertainty notice. No task/history/auth
 responses are fabricated.
 
-This is not qualification of the whole application bootstrap: catalog,
-entitlement-display, home-suggestion and task-input presentation endpoints are
-outside this isolated fixture and return 404. Initial anonymous refresh returns
-400; actual setup/enrollment then issues the working sessions. The scenario uses
-the normal Auto/Balanced/Auto defaults, not model selection or broader controls.
+This is not qualification of the whole application bootstrap: home-suggestion and
+task-input presentation endpoints are outside this isolated fixture and return 404.
+The fixture serves the public model catalog (`GET /v1/catalog`, no credentials) and
+the native bearer-authenticated `GET /users/me/settings` and
+`GET /users/me/entitlements` reads through their existing handlers and
+dependencies. Settings uses the composed memory store and cipher on the borrowed W
+pool; the fixture adds no resource owner, grant or settings-mutation route. The
+page scenario must observe those real success responses before Send and after the
+second independently issued device (settings through the profile page, entitlements
+through the existing Next proxy), without fulfilling or fabricating any protected
+response. Initial anonymous refresh returns 400; actual setup/enrollment then
+issues the working sessions. The scenario uses the normal Auto/Balanced/Auto
+defaults, not model selection or broader controls.
 
 Fresh-interpreter tests separately kill an executing producer or let it complete,
 then open the new qualified read bridge over surviving SQL with zero new provider

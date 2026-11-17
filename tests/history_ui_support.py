@@ -8,7 +8,8 @@ from fastapi.routing import APIRoute
 from orchestrator.auth_runtime_state import SETUP_TOKEN_HASH_KEY, set_runtime_value
 from orchestrator.auth_tokens import hash_token
 from orchestrator.db import AppState
-from orchestrator.routes import auth_config, auth_setup
+from orchestrator.memory.store import MemoryStore
+from orchestrator.routes import auth_config, auth_setup, entitlements, users
 from orchestrator.services.identity import rate_limit_dep
 from orchestrator.services.restore_history.acceptance_host import create_isolated_ui_app
 
@@ -20,6 +21,14 @@ AUTH_ROUTES = {
     ("POST", "/v1/auth/enroll/complete"),
     ("POST", "/v1/auth/refresh"),
     ("POST", "/v1/auth/cache/clear"),
+}
+
+# Exactly the three bootstrap reads the application page performs. The catalog is
+# public; settings and entitlements execute their native device-auth dependencies.
+UI_READ_ROUTES = {
+    ("GET", "/v1/catalog"),
+    ("GET", "/users/me/settings"),
+    ("GET", "/users/me/entitlements"),
 }
 
 
@@ -41,7 +50,14 @@ async def actual_auth_app(s, monkeypatch, redis, origin):
     async with s.db.connection() as conn:
         await set_runtime_value(conn, SETUP_TOKEN_HASH_KEY, hash_token(bootstrap))
     app = create_isolated_ui_app(s.host)
-    app.state.app_state = AppState(settings=settings, db_pool=s.w, redis=redis)
+    # Same borrowed W pool and cipher the explicit text composition already owns;
+    # this adds no resource owner, grant or settings-mutation surface.
+    app.state.app_state = AppState(
+        settings=settings,
+        db_pool=s.w,
+        redis=redis,
+        memory_store=MemoryStore(s.w, s.execution.encryption),
+    )
     installed = set()
     for router in (auth_setup.router, auth_config.router):
         for route in router.routes:
@@ -52,6 +68,22 @@ async def actual_auth_app(s, monkeypatch, redis, origin):
                     app.router.routes.append(route)
                     installed.add((method, route.path))
     assert installed == AUTH_ROUTES
+    installed_ui = set()
+    for router in (users.router, entitlements.router):
+        for route in router.routes:
+            if not isinstance(route, APIRoute):
+                continue
+            for method in getattr(route, "methods", set()):
+                if (method, route.path) in UI_READ_ROUTES:
+                    app.router.routes.append(route)
+                    installed_ui.add((method, route.path))
+    # The public catalog route is the existing native handler; importing its
+    # module is deferred so the other isolated fixtures do not pay for it.
+    from orchestrator.main import get_model_catalog
+
+    app.add_api_route("/v1/catalog", get_model_catalog, methods=["GET"])
+    installed_ui.add(("GET", "/v1/catalog"))
+    assert installed_ui == UI_READ_ROUTES
     app.add_middleware(
         CORSMiddleware,
         allow_origins=[origin],
