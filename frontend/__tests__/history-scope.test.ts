@@ -17,6 +17,218 @@ const urls = ['https://example.invalid/conversations', '/conversations'];
 afterEach(() => vi.useRealTimers());
 
 describe('history request scopes', () => {
+  it.each([401, 403, 404, 409, 503])(
+    'preserves a %s refusal when its body exceeds the timeout',
+    async (status) => {
+      vi.useFakeTimers();
+      const scope = new HistoryScope(() => 1, 'a');
+      const lease = scope.capture();
+      const body = deferred<unknown>();
+      const fetcher = vi
+        .fn<typeof fetch>()
+        .mockResolvedValueOnce({
+          ok: false,
+          status,
+          json: () => body.promise,
+        } as Response)
+        .mockResolvedValue(response({ unexpected: 'alternate origin' }));
+      const read = readScopedHistory(
+        lease,
+        status === 404 ? urls.slice(0, 1) : urls,
+        {
+          getAuthHeaders: auth,
+          fetch: fetcher,
+          readErrorBody: true,
+          timeoutMs: 10,
+        },
+      );
+      await vi.advanceTimersByTimeAsync(11);
+      body.resolve({});
+      try {
+        expect(await read).toEqual({ status, data: null });
+        expect(fetcher).toHaveBeenCalledTimes(1);
+      } finally {
+        lease.release();
+        scope.dispose();
+      }
+    },
+  );
+  it.each([409, 503])(
+    'does not publish a %s refusal after selection cancellation',
+    async (status) => {
+      const scope = new HistoryScope(() => 1, 'a');
+      const lease = scope.capture();
+      const body = deferred<unknown>();
+      const reading = deferred<void>();
+      const fetcher = vi.fn(
+        async () =>
+          ({
+            ok: false,
+            status,
+            json: () => {
+              reading.resolve();
+              return body.promise;
+            },
+          }) as Response,
+      );
+      const read = readScopedHistory(lease, urls, {
+        getAuthHeaders: auth,
+        fetch: fetcher,
+        readErrorBody: true,
+      });
+      await reading.promise;
+      scope.commitSelection('b');
+      body.resolve({ code: 'history_unavailable' });
+      try {
+        await expect(read).rejects.toMatchObject({ name: 'AbortError' });
+        expect(fetcher).toHaveBeenCalledTimes(1);
+      } finally {
+        lease.release();
+        scope.dispose();
+      }
+    },
+  );
+  it.each([401, 403, 404, 409, 503])(
+    'preserves a %s refusal with malformed error JSON',
+    async (status) => {
+      const scope = new HistoryScope(() => 1, 'a');
+      const lease = scope.capture();
+      const fetcher = vi.fn(async () => new Response('malformed', { status }));
+      try {
+        const result = await readScopedHistory(
+          lease,
+          status === 404 ? urls.slice(0, 1) : urls,
+          {
+            getAuthHeaders: auth,
+            fetch: fetcher,
+            readErrorBody: true,
+          },
+        );
+        expect(result.status).toBe(status);
+        expect(fetcher).toHaveBeenCalledTimes(1);
+      } finally {
+        lease.release();
+        scope.dispose();
+      }
+    },
+  );
+  it('preserves an empty 401 without contacting another history origin', async () => {
+    const scope = new HistoryScope(() => 1, 'a');
+    const lease = scope.capture();
+    const fetcher = vi.fn(async () => new Response(null, { status: 401 }));
+    try {
+      expect(
+        await readScopedHistory(lease, urls, {
+          getAuthHeaders: auth,
+          fetch: fetcher,
+          readErrorBody: true,
+        }),
+      ).toEqual({ status: 401, data: null });
+      expect(fetcher).toHaveBeenCalledTimes(1);
+    } finally {
+      lease.release();
+      scope.dispose();
+    }
+  });
+
+  it('preserves a structured 401 without contacting another history origin', async () => {
+    const scope = new HistoryScope(() => 1, 'a');
+    const lease = scope.capture();
+    const data = { detail: 'Invalid or expired access token' };
+    const fetcher = vi.fn(async () => response(data, 401));
+    try {
+      expect(
+        await readScopedHistory(lease, urls, {
+          getAuthHeaders: auth,
+          fetch: fetcher,
+          readErrorBody: true,
+        }),
+      ).toEqual({ status: 401, data });
+      expect(fetcher).toHaveBeenCalledTimes(1);
+    } finally {
+      lease.release();
+      scope.dispose();
+    }
+  });
+
+  it('preserves a 401 when its cooperative body rejects on deadline abort', async () => {
+    vi.useFakeTimers();
+    const scope = new HistoryScope(() => 1, 'a');
+    const lease = scope.capture();
+    const reading = deferred<void>();
+    let signal: AbortSignal | null | undefined;
+    const fetcher = vi.fn(
+      async (_input: RequestInfo | URL, init?: RequestInit) => {
+        signal = init?.signal;
+        const result = new Response(null, { status: 401 });
+        result.json = () =>
+          new Promise((_, reject) => {
+            signal?.addEventListener('abort', () => reject(signal?.reason), {
+              once: true,
+            });
+            reading.resolve();
+          });
+        return result;
+      },
+    );
+    try {
+      const read = readScopedHistory(lease, urls, {
+        getAuthHeaders: auth,
+        fetch: fetcher,
+        readErrorBody: true,
+        timeoutMs: 10,
+      });
+      const checked = expect(read).resolves.toEqual({
+        status: 401,
+        data: null,
+      });
+      await reading.promise;
+      await vi.advanceTimersByTimeAsync(11);
+      await checked;
+      expect(signal?.aborted).toBe(true);
+      expect(signal?.reason).toMatchObject({ name: 'TimeoutError' });
+      expect(fetcher).toHaveBeenCalledTimes(1);
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      lease.release();
+      scope.dispose();
+    }
+  });
+
+  it.each(['selection', 'auth-generation'])(
+    'rejects a pending 401 after %s changes, without publishing or fallback',
+    async (change) => {
+      let generation = 1;
+      const scope = new HistoryScope(() => generation, 'a');
+      const lease = scope.capture();
+      const reading = deferred<void>();
+      const body = deferred<unknown>();
+      const fetcher = vi.fn(async () => {
+        const result = new Response(null, { status: 401 });
+        result.json = () => {
+          reading.resolve();
+          return body.promise;
+        };
+        return result;
+      });
+      try {
+        const read = readScopedHistory(lease, urls, {
+          getAuthHeaders: auth,
+          fetch: fetcher,
+          readErrorBody: true,
+        });
+        await reading.promise;
+        if (change === 'selection') scope.commitSelection('b');
+        else generation += 1;
+        body.resolve({ detail: 'expired' });
+        await expect(read).rejects.toMatchObject({ name: 'AbortError' });
+        expect(fetcher).toHaveBeenCalledTimes(1);
+      } finally {
+        lease.release();
+        scope.dispose();
+      }
+    },
+  );
   it('leaves same-generation readiness and same committed selection alone', () => {
     const scope = new HistoryScope(() => 1, 'a');
     const lease = scope.capture();

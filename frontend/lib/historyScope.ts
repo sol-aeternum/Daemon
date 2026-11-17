@@ -162,6 +162,7 @@ export async function readScopedHistory(
         ),
       timeoutMs,
     );
+    let refusalStatus: number | undefined;
     try {
       // Covers cancellation racing listener installation as well.
       lease.assertCurrent();
@@ -171,15 +172,31 @@ export async function readScopedHistory(
         signal: controller.signal,
       });
       lease.assertCurrent();
+      if ([401, 403, 404, 409, 503].includes(response.status)) {
+        refusalStatus = response.status;
+      }
       if (controller.signal.aborted) throw controller.signal.reason;
       if (response.status === 404 && index < candidates.length - 1) continue;
+      // A recovery refusal is final for this origin even when its error body
+      // is damaged. Parsing must never turn 409/503 into an alternate read.
+      const recoveryRefusal =
+        response.status === 409 || response.status === 503;
       const data: unknown =
-        response.ok || readErrorBody ? await response.json() : null;
+        response.ok || readErrorBody
+          ? recoveryRefusal
+            ? await response.json().catch(() => null)
+            : await response.json()
+          : null;
       lease.assertCurrent();
       if (controller.signal.aborted) throw controller.signal.reason;
       return { status: response.status, data };
     } catch (error) {
       lease.assertCurrent();
+      // An unreadable body cannot erase a permanent or recovery refusal. The lease
+      // check above still forbids publishing after auth/selection cancellation.
+      if (refusalStatus !== undefined) {
+        return { status: refusalStatus, data: null };
+      }
       if (index === candidates.length - 1) throw error;
     } finally {
       clearTimeout(timeout);
