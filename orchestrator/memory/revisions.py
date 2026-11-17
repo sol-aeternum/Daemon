@@ -500,7 +500,7 @@ async def search(
     tier: str | None = None,
     memory_id: UUID | None = None,
     match_any_term: bool = False,
-    term_coverage: bool = False,
+    term_coverage_space: str | None = None,
 ):
     """All qualification precedes ranking/LIMIT; no current-text historical join."""
     if scope.watermark is None:
@@ -511,7 +511,7 @@ async def search(
     event_at = scope.event_at
     sql = """
         WITH lexical_query AS (
-            SELECT CASE WHEN $15::bool OR $16::bool
+            SELECT CASE WHEN $15::bool OR $16::text IS NOT NULL
                 THEN (SELECT string_agg(quote_literal(lexeme), ' | ')
                       FROM unnest(tsvector_to_array(to_tsvector('english',$11))) AS lexeme)::tsquery
                 ELSE plainto_tsquery('english',$11) END AS tsq,
@@ -552,20 +552,22 @@ async def search(
                e.event_start,e.event_end,e.precision,
                CASE WHEN $10::vector IS NULL THEN 0 ELSE 1-(e.embedding<=>$10::vector) END AS similarity,
                CASE WHEN $11::text IS NULL THEN 0
-                    WHEN $16::bool AND e.content_tsv @@ q.plain THEN ts_rank(e.content_tsv,q.plain)
+                    WHEN $16::text IS NOT NULL AND e.content_tsv @@ q.plain THEN ts_rank(e.content_tsv,q.plain)
                     ELSE ts_rank(e.content_tsv,q.tsq) END AS bm25_score,
-               ($11::text IS NULL OR NOT $16::bool OR e.content_tsv @@ q.plain) AS bm25_full,
-               CASE WHEN $11::text IS NULL OR NOT $16::bool OR e.content_tsv @@ q.plain THEN 1.0::float8
+               ($11::text IS NULL OR $16::text IS NULL OR e.content_tsv @@ q.plain) AS bm25_full,
+               CASE WHEN $11::text IS NULL OR $16::text IS NULL OR e.content_tsv @@ q.plain THEN 1.0::float8
                     ELSE (SELECT count(*) FROM unnest(q.qlex) AS lexeme
                           WHERE lexeme = ANY(tsvector_to_array(e.content_tsv)))::float8
                          / cardinality(q.qlex) END AS bm25_coverage
         FROM eligible e CROSS JOIN lexical_query q
         WHERE ($10::vector IS NULL OR (e.embedding IS NOT NULL AND e.embedding_model=$12))
           AND ($11::text IS NULL OR e.content_tsv @@ q.tsq)
+          AND ($11::text IS NULL OR $16::text IS NULL OR e.content_tsv @@ q.plain
+               OR e.embedding IS NULL OR e.embedding_model IS DISTINCT FROM $16::text)
         ORDER BY CASE WHEN $10::vector IS NOT NULL THEN e.embedding<=>$10::vector END ASC NULLS LAST,
-                 CASE WHEN $11::text IS NOT NULL AND $16::bool THEN e.content_tsv @@ q.plain END DESC,
+                 CASE WHEN $11::text IS NOT NULL AND $16::text IS NOT NULL THEN e.content_tsv @@ q.plain END DESC,
                  CASE WHEN $11::text IS NOT NULL THEN
-                      CASE WHEN $16::bool AND e.content_tsv @@ q.plain THEN ts_rank(e.content_tsv,q.plain)
+                      CASE WHEN $16::text IS NOT NULL AND e.content_tsv @@ q.plain THEN ts_rank(e.content_tsv,q.plain)
                            ELSE ts_rank(e.content_tsv,q.tsq) END END DESC,
                  e.memory_id,e.segment_id
         LIMIT $13
@@ -587,7 +589,7 @@ async def search(
         max(1, min(limit, 500)),
         memory_id,
         match_any_term,
-        term_coverage,
+        term_coverage_space,
     )
     return [store._memory_row_to_dict(row) for row in rows]
 

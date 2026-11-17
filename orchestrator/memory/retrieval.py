@@ -1056,12 +1056,12 @@ async def retrieve_memories(
                 source_conversation_ids=allowed_source_conversation_ids,
                 embedding_models=_bm25_storage_models(effective_embedding_model),
                 # Without a query vector, lexical rank is the only signal, so a
-                # whole question matches on any term (#580). With one, partial
-                # matches are admitted too, but rows matching every term keep
-                # the all-terms score the hybrid weights were calibrated on and
-                # partial rows are discounted by term coverage when normalised.
+                # whole question matches on any term (#580). With one, rows the
+                # vector can reach still need every term, as the hybrid weights
+                # were calibrated on. Rows it cannot reach (no vector in this
+                # space) may match some terms, discounted by term coverage.
                 match_any_term=not query_embedding,
-                term_coverage=bool(query_embedding),
+                term_coverage_space=effective_embedding_model if query_embedding else None,
             ),
         )
 

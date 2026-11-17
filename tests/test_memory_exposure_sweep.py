@@ -426,16 +426,16 @@ class FakePool:
             """,
             "bm25": """
                 SELECT *,
-                CASE WHEN $12::bool AND content_tsv @@ bm25_query.plain
+                CASE WHEN $12::text IS NOT NULL AND content_tsv @@ bm25_query.plain
                     THEN ts_rank(content_tsv, bm25_query.plain)
                     ELSE ts_rank(content_tsv, bm25_query.tsq) END AS bm25_score,
-                (NOT $12::bool OR content_tsv @@ bm25_query.plain) AS bm25_full,
-                CASE WHEN NOT $12::bool OR content_tsv @@ bm25_query.plain THEN 1.0::float8
+                ($12::text IS NULL OR content_tsv @@ bm25_query.plain) AS bm25_full,
+                CASE WHEN $12::text IS NULL OR content_tsv @@ bm25_query.plain THEN 1.0::float8
                     ELSE (SELECT count(*) FROM unnest(bm25_query.qlex) AS lexeme
                         WHERE lexeme = ANY(tsvector_to_array(content_tsv)))::float8
                         / cardinality(bm25_query.qlex) END AS bm25_coverage
                 FROM memory_current_assertions,
-                (SELECT CASE WHEN $11::bool OR $12::bool
+                (SELECT CASE WHEN $11::bool OR $12::text IS NOT NULL
                     THEN (SELECT string_agg(quote_literal(lexeme), ' | ')
                         FROM unnest(tsvector_to_array(to_tsvector('english', $2))) AS lexeme)::tsquery
                     ELSE plainto_tsquery('english', $2) END AS tsq,
@@ -449,6 +449,8 @@ class FakePool:
                 AND (embedding_model = ANY($9::text[]) OR embedding_model IS NULL)
                 AND ($10::bool OR tier != 'l0')
                 AND content_tsv IS NOT NULL AND content_tsv @@ bm25_query.tsq
+                AND ($12::text IS NULL OR content_tsv @@ bm25_query.plain
+                    OR embedding IS NULL OR embedding_model IS DISTINCT FROM $12::text)
                 AND ($5::text IS NULL OR memory_slot = $5)
                 ORDER BY bm25_full DESC, bm25_score DESC LIMIT $6
             """,
@@ -472,7 +474,7 @@ class FakePool:
         assert len(args) == {"vector": 10, "bm25": 12, "l0": 2, "summary": 3}[kind]
         boolean_positions = {
             "vector": (3, 4, 7),
-            "bm25": (2, 3, 6, 9, 10, 11),
+            "bm25": (2, 3, 6, 9, 10),
             "l0": (1,),
             "summary": (2,),
         }

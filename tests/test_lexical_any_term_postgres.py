@@ -2,12 +2,17 @@
 
 import pytest
 
+from orchestrator.memory import revisions
+from orchestrator.memory.temporal import TemporalReadScope
 from tests.durable_tasks_support import durable_env_fixture
 from tests.test_entity_account_guard_postgres import registered_sql
 
 env = durable_env_fixture(initialized=True)
 
 QUESTION = "What book am I currently reading?"
+SPACE = "test:space-a:1024"
+OTHER = "test:space-b:1024"
+VECTOR = [0.1] * 1024
 
 
 async def _seed(env):
@@ -131,14 +136,14 @@ async def test_any_term_keeps_the_source_conversation_filter(env):
 @pytest.mark.asyncio
 async def test_term_coverage_keeps_all_terms_rows_and_scores_first(env):
     # Hybrid passes (#580): every-term rows keep the all-terms score and lead;
-    # partial rows follow with the share of query lexemes they contain.
+    # unembedded partial rows follow with the share of query lexemes they contain.
     full = await env.memory.insert_memory(
         env.alice, "User is currently reading a book about sailing", "fact", "manual"
     )
     partial = await env.memory.insert_memory(env.alice, "User bought a new book", "fact", "manual")
     await env.memory.insert_memory(env.alice, "User plays guitar on weekends", "fact", "manual")
     baseline = await env.memory.search_memories_bm25(env.alice, QUESTION)
-    rows = await env.memory.search_memories_bm25(env.alice, QUESTION, term_coverage=True)
+    rows = await env.memory.search_memories_bm25(env.alice, QUESTION, term_coverage_space=SPACE)
     assert [row["id"] for row in rows] == [full["id"], partial["id"]]
     assert [row["id"] for row in baseline] == [full["id"]]
     assert rows[0]["bm25_score"] == pytest.approx(baseline[0]["bm25_score"])
@@ -163,10 +168,85 @@ async def test_default_search_reports_every_row_as_a_full_match(env, category):
 async def test_term_coverage_keeps_visibility_filters(env, kind):
     reading = await _seed(env)
     hidden, reveal = await _hidden_row(env, kind)
-    rows = await env.memory.search_memories_bm25(env.alice, QUESTION, term_coverage=True)
+    rows = await env.memory.search_memories_bm25(env.alice, QUESTION, term_coverage_space=SPACE)
     assert [row["id"] for row in rows] == [reading["id"]]
     if reveal is not None:
         rows = await env.memory.search_memories_bm25(
-            env.alice, QUESTION, term_coverage=True, **reveal
+            env.alice, QUESTION, term_coverage_space=SPACE, **reveal
         )
         assert {row["id"] for row in rows} == {reading["id"], hidden["id"]}
+
+
+async def _spaced_rows(env):
+    """One all-terms row and one partial ("book") row per reachability case."""
+    full = await env.memory.insert_memory(
+        env.alice,
+        "User is currently reading a book about sailing",
+        "fact",
+        "manual",
+        embedding=VECTOR,
+        embedding_model=SPACE,
+    )
+    in_space = await env.memory.insert_memory(
+        env.alice,
+        "User bought a new book",
+        "fact",
+        "manual",
+        embedding=VECTOR,
+        embedding_model=SPACE,
+    )
+    other_space = await env.memory.insert_memory(
+        env.alice,
+        "User lent a book to a neighbour",
+        "fact",
+        "manual",
+        embedding=VECTOR,
+        embedding_model=OTHER,
+    )
+    unembedded = await env.memory.insert_memory(
+        env.alice, "User returned a library book", "fact", "manual"
+    )
+    return full, in_space, other_space, unembedded
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("category", [None, "fact"])
+async def test_term_coverage_holds_rows_the_vector_reaches_to_every_term(env, category):
+    full, in_space, other_space, unembedded = await _spaced_rows(env)
+    rows = await env.memory.search_memories_bm25(
+        env.alice,
+        QUESTION,
+        category=category,
+        embedding_models=[SPACE, OTHER],
+        term_coverage_space=SPACE,
+    )
+    ids = [row["id"] for row in rows]
+    # A partial row with a vector in the pass's space is left to the vector.
+    assert ids[0] == full["id"] and in_space["id"] not in ids
+    assert set(ids[1:]) == {other_space["id"], unembedded["id"]}
+    assert all(row["bm25_full"] is False for row in rows[1:])
+    # Naming the other space flips which embedded partial row is admitted.
+    rows = await env.memory.search_memories_bm25(
+        env.alice,
+        QUESTION,
+        category=category,
+        embedding_models=[SPACE, OTHER],
+        term_coverage_space=OTHER,
+    )
+    assert {row["id"] for row in rows} == {full["id"], in_space["id"], unembedded["id"]}
+
+
+@pytest.mark.asyncio
+async def test_scoped_term_coverage_holds_rows_the_vector_reaches_to_every_term(env):
+    full, in_space, other_space, unembedded = await _spaced_rows(env)
+    scope = await revisions.resolve(env.memory, env.alice, TemporalReadScope())
+    rows = await revisions.search(
+        env.memory, env.alice, scope, query=QUESTION, term_coverage_space=SPACE
+    )
+    ids = [row["id"] for row in rows]
+    assert ids[0] == full["id"] and in_space["id"] not in ids
+    assert set(ids[1:]) == {other_space["id"], unembedded["id"]}
+    assert [row["bm25_full"] for row in rows] == [True, False, False]
+    # Without a space, the scoped search still needs every term.
+    rows = await revisions.search(env.memory, env.alice, scope, query=QUESTION)
+    assert [row["id"] for row in rows] == [full["id"]]
