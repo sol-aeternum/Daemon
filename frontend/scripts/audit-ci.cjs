@@ -354,19 +354,16 @@ function evaluate(report, record, now) {
   };
 }
 
-function npmCommand(env) {
-  const execPath = env.npm_execpath;
-  if (execPath && /\.c?js$/.test(execPath))
-    return [process.execPath, [execPath, ...AUDIT_ARGS]];
-  return [process.platform === 'win32' ? 'npm.cmd' : 'npm', AUDIT_ARGS];
-}
+// `npm` is resolved from PATH with the inherited environment, as the plain
+// `npm audit` script was. Reading no environment variables keeps this script
+// outside the env-surface parity gate's configuration inventory.
+const NPM = 'npm';
 
 // One audit run. Returns { ok, lines } and never throws.
 function run({
   spawn = spawnSync,
   now = Date.now(),
   recordText = undefined,
-  env = process.env,
   cwd = path.join(__dirname, '..'),
 } = {}) {
   const lines = [];
@@ -381,11 +378,9 @@ function run({
         ? error.message
         : 'exception record unreadable';
   }
-  const [command, args] = npmCommand(env);
   say(`$ npm ${AUDIT_ARGS.join(' ')}`);
-  const result = spawn(command, args, {
+  const result = spawn(NPM, AUDIT_ARGS, {
     cwd,
-    env,
     encoding: 'utf8',
     maxBuffer: 64 * 1024 * 1024,
     timeout: 300_000,

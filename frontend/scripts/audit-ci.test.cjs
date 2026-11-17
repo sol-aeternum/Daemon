@@ -138,7 +138,6 @@ function audit(
     spawn,
     now,
     recordText: typeof record === 'string' ? record : JSON.stringify(record),
-    env: { npm_execpath: '/fake/npm-cli.js' },
     ...(cwd === null ? {} : { cwd }),
   });
   return { ...result, text: result.lines.join('\n'), calls };
@@ -153,7 +152,9 @@ const withException = (change) => {
 test('runs the unchanged high-threshold npm audit check, as JSON', () => {
   const result = audit(report([]), { status: 0 });
   assert.deepEqual(AUDIT_ARGS, ['audit', '--json', '--audit-level=high']);
-  assert.deepEqual(result.calls[0].args, ['/fake/npm-cli.js', ...AUDIT_ARGS]);
+  assert.equal(result.calls[0].command, 'npm');
+  assert.deepEqual(result.calls[0].args, AUDIT_ARGS);
+  assert.equal('env' in result.calls[0].options, false);
   assert.equal(result.calls[0].options.cwd, '/fake/frontend');
   // By default the audit runs in frontend/, wherever the script is invoked from.
   const invokedFrom = process.cwd();
