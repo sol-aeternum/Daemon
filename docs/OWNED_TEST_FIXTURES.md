@@ -131,3 +131,29 @@ semantics covered by `tests/test_local_ci_frontend_setup.py`.
 Targeted passes do not replace the full repository gates, final independent review
 or `scripts/pr_create.sh`. Resources with incomplete cleanup remain pinned with
 evidence. No merge, deployment, runtime enablement or #477 lifecycle work is implied.
+
+## PostgreSQL inventory CI shards
+
+The non-blocking opt-in inventory runs four whole-module shards on separate
+GitHub-hosted runners. Each runner provisions its own pinned PostgreSQL service,
+owned fixture containers and Redis image, with shard-specific temporary roots and
+artifact names. No mutable database or Docker daemon is shared between shards;
+fixture ownership checks and per-test database isolation are unchanged.
+
+`scripts/postgres_inventory_shards.py` preserves the original top-level
+`tests/test_*.py` content discovery. It assigns every discovered file exactly once,
+longest estimated module first, to the least-loaded shard (stable filename/index
+tie-breaks). `scripts/postgres_inventory_timings.json` records summed JUnit case
+seconds from run 44232075074, not a coverage allowlist. New modules use the median
+recorded module duration; removed modules are ignored. Refresh the estimates by
+summing testcase `time` values by module across all four JUnit artifacts from a
+completed run, preserving the source-run provenance. Estimates are not timeouts.
+
+Each shard retains its selected-file manifest, JUnit, scope/exit/wall-time report
+and pytest output with `--durations=50`. The same four browser selectors (including
+parameter variants) remain excluded, not their mixed backend/browser modules.
+Missing JUnit is not success. Fail-fast is disabled so one shard cannot cancel
+coverage on another; pytest remains non-blocking and provisioning remains blocking
+within its job. Existing 80-minute test/90-minute job safety limits are unchanged.
+The historical module-duration balance predicts about 16.4 minutes per shard,
+not a measured wall-clock guarantee; aggregate runner work is roughly unchanged.

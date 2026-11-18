@@ -215,13 +215,18 @@ jobs:
           retention-days: 7
 
   postgres-inventory:
-    name: PostgreSQL opt-in inventory
+    name: PostgreSQL opt-in inventory (${{ matrix.shard }}/4)
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
     # Real-PostgreSQL suites that skip unless --compute-metadata-postgres is
     # passed (#717). Reported, not blocking, until the lane has a passing record.
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     env:
       UV_PROJECT_ENVIRONMENT: .uv-venv
+      POSTGRES_INVENTORY_SHARD: ${{ matrix.shard }}
     services:
       tasks-postgres:
         image: pgvector/pgvector@sha256:33198da2828a14c30348d2ccb4750833d5ed9a44c88d840a0e523d7417120337 # pg16
@@ -275,10 +280,12 @@ jobs:
           TASKS_TEST_DATABASE_URL: postgresql://tasks:tasks-ci-only@127.0.0.1:5432/tasks_test
         run: |
           set -euo pipefail
-          work="$RUNNER_TEMP/pg-opt-in"
+          work="$RUNNER_TEMP/pg-opt-in-$POSTGRES_INVENTORY_SHARD"
           mkdir -p "$work/test" "$work/evidence" "$work/tmp" pytest-diagnostics
           export OPENCODE_WORK_TEST_DIR="$work/test" OPENCODE_WORK_EVIDENCE_DIR="$work/evidence" TMPDIR="$work/tmp"
-          mapfile -t files < <(grep -lE 'metadata_cluster|compute_metadata_support|--compute-metadata-postgres' tests/test_*.py | sort)
+          python scripts/postgres_inventory_shards.py --shard "$POSTGRES_INVENTORY_SHARD" \
+            > pytest-diagnostics/postgres-opt-in-files.txt
+          mapfile -t files < pytest-diagnostics/postgres-opt-in-files.txt
           ((${#files[@]} > 0))
           echo "Opt-in files: ${#files[@]}"
 
@@ -293,7 +300,9 @@ jobs:
           )
           report=pytest-diagnostics/postgres-opt-in-scope.md
           {
-            printf '### PostgreSQL opt-in inventory: browser tests not run\n\n'
+            printf '### PostgreSQL opt-in inventory: shard %s/4\n\n' "$POSTGRES_INVENTORY_SHARD"
+            printf 'Selected modules: %s. See the file manifest for exact coverage.\n\n' "${#files[@]}"
+            printf '#### browser tests not run\n\n'
             printf 'This lane does not install frontend dependencies or Playwright. Omitted selectors (including all parameter variants):\n\n'
             printf -- '- `%s`\n' "${browser_cases[@]}"
             printf '\nSee the JUnit artifact for executed cases. Missing JUnit does not indicate a pass.\n'
@@ -303,10 +312,14 @@ jobs:
           for case in "${browser_cases[@]}"; do
             deselect+=("--deselect=$case")
           done
+          started=$SECONDS
           result=0
-          PYTHONPATH=. uv run pytest -q -p no:cacheprovider --compute-metadata-postgres \
-            --junitxml=pytest-diagnostics/postgres-opt-in.xml "${deselect[@]}" "${files[@]}" || result=$?
+          PYTHONPATH=. uv run pytest -q -p no:cacheprovider --compute-metadata-postgres --durations=50 \
+            --junitxml=pytest-diagnostics/postgres-opt-in.xml "${deselect[@]}" "${files[@]}" \
+            2>&1 | tee pytest-diagnostics/postgres-opt-in-output.txt || result=$?
           printf '\nNon-blocking pytest exit code: `%s`.\n' "$result" \
+            | tee -a "$report" >> "$GITHUB_STEP_SUMMARY"
+          printf 'Elapsed pytest wall time: `%ss`.\n' "$((SECONDS - started))" \
             | tee -a "$report" >> "$GITHUB_STEP_SUMMARY"
           if ((result != 0)); then
             echo "::warning::PostgreSQL inventory pytest exited $result; inspect the report and JUnit."
@@ -318,10 +331,12 @@ jobs:
         timeout-minutes: 3
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
-          name: postgres-opt-in-results
+          name: postgres-opt-in-results-${{ matrix.shard }}
           path: |
             pytest-diagnostics/postgres-opt-in.xml
             pytest-diagnostics/postgres-opt-in-scope.md
+            pytest-diagnostics/postgres-opt-in-files.txt
+            pytest-diagnostics/postgres-opt-in-output.txt
           if-no-files-found: warn
           retention-days: 7
 

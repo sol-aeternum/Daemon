@@ -117,7 +117,10 @@ def test_local_ci_security_policy_matches_workflow() -> None:
         assert row in local_ci
 
 
-def test_postgres_inventory_reports_browser_exclusions_and_pytest_result(tmp_path: Path) -> None:
+@pytest.mark.parametrize("shard", [1, 2, 3, 4])
+def test_postgres_inventory_reports_browser_exclusions_and_pytest_result(
+    tmp_path: Path, shard: int
+) -> None:
     steps = _load_ci_workflow()["jobs"]["postgres-inventory"]["steps"]
     inventory = next(step for step in steps if step["name"] == "PostgreSQL opt-in inventory")
     upload = next(step for step in steps if step["name"] == "Upload PostgreSQL opt-in results")
@@ -134,9 +137,15 @@ def test_postgres_inventory_reports_browser_exclusions_and_pytest_result(tmp_pat
         # Exercise the actual workflow's file discovery against the real files.
         shutil.copyfile(REPO_ROOT / file, tmp_path / file)
 
+    scripts = tmp_path / "scripts"
+    scripts.mkdir()
+    for name in ("postgres_inventory_shards.py", "postgres_inventory_timings.json"):
+        shutil.copyfile(REPO_ROOT / "scripts" / name, scripts / name)
+
     # Run the exact shell recipe, but never start PostgreSQL, npm, or pytest here.
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
+    (bin_dir / "python").symlink_to(sys.executable)
     uv = bin_dir / "uv"
     uv.write_text('#!/bin/sh\nprintf "%s\\n" "$@" > pytest-argv\nexit 1\n', encoding="utf-8")
     uv.chmod(0o755)
@@ -148,6 +157,7 @@ def test_postgres_inventory_reports_browser_exclusions_and_pytest_result(tmp_pat
             "PATH": f"{bin_dir}:{os.defpath}",
             "RUNNER_TEMP": str(tmp_path / "runner"),
             "GITHUB_STEP_SUMMARY": str(summary),
+            "POSTGRES_INVENTORY_SHARD": str(shard),
         },
         capture_output=True,
         text=True,
@@ -158,7 +168,10 @@ def test_postgres_inventory_reports_browser_exclusions_and_pytest_result(tmp_pat
     args = (tmp_path / "pytest-argv").read_text(encoding="utf-8").splitlines()
     assert "--compute-metadata-postgres" in args
     assert "--junitxml=pytest-diagnostics/postgres-opt-in.xml" in args
-    assert files <= set(args), "mixed modules must still be selected"
+    manifest = (tmp_path / "pytest-diagnostics/postgres-opt-in-files.txt").read_text().splitlines()
+    assert len(manifest) == 1 and set(manifest) <= files
+    assert set(args) & files == set(manifest), "run exactly the selected mixed modules"
+    assert "--durations=50" in args
     assert {
         arg.removeprefix("--deselect=") for arg in args if arg.startswith("--deselect=")
     } == selectors
@@ -172,7 +185,10 @@ def test_postgres_inventory_reports_browser_exclusions_and_pytest_result(tmp_pat
     assert set(upload["with"]["path"].splitlines()) == {
         report,
         "pytest-diagnostics/postgres-opt-in.xml",
+        "pytest-diagnostics/postgres-opt-in-files.txt",
+        "pytest-diagnostics/postgres-opt-in-output.txt",
     }
+    assert upload["with"]["name"] == "postgres-opt-in-results-${{ matrix.shard }}"
 
 
 @pytest.mark.parametrize(
