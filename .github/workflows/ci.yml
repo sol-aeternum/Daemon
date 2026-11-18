@@ -272,9 +272,39 @@ jobs:
           mkdir -p "$work/test" "$work/evidence" "$work/tmp" pytest-diagnostics
           export OPENCODE_WORK_TEST_DIR="$work/test" OPENCODE_WORK_EVIDENCE_DIR="$work/evidence" TMPDIR="$work/tmp"
           mapfile -t files < <(grep -lE 'metadata_cluster|compute_metadata_support|--compute-metadata-postgres' tests/test_*.py | sort)
+          ((${#files[@]} > 0))
           echo "Opt-in files: ${#files[@]}"
+
+          # This lane does not provision Node dependencies or Playwright.
+          # Deselect browser cases (including parametrizations), not their files:
+          # the mixed modules also contain backend-only cases worth running.
+          browser_cases=(
+            tests/test_b1_browser_bootstrap_postgres.py::test_b1_actual_https_production_browser_empty_history
+            tests/test_history_ui_browser_postgres.py::test_actual_page_saved_partial_second_issued_device_and_terminal
+            tests/test_resource_history_postgres.py::test_native_components_real_browser_sessions_proxy_and_history
+            tests/test_resource_http_postgres.py::test_actual_browser_contexts_and_fresh_composition_restart
+          )
+          report=pytest-diagnostics/postgres-opt-in-scope.md
+          {
+            printf '### PostgreSQL opt-in inventory: browser tests not run\n\n'
+            printf 'This lane does not install frontend dependencies or Playwright. Omitted selectors (including all parameter variants):\n\n'
+            printf -- '- `%s`\n' "${browser_cases[@]}"
+            printf '\nSee the JUnit artifact for executed cases. Missing JUnit does not indicate a pass.\n'
+          } | tee "$report" >> "$GITHUB_STEP_SUMMARY"
+
+          deselect=()
+          for case in "${browser_cases[@]}"; do
+            deselect+=("--deselect=$case")
+          done
+          result=0
           PYTHONPATH=. uv run pytest -q -p no:cacheprovider --compute-metadata-postgres \
-            --junitxml=pytest-diagnostics/postgres-opt-in.xml "${files[@]}"
+            --junitxml=pytest-diagnostics/postgres-opt-in.xml "${deselect[@]}" "${files[@]}" || result=$?
+          printf '\nNon-blocking pytest exit code: `%s`.\n' "$result" \
+            | tee -a "$report" >> "$GITHUB_STEP_SUMMARY"
+          if ((result != 0)); then
+            echo "::warning::PostgreSQL inventory pytest exited $result; inspect the report and JUnit."
+          fi
+          exit "$result"
 
       - name: Upload PostgreSQL opt-in results
         if: always()
@@ -282,7 +312,9 @@ jobs:
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: postgres-opt-in-results
-          path: pytest-diagnostics/postgres-opt-in.xml
+          path: |
+            pytest-diagnostics/postgres-opt-in.xml
+            pytest-diagnostics/postgres-opt-in-scope.md
           if-no-files-found: warn
           retention-days: 7
 
