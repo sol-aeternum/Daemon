@@ -18,15 +18,24 @@ class TestGenerateAgentIds:
         }
         agent_ids = generate_agent_ids(roster)
         assert len(agent_ids) == 3
+        assert len(set(agent_ids.values())) == len(roster)
         for role in roster.keys():
             assert role in agent_ids
             assert agent_ids[role].startswith("Agent-")
 
-    def test_different_sessions_different_ids(self):
+    def test_shuffles_ids_for_each_session(self):
         roster = {"analyst": "model-a", "strategist": "model-b"}
-        ids1 = generate_agent_ids(roster)
-        ids2 = generate_agent_ids(roster)
-        assert ids1 != ids2
+        orders = iter(("ABCDEFGHIJKLMNOPQRSTUVWXYZ", "ZYXWVUTSRQPONMLKJIHGFEDCBA"))
+
+        def shuffle(letters: list[str]) -> None:
+            letters[:] = next(orders)
+
+        # Independent random shuffles can yield the same leading pair. Verify
+        # the shuffle is used afresh, rather than requiring distinct outcomes.
+        with patch("orchestrator.council.engine.random.shuffle", side_effect=shuffle) as mocked:
+            assert generate_agent_ids(roster) == {"analyst": "Agent-A", "strategist": "Agent-B"}
+            assert generate_agent_ids(roster) == {"analyst": "Agent-Z", "strategist": "Agent-Y"}
+            assert mocked.call_count == 2
 
 
 class TestParseConfidence:
