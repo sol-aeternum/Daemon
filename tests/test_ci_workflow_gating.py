@@ -117,7 +117,10 @@ def test_local_ci_security_policy_matches_workflow() -> None:
         assert row in local_ci
 
 
-def test_postgres_inventory_reports_browser_exclusions_and_pytest_result(tmp_path: Path) -> None:
+@pytest.mark.parametrize("count", [3, 4, 5])
+def test_postgres_inventory_reports_browser_exclusions_and_pytest_result(
+    tmp_path: Path, count: int
+) -> None:
     steps = _load_ci_workflow()["jobs"]["postgres-inventory"]["steps"]
     inventory = next(step for step in steps if step["name"] == "PostgreSQL opt-in inventory")
     upload = next(step for step in steps if step["name"] == "Upload PostgreSQL opt-in results")
@@ -134,45 +137,78 @@ def test_postgres_inventory_reports_browser_exclusions_and_pytest_result(tmp_pat
         # Exercise the actual workflow's file discovery against the real files.
         shutil.copyfile(REPO_ROOT / file, tmp_path / file)
 
+    # Unequal module/shard counts exercise grouping, not one-file-per-shard luck.
+    for index in range(3):
+        extra = f"tests/test_extra_{index}.py"
+        (tmp_path / extra).write_text("# metadata_cluster\n", encoding="utf-8")
+        files.add(extra)
+
+    scripts = tmp_path / "scripts"
+    scripts.mkdir()
+    for name in ("postgres_inventory_shards.py", "postgres_inventory_timings.json"):
+        shutil.copyfile(REPO_ROOT / "scripts" / name, scripts / name)
+
     # Run the exact shell recipe, but never start PostgreSQL, npm, or pytest here.
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
+    (bin_dir / "python").symlink_to(sys.executable)
     uv = bin_dir / "uv"
-    uv.write_text('#!/bin/sh\nprintf "%s\\n" "$@" > pytest-argv\nexit 1\n', encoding="utf-8")
-    uv.chmod(0o755)
-    summary = tmp_path / "summary.md"
-    result = subprocess.run(
-        ["bash", "-c", inventory["run"]],
-        cwd=tmp_path,
-        env={
-            "PATH": f"{bin_dir}:{os.defpath}",
-            "RUNNER_TEMP": str(tmp_path / "runner"),
-            "GITHUB_STEP_SUMMARY": str(summary),
-        },
-        capture_output=True,
-        text=True,
-        timeout=15,
+    uv.write_text(
+        "#!/bin/sh\n"
+        'if [ "$1" = run ] && [ "$2" = python ]; then shift 2; exec python "$@"; fi\n'
+        'printf "%s\\n" "$@" > pytest-argv\nexit 1\n',
+        encoding="utf-8",
     )
-    assert result.returncode == 1, result.stderr
-    assert "::warning::PostgreSQL inventory pytest exited 1" in result.stdout
-    args = (tmp_path / "pytest-argv").read_text(encoding="utf-8").splitlines()
-    assert "--compute-metadata-postgres" in args
-    assert "--junitxml=pytest-diagnostics/postgres-opt-in.xml" in args
-    assert files <= set(args), "mixed modules must still be selected"
-    assert {
-        arg.removeprefix("--deselect=") for arg in args if arg.startswith("--deselect=")
-    } == selectors
-    report = "pytest-diagnostics/postgres-opt-in-scope.md"
-    text = (tmp_path / report).read_text(encoding="utf-8")
-    assert text == summary.read_text(encoding="utf-8")
-    assert "browser tests not run" in text and "pytest exit code: `1`" in text
-    assert "Missing JUnit does not indicate a pass" in text
-    assert all(f"- `{selector}`" in text for selector in selectors)
-    assert upload["if"] == "always()"
-    assert set(upload["with"]["path"].splitlines()) == {
-        report,
-        "pytest-diagnostics/postgres-opt-in.xml",
-    }
+    uv.chmod(0o755)
+    selected: list[str] = []
+    for shard in range(1, count + 1):
+        summary = tmp_path / f"summary-{shard}.md"
+        result = subprocess.run(
+            ["bash", "-c", inventory["run"]],
+            cwd=tmp_path,
+            env={
+                "PATH": f"{bin_dir}:{os.defpath}",
+                "RUNNER_TEMP": str(tmp_path / "runner"),
+                "GITHUB_STEP_SUMMARY": str(summary),
+                "POSTGRES_INVENTORY_SHARD": str(shard),
+                "POSTGRES_INVENTORY_COUNT": str(count),
+            },
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+        assert result.returncode == 1, result.stderr
+        assert "::warning::PostgreSQL inventory pytest exited 1" in result.stdout
+        args = (tmp_path / "pytest-argv").read_text(encoding="utf-8").splitlines()
+        assert "--compute-metadata-postgres" in args
+        assert "--junitxml=pytest-diagnostics/postgres-opt-in.xml" in args
+        manifest = (
+            (tmp_path / "pytest-diagnostics/postgres-opt-in-files.txt").read_text().splitlines()
+        )
+        assert manifest and set(manifest) <= files
+        selected.extend(manifest)
+        assert set(args) & files == set(manifest), "run exactly the selected mixed modules"
+        assert "--durations=50" in args
+        assert {
+            arg.removeprefix("--deselect=") for arg in args if arg.startswith("--deselect=")
+        } == selectors
+        report = "pytest-diagnostics/postgres-opt-in-scope.md"
+        text = (tmp_path / report).read_text(encoding="utf-8")
+        assert text == summary.read_text(encoding="utf-8")
+        assert "browser tests not run" in text and "pytest exit code: `1`" in text
+        assert f"shard {shard}/{count}" in text
+        assert "Missing JUnit does not indicate a pass" in text
+        assert all(f"- `{selector}`" in text for selector in selectors)
+        assert upload["if"] == "always()"
+        assert set(upload["with"]["path"].splitlines()) == {
+            report,
+            "pytest-diagnostics/postgres-opt-in.xml",
+            "pytest-diagnostics/postgres-opt-in-files.txt",
+            "pytest-diagnostics/postgres-opt-in-output.txt",
+        }
+        assert upload["with"]["name"] == "postgres-opt-in-results-${{ matrix.shard }}"
+    assert sorted(selected) == sorted(files)
+    assert len(selected) == len(set(selected))
 
 
 @pytest.mark.parametrize(
