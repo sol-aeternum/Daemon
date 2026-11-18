@@ -22,11 +22,13 @@ and its matching
 [Redis Dockerfile](https://github.com/redis/docker-library-redis/blob/d42d7aec93b1c54dd46f37a66a92f62478456039/7.4/alpine/Dockerfile).
 The index uniquely selects that amd64 manifest, which references that config.
 
-The existing hosted backend job explicitly provisions only this approved official
-index with `docker pull --platform=linux/amd64`, then runs the shared verifier
-before pytest. Failure blocks the job; there is no credential, retry, mutable-tag
-fallback, test skip or timeout change. Compressed image layers total 17,233,628
-bytes. No other image download, runtime change or general provisioning is approved.
+The hosted backend and PostgreSQL opt-in inventory jobs each provision this same
+approved official index with `docker pull --platform=linux/amd64` and run the
+shared verifier before pytest. Separate runners do not share an image cache.
+A failed pull or verification prevents pytest from starting in that job; the
+opt-in inventory remains a non-required check. There is no credential, retry,
+mutable-tag fallback or skip on this path. Compressed image layers total
+17,233,628 bytes. This does not change the Redis fixture runtime or approved image.
 
 The fixture itself **never pulls**. It inspects the exact pinned reference and
 rejects unknown IDs, repository digests, metadata or OS/architecture. It accepts

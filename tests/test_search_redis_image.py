@@ -98,10 +98,10 @@ def workflow():
     return yaml.safe_load((root / ".github/workflows/ci.yml").read_text())
 
 
-def provision_step():
+def provision_step(job_id="backend"):
     return next(
         s
-        for s in workflow()["jobs"]["backend"]["steps"]
+        for s in workflow()["jobs"][job_id]["steps"]
         if s["name"] == "Provision pinned search Redis image"
     )
 
@@ -127,8 +127,20 @@ def test_backend_provisioning_contract_and_order():
     ]
 
 
+def test_postgres_inventory_provisions_same_pinned_redis_before_pytest():
+    job = workflow()["jobs"]["postgres-inventory"]
+    names = [s["name"] for s in job["steps"]]
+    assert (
+        names.index("Sync backend dependencies")
+        < names.index("Provision pinned search Redis image")
+        < names.index("PostgreSQL opt-in inventory")
+    )
+    assert provision_step("postgres-inventory") == provision_step()
+
+
+@pytest.mark.parametrize("job_id", ["backend", "postgres-inventory"])
 @pytest.mark.parametrize("failure,expected", [("pull", 17), ("verify", 18), ("none", 0)])
-def test_actual_provisioning_script_blocks_following_stages(tmp_path, failure, expected):
+def test_actual_provisioning_script_blocks_following_stages(tmp_path, failure, expected, job_id):
     log = tmp_path / "calls"
     tools = tmp_path / "tools"
     tools.mkdir()
@@ -142,7 +154,7 @@ def test_actual_provisioning_script_blocks_following_stages(tmp_path, failure, e
             f"exit {exit_code}\n"
         )
         tool.chmod(0o700)
-    script = provision_step()["run"] + f"\nprintf '%s\\n' pytest >> {shlex.quote(str(log))}\n"
+    script = provision_step(job_id)["run"] + f"\nprintf '%s\\n' pytest >> {shlex.quote(str(log))}\n"
     result = subprocess.run(
         ["bash", "-c", script],
         env={"PATH": f"{tools}:{os.defpath}"},

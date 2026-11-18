@@ -260,6 +260,13 @@ jobs:
           docker pull pgvector/pgvector@sha256:33198da2828a14c30348d2ccb4750833d5ed9a44c88d840a0e523d7417120337
           docker tag pgvector/pgvector@sha256:33198da2828a14c30348d2ccb4750833d5ed9a44c88d840a0e523d7417120337 pgvector/pgvector:pg16
 
+      - name: Provision pinned search Redis image
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker pull --platform=linux/amd64 docker.io/library/redis@sha256:02f2cc4882f8bf87c79a220ac958f58c700bdec0dfb9b9ea61b62fb0e8f1bfcf
+          uv run python -m tests.search_redis_image
+
       - name: PostgreSQL opt-in inventory
         continue-on-error: true
         timeout-minutes: 80
