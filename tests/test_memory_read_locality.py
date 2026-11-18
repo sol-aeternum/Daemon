@@ -115,3 +115,36 @@ async def test_malformed_selector_fails_closed_without_dispatch(monkeypatch):
             store, "fictional", user_id=uuid.uuid4(), query_embedding=[]
         )
     embed.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_unloadable_policy_keeps_lexical_retrieval_without_dispatch(monkeypatch):
+    """Selection lives in the inference policy; when it cannot load, retrieval
+    degrades to lexical search over every known space and never dispatches."""
+    from orchestrator.entitlements.errors import PolicyError
+    from orchestrator.memory import embedding, retrieval
+
+    def unloadable():
+        raise PolicyError("fictional unreadable policy")
+
+    monkeypatch.setattr(embedding, "load_inference_policy", unloadable)
+    store = AsyncMock()
+    store.search_memories.return_value = []
+    store.search_memories_bm25.return_value = []
+    store.find_entities_by_alias.return_value = []
+    store.get_entity_by_lookup_key.return_value = None
+    embed = AsyncMock(side_effect=AssertionError("an unreadable policy must not dispatch"))
+    monkeypatch.setattr(retrieval, "embed_query_for_configured_storage_models", embed)
+
+    await retrieval.retrieve_memories_for_text(store, "fictional tea", user_id=uuid.uuid4())
+
+    embed.assert_not_awaited()
+    store.has_memories_with_embedding_model.assert_not_awaited()
+    assert store.search_memories_bm25.await_count >= 1
+    searched = {
+        model
+        for call in store.search_memories_bm25.await_args_list
+        for model in call.kwargs["embedding_models"]
+    }
+    # Rows written in any known space, including the selected route's, stay findable.
+    assert set(embedding.get_lexical_embedding_storage_models()) <= searched

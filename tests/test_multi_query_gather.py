@@ -296,7 +296,7 @@ async def test_missing_optional_profile_fails_open_before_completion(
     [
         (
             "inference_policy.json",
-            "04546b167631e9e490551b2bbc394589602c926babf15aea1147f4c30eebaeaf",
+            "a73f1f9bb8a2d7b6f1e263d22c18f8a3131d3220c56b063b1fdd7e5496631e84",
         ),
         (
             "inference_policy.production.json",
@@ -309,6 +309,8 @@ async def test_deployment_owned_legacy_policy_needs_no_proposal_or_transport_fie
 ):
     raw = json.loads((Path(__file__).resolve().parents[1] / "config" / name).read_text())
     raw["routes"] = [r for r in raw["routes"] if r["route_id"] != mq.DECOMPOSITION_ROUTE_ID]
+    # A legacy deployment-owned copy predates embedding route selection too.
+    raw.pop("selected_embedding_route_id", None)
     # Whole-document semantic identity with origin/main at this rebase.
     assert hashlib.sha256(json.dumps(raw, sort_keys=True).encode()).hexdigest() == semantic_hash
     assert all("multi_provider" not in r["privacy"]["transport"] for r in raw["routes"])

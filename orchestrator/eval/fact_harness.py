@@ -1009,7 +1009,7 @@ def effective_config(harness: dict[str, Any]) -> dict[str, Any]:
     """Everything outside the code that decides what a phase computes.
 
     Non-secret settings are recorded as per-field hashes, so a refusal can name
-    what changed (``EMBEDDING_ROUTE_ID``, dedup thresholds, …) without
+    what changed (the inference policy file, dedup thresholds, …) without
     publishing values; policy/routing/pin files by content hash.
     """
     settings = get_settings()

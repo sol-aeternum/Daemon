@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import copy
 from contextlib import asynccontextmanager
+from dataclasses import replace
 import json
 import os
 from pathlib import Path
@@ -29,7 +30,7 @@ from tests.test_lme_campaign_guard import plan as synthetic_plan
     [
         None,
         "database_url",
-        "embedding_route_id",
+        "selected_embedding_route_id",
         "daemon_encryption_key",
         "daemon_auth_pepper",
         "openrouter_api_key",
@@ -42,18 +43,20 @@ def test_environment_checks_happen_without_provider_or_database_work(monkeypatch
 
     settings = Settings.model_construct(
         database_url=restore.DSN,
-        embedding_route_id="azure-openrouter-small-1024",
         daemon_encryption_key="fictional",
         daemon_auth_pepper="fictional",
         openrouter_api_key="fictional",
     )
-    if changed:
-        setattr(
-            settings, changed, None if "key" in changed or "pepper" in changed else "unapproved"
-        )
     policy = policy_module.parse_inference_policy(
         json.loads((launch.ROOT / "config/inference_policy.production.json").read_bytes())
     )
+    if changed == "selected_embedding_route_id":
+        # Route selection is policy configuration, not a setting.
+        policy = replace(policy, selected_embedding_route_id=None)
+    elif changed:
+        setattr(
+            settings, changed, None if "key" in changed or "pepper" in changed else "unapproved"
+        )
     monkeypatch.setattr(launch.fact_harness, "get_settings", lambda: settings)
     monkeypatch.setattr(policy_module, "load_inference_policy", lambda: policy)
     monkeypatch.setattr(

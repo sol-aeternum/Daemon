@@ -117,16 +117,38 @@ def raise_if_embedding_accounting_error(error: BaseException) -> None:
 
 
 def get_selected_embedding_route_id() -> str:
-    value = getattr(get_settings(), "embedding_route_id", "")
-    if not isinstance(value, str):
+    """The inference policy's selected embedding route id, or ``""`` when off.
+
+    Selection is policy configuration (``selected_embedding_route_id``), not
+    environment. Selecting grants no approval: dispatch still requires the
+    route to be approved and verified, and denies with no fallback otherwise.
+    """
+    try:
+        value = load_inference_policy().selected_embedding_route_id
+    except PolicyError:
         raise EmbeddingConfigurationError(
             "Invalid embedding selector", reason="invalid_configuration"
-        )
-    return value.strip()
+        ) from None
+    return (value or "").strip()
+
+
+def _selection_or_unknown() -> str | None:
+    """The selected route id for storage identity, or ``None`` if unknowable.
+
+    Storage-space helpers feed lexical retrieval, which must keep working when
+    the inference policy cannot be read (selection lives there). They never
+    authorize dispatch: every provider send still loads the policy itself.
+    """
+    try:
+        return get_selected_embedding_route_id()
+    except EmbeddingConfigurationError:
+        return None
 
 
 def get_primary_embedding_storage_model() -> str:
-    if get_selected_embedding_route_id():
+    # An unreadable policy keeps the legacy label: nothing can be embedded
+    # without a policy, and the primary lexical pass covers every known space.
+    if _selection_or_unknown():
         return embedding_adapter.STORAGE_MODEL
     return get_settings().embedding_document_model
 
@@ -238,7 +260,9 @@ def get_configured_embedding_providers() -> tuple[str, ...]:
 
 
 def get_configured_embedding_fallback_storage_models() -> tuple[str, ...]:
-    if get_selected_embedding_route_id():
+    selector = _selection_or_unknown()
+    if selector is None or selector:
+        # A selected route, or a policy that cannot say, has no fallback passes.
         return ()
     settings = get_settings()
     models: list[str] = []
@@ -388,7 +412,12 @@ def describe_embedding_configuration() -> tuple[str, tuple[str, ...]]:
         return "unknown", ()
 
     present: set[str] = set()
-    selector = get_selected_embedding_route_id()
+    try:
+        selector = get_selected_embedding_route_id()
+    except EmbeddingConfigurationError:
+        # Selection lives in the inference policy; an unreadable or invalid
+        # policy cannot say whether a route is selected, so nothing may run.
+        return "unavailable", _canonical_reason_codes({"invalid_configuration"})
     if selector:
         if not getattr(settings, "openrouter_api_key", None):
             present.add("missing_credentials")
@@ -457,7 +486,10 @@ def get_embedding_status() -> dict[str, Any]:
     """
     try:
         configuration, reasons = describe_embedding_configuration()
-        selected = bool(get_selected_embedding_route_id())
+        try:
+            selected = bool(get_selected_embedding_route_id())
+        except EmbeddingConfigurationError:
+            selected = False
     except Exception as error:
         # Status itself must never fail the request; unknown is the safe state.
         # Type name only: the underlying exception may carry raw settings

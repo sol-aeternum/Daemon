@@ -140,7 +140,8 @@ the same-account attestation in [INFERENCE_ROUTE_APPROVALS.md](INFERENCE_ROUTE_A
 is not independently verifiable from public sources or transferable to another key.
 
 The dedicated policy/parser, shared monitor, input-token account adapter and
-default-off `EMBEDDING_ROUTE_ID` are **qualified for the owner-approved local activation**.
+default-off policy selection (`selected_embedding_route_id`, formerly the
+`EMBEDDING_ROUTE_ID` setting) are **qualified for the owner-approved local activation**.
 The portable embedding entry remains unapproved; the deployment entry is approved
 under monitored, non-calendar admission after the checks below. Scoped independent reviews covered
 the accounting/transport implementation and subsequent dreaming/locality and
@@ -307,3 +308,17 @@ provider work and post-preflight changes with rollback/release. Final local bloc
 gates passed with 5,032 backend tests and 820 frontend tests; fresh independent
 repair review found no P1/P2 defects. Exact-head CI and further PR review remain
 required for merge; the deployed runtime has not changed.
+
+### Route selection moves to the inference policy — 18 November 2026 (source only)
+
+Selection of this route is now the inference policy's top-level
+`selected_embedding_route_id`, not the `EMBEDDING_ROUTE_ID` setting, which is
+removed. `config/inference_policy.production.json` selects
+`azure-openrouter-small-1024`; the portable policy selects `null`. The policy load
+rejects a non-string value or an id that names no `embedding_routes` entry.
+Approval is unchanged and remains a dispatch-time check: selection grants no
+approval, and an unapproved, unverified or unattested selected route still denies
+with no legacy or provider fallback. The route's approval, privacy block and
+evidence above are not changed by this. Rollout and the release-override cleanup
+are in [ENV_SURFACE_MIGRATION.md](ENV_SURFACE_MIGRATION.md); the deployed runtime
+has not changed.

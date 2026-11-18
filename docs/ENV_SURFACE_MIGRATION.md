@@ -7,6 +7,43 @@ change is meant to enforce.
 
 ## Scope, and the condition everything below depends on
 
+### Embedding route selection moves to the inference policy — 18 November 2026
+
+MIGRATION: remove `EMBEDDING_ROUTE_ID`. No key is added or renamed. Memory
+embedding route selection is now the inference policy's top-level
+`selected_embedding_route_id`, read from the file `DAEMON_INFERENCE_POLICY`
+names. `config/inference_policy.production.json` selects
+`azure-openrouter-small-1024`; the portable `config/inference_policy.json`
+selects `null`. The setting, its `.env.example` declaration and its backend and
+worker Compose injections are removed in the same change.
+
+Production keys:
+
+- **Drop** `EMBEDDING_ROUTE_ID` from every backend/worker environment that sets
+  it, including any release override. Do this only after the new code is
+  deployed and `GET /status` reports `embeddings.adapters.azure-openrouter.selected`
+  as `true`.
+- **Confirm, unchanged:** `DAEMON_INFERENCE_POLICY` names
+  `config/inference_policy.production.json` (or the deployment's qualified copy
+  of it) in both backend and worker. That file now carries the selection.
+- **Add:** nothing.
+
+Fallback behaviour: the setting no longer exists, and undeclared environment keys
+are ignored when configuration is parsed, so a value left behind is harmless and
+has no effect; it neither selects nor disables a route. Absence and an empty value
+no longer differ; only the policy selects. If `DAEMON_INFERENCE_POLICY` does not
+name a policy that selects the route, embeddings are off and memory retrieval
+falls back to lexical search; no vectors are deleted or rewritten. An unknown
+selected id fails the policy load (as `default_route_id` already does); a selected
+route that is unapproved, unverified or unattested denies embedding dispatch with
+no fallback, as before. Selecting a route grants no approval.
+
+Benchmark runs: the laptop runbook's lexical arm now points
+`DAEMON_INFERENCE_POLICY` at a copy of the production policy with the selection
+cleared, instead of leaving `EMBEDDING_ROUTE_ID` unset. A benchmark run started
+before this change cannot be resumed after it, because its recorded settings
+include the removed field.
+
 ### B1 browser-bootstrap proxy authority — 16 November 2026
 
 MIGRATION: no production keys are added, renamed or removed. The auth and
@@ -141,6 +178,9 @@ changed. See [CONTENT_SAFE_LOGGING.md](CONTENT_SAFE_LOGGING.md) for output and
 retention qualification limits.
 
 ### Dedicated embedding route selector — 5 October 2026
+
+Superseded on 18 November 2026: selection moved to the inference policy (see
+"Embedding route selection moves to the inference policy" above).
 
 `EMBEDDING_ROUTE_ID` is a new optional shared-runtime selector, declared once in
 `.env.example` and injected into both backend and worker. Absence or an empty

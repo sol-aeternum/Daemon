@@ -57,6 +57,7 @@ def approved_document() -> dict[str, Any]:
         "reviewed_at": "2026-10-01T00:00:00Z",
         "evidence": ["fictional-only test, not qualification"],
     }
+    doc["selected_embedding_route_id"] = ROUTE_ID
     return doc
 
 
@@ -86,7 +87,7 @@ def installed(monkeypatch):
     monkeypatch.setattr(adapter, "load_inference_policy", lambda: policy)
     monkeypatch.setattr(public, "load_inference_policy", lambda: policy)
     monkeypatch.setattr(policy_module, "load_inference_policy", lambda: policy)
-    settings = Settings.model_construct(embedding_route_id=ROUTE_ID, openrouter_api_key="fictional")
+    settings = Settings.model_construct(openrouter_api_key="fictional")
     monkeypatch.setattr(public, "get_settings", lambda: settings)
     public.reset_embedding_metrics_for_tests()
     service = MagicMock(spec=EntitlementService)
@@ -143,7 +144,81 @@ def test_portable_denied_and_qualified_production_still_needs_attestation():
         assert route in policy.monitorable_routes()
         assert (route.review.reviewed_at is not None) is route.approved
         assert route.review.review_expires_at is None
-    assert Settings.model_fields["embedding_route_id"].default == ""
+        # Selection is policy configuration: only the qualified deployment
+        # policy selects the route, and selecting grants no approval.
+        expected = ROUTE_ID if filename == "inference_policy.production.json" else None
+        assert policy.selected_embedding_route_id == expected
+    assert "embedding_route_id" not in Settings.model_fields
+
+
+def test_shipped_selection_names_an_approved_verified_route():
+    for filename in ("inference_policy.json", "inference_policy.production.json"):
+        policy = parse_inference_policy(json.loads((ROOT / "config" / filename).read_text()))
+        selected = policy.selected_embedding_route_id
+        if selected is None:
+            continue
+        route = policy.embedding_route(selected)
+        assert route is not None
+        assert route.approved is True
+        assert route.availability == "verified"
+        adapter.validate_adapter_route(route)
+
+
+@pytest.mark.parametrize("value", [None, "", "   "])
+def test_selection_absent_null_or_empty_is_off(value):
+    doc = approved_document()
+    if value is None:
+        del doc["selected_embedding_route_id"]
+    else:
+        doc["selected_embedding_route_id"] = value
+    assert parse_inference_policy(doc).selected_embedding_route_id is None
+    doc["selected_embedding_route_id"] = None
+    assert parse_inference_policy(doc).selected_embedding_route_id is None
+
+
+def test_selection_is_stripped():
+    doc = approved_document()
+    doc["selected_embedding_route_id"] = f"  {ROUTE_ID} "
+    assert parse_inference_policy(doc).selected_embedding_route_id == ROUTE_ID
+
+
+@pytest.mark.parametrize("value", [1, True, [ROUTE_ID], {"route_id": ROUTE_ID}])
+def test_selection_must_be_a_string(value):
+    doc = approved_document()
+    doc["selected_embedding_route_id"] = value
+    with pytest.raises(PolicyError, match="selected_embedding_route_id"):
+        parse_inference_policy(doc)
+
+
+def test_selection_must_name_an_embedding_route():
+    doc = approved_document()
+    doc["selected_embedding_route_id"] = "unknown"
+    with pytest.raises(PolicyError, match="not present in embedding_routes"):
+        parse_inference_policy(doc)
+    doc["selected_embedding_route_id"] = doc["routes"][0]["route_id"]
+    with pytest.raises(PolicyError, match="not present in embedding_routes"):
+        parse_inference_policy(doc)
+    del doc["embedding_routes"]
+    doc["selected_embedding_route_id"] = ROUTE_ID
+    with pytest.raises(PolicyError, match="not present in embedding_routes"):
+        parse_inference_policy(doc)
+
+
+def test_selector_reads_policy_and_fails_closed_on_invalid_policy(monkeypatch):
+    policy = parse_inference_policy(approved_document())
+    monkeypatch.setattr(public, "load_inference_policy", lambda: policy)
+    assert public.get_selected_embedding_route_id() == ROUTE_ID
+    off = replace(policy, selected_embedding_route_id=None)
+    monkeypatch.setattr(public, "load_inference_policy", lambda: off)
+    assert public.get_selected_embedding_route_id() == ""
+
+    def invalid():
+        raise PolicyError("fictional invalid policy")
+
+    monkeypatch.setattr(public, "load_inference_policy", invalid)
+    with pytest.raises(public.EmbeddingConfigurationError) as error:
+        public.get_selected_embedding_route_id()
+    assert error.value.reason == "invalid_configuration"
 
 
 def test_embedding_mapping_optional_and_completion_contract_unchanged():
@@ -729,7 +804,10 @@ def test_status_static_per_adapter_no_probe(monkeypatch, installed):
 
 @pytest.mark.asyncio
 async def test_unknown_selector_denies_without_legacy_fallback(monkeypatch, installed):
-    installed.settings.embedding_route_id = "unknown"
+    # The parser rejects an unknown selection; a policy that still carries one
+    # (built in memory) must deny at dispatch rather than fall back.
+    unknown = replace(installed.policy, selected_embedding_route_id="unknown")
+    monkeypatch.setattr(public, "load_inference_policy", lambda: unknown)
     calls, _ = transport(monkeypatch, installed)
     legacy = AsyncMock(side_effect=AssertionError("no legacy fallback"))
     monkeypatch.setattr(public, "_embed_with_voyage_retry", legacy)
@@ -737,6 +815,25 @@ async def test_unknown_selector_denies_without_legacy_fallback(monkeypatch, inst
         await public.embed_documents_with_metadata(["fictional"])
     assert calls == []
     legacy.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_selected_unapproved_route_denies_without_fallback(monkeypatch, installed):
+    route = replace(installed.route, approved=False)
+    policy = replace(installed.policy, embedding_routes={ROUTE_ID: route})
+    for module in (runtime, adapter, public, policy_module):
+        monkeypatch.setattr(module, "load_inference_policy", lambda: policy)
+    calls, _ = transport(monkeypatch, installed)
+    legacy = AsyncMock(side_effect=AssertionError("no legacy fallback"))
+    monkeypatch.setattr(public, "_embed_with_voyage_retry", legacy)
+    status = public.get_embedding_status()
+    assert status["adapters"]["azure-openrouter"]["selected"] is True
+    assert "route_unapproved" in status["reason_codes"]
+    with pytest.raises(public.EmbeddingConfigurationError):
+        await public.embed_documents_with_metadata(["fictional"])
+    assert calls == []
+    legacy.assert_not_awaited()
+    installed.service.reserve.assert_not_awaited()
 
 
 @pytest.mark.asyncio

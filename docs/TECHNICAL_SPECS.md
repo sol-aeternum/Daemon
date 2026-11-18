@@ -124,7 +124,8 @@ Daemon uses a multi-stage pipeline for durable fact management. See [MEMORY_LAYE
 ### Extraction & Dedup
 Provider embedding execution remains denied by default. The dedicated token-metered
 Azure/OpenRouter adapter is qualified in the deployment-specific monitored policy;
-the portable `embedding_routes` entry remains denied and `EMBEDDING_ROUTE_ID` defaults empty.
+the portable `embedding_routes` entry remains denied and the portable policy's
+`selected_embedding_route_id` is `null`.
 Legacy identities below remain distinct for existing vectors; fallback settings
 cannot grant approval. Core writes and retrieval degrade to nullable vectors and
 account-scoped lexical search. Native-chat query preparation shares the existing
@@ -208,7 +209,7 @@ and the requirement for separate live execution approval remain unchanged.
 - **EMBEDDING_DOCUMENT_MODEL**: voyage-4-large
 - **EMBEDDING_QUERY_MODEL**: voyage-4-lite
 - **EMBEDDING_DIMENSIONS**: 1024
-- **EMBEDDING_ROUTE_ID**: empty by default; explicit policy route selection grants no approval by itself
+- **Route selection**: `selected_embedding_route_id` in the inference policy (not an environment setting); `null` by default, and selection grants no approval by itself
 - **EMBEDDING_FALLBACK_PROVIDERS**: unset by default; ordered comma-separated opt-in (`openrouter`, `openai`, or `openrouter,openai`)
 - **EMBEDDING_OPENROUTER_DOCUMENT_MODEL**: voyageai/voyage-4-large
 - **EMBEDDING_OPENROUTER_QUERY_MODEL**: voyageai/voyage-4-lite

@@ -398,8 +398,12 @@ for the approved contract, real-PostgreSQL qualification and explicit limits.
 
 ### Dedicated selected route (default off; qualification pending)
 
-`EMBEDDING_ROUTE_ID` selects an entry in the separate `embedding_routes` policy
-mapping. The implemented candidate is Azure-hosted OpenAI small through OpenRouter
+The inference policy's top-level `selected_embedding_route_id` selects an entry in
+the separate `embedding_routes` policy mapping; absent, `null` or empty is off, and
+an id that names no `embedding_routes` entry fails the policy load. Selection
+grants no approval: dispatch still requires the route to be approved and verified
+and denies with no fallback otherwise. The portable policy selects nothing; the
+deployment policy selects the qualified route. The implemented candidate is Azure-hosted OpenAI small through OpenRouter
 at the existing storage dimensions; the exact model, input/batch bounds and price
 ceiling live in `config/inference_policy.json`, with the adapter's implementation
 identity in `orchestrator/memory/embedding_adapter.py`. It is not a completion
@@ -483,8 +487,7 @@ DATABASE_URL=postgresql://daemon:daemon@postgres:5432/daemon
 # Encryption (Fernet key — generate with: python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())")
 DAEMON_ENCRYPTION_KEY=<fernet-key>
 
-# Embeddings
-EMBEDDING_ROUTE_ID=  # OFF until qualified policy and explicit selection
+# Embeddings (the dedicated route is selected in the inference policy, not here)
 VOYAGE_API_KEY=<voyage-api-key>
 EMBEDDING_DOCUMENT_MODEL=voyage-4-large
 EMBEDDING_QUERY_MODEL=voyage-4-lite

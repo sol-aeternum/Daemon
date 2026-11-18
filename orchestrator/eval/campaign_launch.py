@@ -88,8 +88,9 @@ def environment() -> dict[str, Any]:
 
     settings = fact_harness.get_settings()
     require(settings.database_url == DSN, "Exact benchmark DSN required")
+    policy = load_inference_policy()
     require(
-        settings.embedding_route_id == "azure-openrouter-small-1024"
+        policy.selected_embedding_route_id == "azure-openrouter-small-1024"
         and settings.embedding_dimensions == 1024,
         "Selected embedding route/dimensions differ",
     )
@@ -102,7 +103,6 @@ def environment() -> dict[str, Any]:
         provider.base_url == "https://openrouter.ai/api/v1" and bool(provider.api_key),
         "Pinned reader endpoint/credential missing",
     )
-    policy = load_inference_policy()
     route = policy.embedding_routes.get("azure-openrouter-small-1024")
     require(route is not None, "Embedding policy route absent")
     if route is None:
