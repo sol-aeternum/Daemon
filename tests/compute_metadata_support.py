@@ -19,6 +19,8 @@ from uuid import uuid4
 import asyncpg
 import pytest
 
+from tests.postgres_image import IMAGE_REFERENCE, PLATFORM, validate_cached_image
+
 ROOT = Path(__file__).resolve().parents[1]
 MIGRATION = "048_compute_metadata.sql"
 UP = ROOT / "migrations" / MIGRATION
@@ -45,6 +47,7 @@ class Cluster:
         self.resource, self.evidence = resource, evidence
         self.nonce = uuid4().hex
         self.container = None
+        self.image = None
         self.receipts = []
         self.databases = set()
 
@@ -55,12 +58,17 @@ class Cluster:
         )
 
     def start(self):
+        inspection = command(["docker", "image", "inspect", IMAGE_REFERENCE])
+        assert inspection.returncode == 0, inspection.stderr
+        self.image = validate_cached_image(json.loads(inspection.stdout))
+        self.record("qualified_image", reference=IMAGE_REFERENCE, platform=PLATFORM, id=self.image)
         result = command(
             [
                 "docker",
                 "run",
                 "-d",
                 "--pull=never",
+                "--platform=" + PLATFORM,
                 "--name",
                 "metadata-test-" + self.nonce,
                 "--label",
@@ -79,7 +87,7 @@ class Cluster:
                 "/var/run/postgresql:rw,size=8388608",
                 "-e",
                 "POSTGRES_HOST_AUTH_METHOD=trust",
-                "pgvector/pgvector:pg16",
+                self.image,
             ]
         )
         assert result.returncode == 0, result.stderr
