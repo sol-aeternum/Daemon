@@ -39,7 +39,7 @@ def partition(files: list[str], durations: dict[str, float], count: int) -> list
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--shard", type=int, required=True, help="one-based shard number")
-    parser.add_argument("--count", type=int, default=4)
+    parser.add_argument("--count", type=int, required=True)
     args = parser.parse_args()
     if not 1 <= args.shard <= args.count:
         parser.error("shard must be between 1 and count")

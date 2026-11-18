@@ -143,7 +143,10 @@ fixture ownership checks and per-test database isolation are unchanged.
 `scripts/postgres_inventory_shards.py` preserves the original top-level
 `tests/test_*.py` content discovery. It assigns every discovered file exactly once,
 longest estimated module first, to the least-loaded shard (stable filename/index
-tie-breaks). `scripts/postgres_inventory_timings.json` records summed JUnit case
+tie-breaks). The matrix is the shard-count source of truth: selection and reporting
+use GitHub's `strategy.job-total`, with contiguous one-based matrix shard IDs. The
+selector runs through `uv run python` and requires an explicit `--count`.
+`scripts/postgres_inventory_timings.json` records summed JUnit case
 seconds from run 44232075074, not a coverage allowlist. New modules use the median
 recorded module duration; removed modules are ignored. Refresh the estimates by
 summing testcase `time` values by module across all four JUnit artifacts from a
@@ -156,4 +159,7 @@ Missing JUnit is not success. Fail-fast is disabled so one shard cannot cancel
 coverage on another; pytest remains non-blocking and provisioning remains blocking
 within its job. Existing 80-minute test/90-minute job safety limits are unchanged.
 The historical module-duration balance predicts about 16.4 minutes per shard,
-not a measured wall-clock guarantee; aggregate runner work is roughly unchanged.
+not a measured wall-clock guarantee. Every shard repeats dependency setup, image
+pulls, service startup and any session-scoped fixtures. That fixed overhead adds
+to both per-shard wall time and aggregate runner minutes; the snapshot does not
+model it. Parallelism reduces elapsed time, not total provisioning work.

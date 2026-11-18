@@ -215,7 +215,7 @@ jobs:
           retention-days: 7
 
   postgres-inventory:
-    name: PostgreSQL opt-in inventory (${{ matrix.shard }}/4)
+    name: PostgreSQL opt-in inventory (${{ matrix.shard }}/${{ strategy.job-total }})
     strategy:
       fail-fast: false
       matrix:
@@ -227,6 +227,7 @@ jobs:
     env:
       UV_PROJECT_ENVIRONMENT: .uv-venv
       POSTGRES_INVENTORY_SHARD: ${{ matrix.shard }}
+      POSTGRES_INVENTORY_COUNT: ${{ strategy.job-total }}
     services:
       tasks-postgres:
         image: pgvector/pgvector@sha256:33198da2828a14c30348d2ccb4750833d5ed9a44c88d840a0e523d7417120337 # pg16
@@ -283,7 +284,8 @@ jobs:
           work="$RUNNER_TEMP/pg-opt-in-$POSTGRES_INVENTORY_SHARD"
           mkdir -p "$work/test" "$work/evidence" "$work/tmp" pytest-diagnostics
           export OPENCODE_WORK_TEST_DIR="$work/test" OPENCODE_WORK_EVIDENCE_DIR="$work/evidence" TMPDIR="$work/tmp"
-          python scripts/postgres_inventory_shards.py --shard "$POSTGRES_INVENTORY_SHARD" \
+          uv run python scripts/postgres_inventory_shards.py --shard "$POSTGRES_INVENTORY_SHARD" \
+            --count "$POSTGRES_INVENTORY_COUNT" \
             > pytest-diagnostics/postgres-opt-in-files.txt
           mapfile -t files < pytest-diagnostics/postgres-opt-in-files.txt
           ((${#files[@]} > 0))
@@ -300,7 +302,7 @@ jobs:
           )
           report=pytest-diagnostics/postgres-opt-in-scope.md
           {
-            printf '### PostgreSQL opt-in inventory: shard %s/4\n\n' "$POSTGRES_INVENTORY_SHARD"
+            printf '### PostgreSQL opt-in inventory: shard %s/%s\n\n' "$POSTGRES_INVENTORY_SHARD" "$POSTGRES_INVENTORY_COUNT"
             printf 'Selected modules: %s. See the file manifest for exact coverage.\n\n' "${#files[@]}"
             printf '#### browser tests not run\n\n'
             printf 'This lane does not install frontend dependencies or Playwright. Omitted selectors (including all parameter variants):\n\n'
