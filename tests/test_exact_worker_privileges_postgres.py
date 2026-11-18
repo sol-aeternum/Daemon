@@ -468,3 +468,60 @@ async def test_five_existing_operations_fail_closed_without_their_column_update(
                 "fixture-v1",
                 on_selected=selected,
             )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("hard", [False, True], ids=["soft", "hard"])
+async def test_actual_memory_erasure_route_scrubs_derived_records_as_w(ordinary, hard):
+    # #740: every memory delete runs lineage.erase as W, which deletes derived
+    # entities and scrubs the owner's extraction and retrieval logs. The map must
+    # carry exactly that authority, exercised here through the real route.
+    uid, _, headers = await sign_in(ordinary)
+    store = ordinary.state.memory_store
+    memory = await store.insert_memory(uid, "Synthetic erasable memory", "fact", "manual")
+    await store.insert_entity(
+        uid,
+        "Synthetic entity",
+        "synthetic entity",
+        aliases=[],
+        alias_lookup_keys=[],
+        source_memory_id=memory["id"],
+    )
+    await store.log_extraction(uid, "Synthetic extraction snippet", extracted_facts=["fact"])
+    # Synthetic fixture setup only: the retrieval writer needs an originating
+    # capture, which is outside this map check. Erasure itself runs as W below.
+    async with ordinary.db.connection() as owner:
+        await owner.execute(
+            "INSERT INTO retrieval_log(user_id,query_text,query_embedding_model,"
+            "candidate_memory_ids,candidate_scores,selected_memory_ids,l0_included,"
+            "latency_ms,retrieval_context) VALUES($1,'Synthetic retrieval query',"
+            "'fixture-model',$2::uuid[],'{}'::jsonb,$2::uuid[],false,1,'Synthetic context')",
+            uid,
+            [memory["id"]],
+        )
+    response = await ordinary.client.delete(
+        f"/memories/{memory['id']}", headers=headers, params={"hard": hard}
+    )
+    assert response.status_code == 200, response.text
+    async with ordinary.db.connection() as owner:
+        status = await owner.fetchval("SELECT status FROM memories WHERE id=$1", memory["id"])
+        assert status == (None if hard else "deleted")
+        assert (
+            await owner.fetchval(
+                "SELECT hard FROM memory_tombstones WHERE user_id=$1 AND memory_id=$2",
+                uid,
+                memory["id"],
+            )
+            is hard
+        )
+        assert await owner.fetchval("SELECT count(*) FROM entities WHERE user_id=$1", uid) == 0
+        assert await owner.fetchval(
+            "SELECT bool_and(input_snippet='' AND extracted_facts='[]'::jsonb) "
+            "FROM memory_extraction_log WHERE user_id=$1",
+            uid,
+        )
+        assert await owner.fetchval(
+            "SELECT bool_and(query_text='' AND retrieval_context IS NULL "
+            "AND selected_memory_ids='{}'::uuid[]) FROM retrieval_log WHERE user_id=$1",
+            uid,
+        )
