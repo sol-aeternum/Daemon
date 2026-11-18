@@ -163,3 +163,27 @@ not a measured wall-clock guarantee. Every shard repeats dependency setup, image
 pulls, service startup and any session-scoped fixtures. That fixed overhead adds
 to both per-shard wall time and aggregate runner minutes; the snapshot does not
 model it. Parallelism reduces elapsed time, not total provisioning work.
+
+## Owned PostgreSQL image identity (#728 follow-up)
+
+`tests/postgres_image.py` qualifies the existing pgvector pg16 pin before the
+metadata fixture starts, without pulling or falling back to a mutable tag:
+
+- Registry index: `sha256:33198da2828a14c30348d2ccb4750833d5ed9a44c88d840a0e523d7417120337`
+- Linux/amd64 manifest: `sha256:16e62164a405447dca191079a924ee5b8a9dbf04fe53128701ffbea857b37782`
+- Config: `sha256:4c0c0efbd40e8ff42363074292654a7831cac506fc01a1c89627f1b1040ba341`
+
+The registry index, uniquely selected Linux/amd64 manifest and config responses
+were SHA-256 verified on 2026-11-18 from Docker Hub's pgvector/pgvector repository.
+The classic Docker store exposes the config ID; the containerd store exposes
+the index ID. Neither is an arbitrary accepted digest: the verifier requires the
+pinned repository digest, Linux/amd64 metadata and one of these two linked IDs.
+The fixture records and launches that exact resolved ID with an explicit platform
+and `--pull=never`. Restore operations compare the container image to that exact
+qualified launch ID, not to the registry index unconditionally. Container ID,
+nonce/task labels, network, mounts and running-state checks remain unchanged.
+Unknown, missing, foreign or wrong-platform identities fail before creation.
+
+This repairs the image-identity portion of the PostgreSQL inventory debt tracked
+in #717; it does not close the broader inventory or claim restore qualification.
+The inventory job remains nonblocking and reports actual pytest failures.

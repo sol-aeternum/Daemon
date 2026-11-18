@@ -53,8 +53,6 @@ reservation_owner = q.reservation_owner
 preparer = q.preparer
 phase_owner = q.phase_owner
 
-IMAGE = "sha256:33198da2828a14c30348d2ccb4750833d5ed9a44c88d840a0e523d7417120337"
-
 RELATION_ACLS = """SELECT c.relname AS name, COALESCE((
  SELECT jsonb_agg(jsonb_build_array(pg_catalog.pg_get_userbyid(x.grantor),
  CASE WHEN x.grantee=0 THEN 'PUBLIC' ELSE pg_catalog.pg_get_userbyid(x.grantee) END,
@@ -95,7 +93,11 @@ async def catalogs(conn):
 
 def owned(cluster):
     info = json.loads(command(["docker", "inspect", cluster.container]).stdout)[0]
-    assert info["Id"] == cluster.container and info["Image"] == IMAGE
+    assert (
+        info["Id"] == cluster.container
+        and cluster.image is not None
+        and info["Image"] == cluster.image
+    )
     assert info["Config"]["Labels"]["opencode.compute-metadata-fixture"] == cluster.nonce
     assert info["Config"]["Labels"]["opencode.task"] == ROOT.name
     assert info["HostConfig"]["NetworkMode"] == "none" and not info["Mounts"]
