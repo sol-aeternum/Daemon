@@ -101,7 +101,17 @@ CATALOG = """SELECT
  FROM pg_catalog.pg_constraint c WHERE c.contype='f' AND c.conrelid='public.task_history_acceptance'::regclass)
  AND (SELECT count(*)=4 AND bool_and(t.tgenabled='O' AND t.tgfoid='public.task_history_immutable()'::regprocedure
  AND t.tgtype IN (27,34)) FROM pg_catalog.pg_trigger t WHERE NOT t.tgisinternal AND t.tgrelid IN
- ('public.task_history_binding'::regclass,'public.task_history_acceptance'::regclass))
+ ('public.task_history_binding'::regclass,'public.task_history_acceptance'::regclass)
+ -- #731: admit exactly migration 073's binder fence (any other shape counts).
+ AND NOT COALESCE(t.tgrelid='public.task_history_binding'::regclass
+ AND t.tgname='task_history_binding_native_fence' AND t.tgenabled='A' AND t.tgtype=6
+ AND t.tgfoid IS NOT DISTINCT FROM pg_catalog.to_regprocedure('public.history_native_fence()')
+ AND (SELECT NOT f.prosecdef AND f.proowner=(SELECT relowner FROM pg_catalog.pg_class
+ WHERE oid='public.task_history_binding'::regclass)
+ AND f.proconfig=ARRAY['search_path=pg_catalog']::text[]
+ AND pg_catalog.encode(pg_catalog.sha256(pg_catalog.convert_to(f.prosrc,'UTF8')),'hex')
+ ='14d467446c9442255621f926a1093e317db491211253b25948046ff71069696c'
+ FROM pg_catalog.pg_proc f WHERE f.oid=t.tgfoid),false))
 """
 
 

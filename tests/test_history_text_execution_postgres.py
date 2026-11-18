@@ -52,21 +52,31 @@ from tests.test_restore_history_store import owned
 
 
 @pytest_asyncio.fixture
-async def text_host(projection_db, tmp_path, monkeypatch):
+async def text_host(projection_db, tmp_path, monkeypatch, request):
     database = projection_db
     install(database)
     install_terminal(database)
-    database.sql(
-        "BEGIN;"
-        + (Path(__file__).resolve().parents[1] / "migrations/066_memory_bitemporal.sql").read_text()
-        + "COMMIT;"
-    )
-    database.sql("GRANT SELECT ON memory_knowledge_clock TO md_app;")
+    # The shared inference fixture installs memory revisions and grants W's exact
+    # map before this composition; do not reapply migration 066 or add grants.
     journal = tmp_path / "j1"
     journal_id = uuid4()
     initialize(journal, journal_id)
     async with database.connection() as conn:
-        account = await database.account(conn)
+        if getattr(request, "param", None) == "self-hosted-ui":
+            from orchestrator.routes.auth_setup import SINGLETON_USER_ID
+
+            # Initial disposable fixture data only, never runtime identity repair.
+            account = SINGLETON_USER_ID
+            await conn.execute(
+                "INSERT INTO users(id,username) VALUES($1,'synthetic-ui') ON CONFLICT(id) DO NOTHING",
+                account,
+            )
+            await conn.execute(
+                "INSERT INTO entitlement_accounts(user_id) VALUES($1) ON CONFLICT(user_id) DO NOTHING",
+                account,
+            )
+        else:
+            account = await database.account(conn)
         await conn.execute("INSERT INTO deletion_journal_binding VALUES(true,$1)", journal_id)
     encryption_key = Fernet.generate_key().decode()
     enc = ContentEncryption(encryption_key)
@@ -101,6 +111,7 @@ async def text_host(projection_db, tmp_path, monkeypatch):
         encryption_key=encryption_key,
         journal=journal,
         journal_id=journal_id,
+        settings=settings,
     )
     from orchestrator import daemon
 
@@ -707,6 +718,175 @@ async def test_lost_acceptance_commit_ack_never_schedules_even_when_task_committ
         assert s.db.sql("SELECT count(*) FROM task_attempts") == "0"
         observed = await s.host.lookup(headers["Authorization"], "stable", deadline=deadline())
         assert observed.kind == "task" and not s.execution._jobs
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("text_host", ["self-hosted-ui"], indirect=True)
+async def test_real_enrollment_lost_ack_post_chat_and_by_key(text_host, monkeypatch):
+    """Protected POST /chat under the core commit-then-lost-ACK fault, real devices."""
+    from asyncpg.transaction import Transaction
+
+    from tests.history_ui_support import actual_auth_app
+    from tests.owned_search_redis import OwnedSearchRedis
+
+    s = text_host
+    owner = OwnedSearchRedis(
+        Path(os.environ["OPENCODE_WORK_TEST_DIR"]), "daily-driver-app-flow-20261113"
+    )
+    redis = None
+    tables = (
+        "tasks",
+        "task_attempts",
+        "task_operations",
+        "task_history_projection",
+        "entitlement_reservations",
+        "compute_reservation_metadata",
+    )
+
+    def counts():
+        return tuple(s.db.sql(f"SELECT count(*) FROM {table}") for table in tables)
+
+    try:
+        owner.start()
+        redis = await owner.connect()
+        async with s.make():
+            wired = await actual_auth_app(s, monkeypatch, redis, "http://fixture.test")
+            transport = ASGITransport(wired.app)
+            async with (
+                AsyncClient(
+                    transport=transport,
+                    base_url="http://fixture.test",
+                    headers={"Origin": "http://fixture.test"},
+                ) as first,
+                AsyncClient(
+                    transport=transport,
+                    base_url="http://fixture.test",
+                    headers={"Origin": "http://fixture.test"},
+                ) as second,
+            ):
+                # Only real setup and independent enrollment issue these devices.
+                assert counts() == ("0",) * len(tables)
+                setup = await first.post("/v1/auth/setup", json={"setup_token": wired.bootstrap})
+                assert setup.status_code == 200, setup.text
+                a = {"Authorization": "Bearer " + setup.json()["access_token"]}
+                start = await first.post("/v1/auth/enroll/start", headers=a)
+                assert start.status_code == 200, start.text
+                enrollment = start.json()
+                complete = await second.post(
+                    "/v1/auth/enroll/complete",
+                    json={
+                        "pending_id": enrollment["pending_id"],
+                        "code": enrollment["code"],
+                        "client_kind": "web",
+                    },
+                )
+                assert complete.status_code == 200, complete.text
+                b = {"Authorization": "Bearer " + complete.json()["access_token"]}
+                assert a != b
+                assert s.db.sql("SELECT count(*) FROM devices") == "2"
+                assert counts() == ("0",) * len(tables)
+
+                # The unchanged SQL core fault: the acceptance projection stages,
+                # the native transaction COMMITs, then its ACK is lost. Only the
+                # acceptance stage arms it; setup/auth/read commits never do.
+                projection = s.host._acceptance._projection
+                native_stage, native_exit = projection.stage, Transaction.__aexit__
+                armed = False
+
+                async def stage(conn, entry, *, deadline):
+                    nonlocal armed
+                    result = await native_stage(conn, entry, deadline=deadline)
+                    armed = True
+                    return result
+
+                async def lost(tx, kind, value, traceback):
+                    nonlocal armed
+                    if not armed or kind is not None:
+                        return await native_exit(tx, kind, value, traceback)
+                    armed = False
+                    await native_exit(tx, kind, value, traceback)
+                    raise ConnectionError("synthetic lost A commit ACK")
+
+                with monkeypatch.context() as patch:
+                    patch.setattr(projection, "stage", stage)
+                    patch.setattr(Transaction, "__aexit__", lost)
+                    refused = await first.post(
+                        "/chat",
+                        headers={**a, "Idempotency-Key": "stable"},
+                        json={"message": "synthetic text"},
+                    )
+                assert refused.status_code == 503, refused.text
+                assert refused.json()["detail"] == {
+                    "code": "history_unavailable",
+                    "task_id": None,
+                    "retry_safe": False,
+                }
+                assert refused.headers["cache-control"] == "no-store"
+                assert not s.execution._jobs and not s.calls
+                assert counts() == ("1", "0", "0", "1", "0", "0")
+
+                # Exactly one committed original task with this account, key and input.
+                async with s.db.connection() as conn:
+                    original = await conn.fetchrow(
+                        "SELECT t.id,t.user_id,t.idempotency_key,t.conversation_id,"
+                        "t.status,t.cancel_requested_at,t.request_hash,t.attempt_count,"
+                        "m.content,m.role "
+                        "FROM tasks t JOIN messages m ON m.id=t.result_message_id"
+                    )
+                    user_message = await conn.fetchval(
+                        "SELECT content FROM messages WHERE id=(SELECT user_message_id FROM tasks)"
+                    )
+                assert original is not None
+                assert original["user_id"] == s.account
+                assert original["idempotency_key"] == "stable"
+                assert original["status"] == "queued" and original["attempt_count"] == 0
+                assert original["cancel_requested_at"] is None
+                assert original["role"] == "assistant"
+                assert s.execution.encryption.decrypt(original["content"]) == ""
+                assert s.execution.encryption.decrypt(user_message) == "synthetic text"
+                assert s.db.sql("SELECT request_hash ~ '^[0-9a-f]{64}$' FROM tasks") == "t"
+
+                # The independently enrolled device reads that same surviving task.
+                before_reads = counts()
+                found = await second.get("/tasks/by-key/stable", headers=b)
+                assert found.status_code == 200, found.text
+                assert found.headers["cache-control"] == "no-store"
+                body = found.json()
+                assert body["id"] == str(original["id"])
+                assert body["status"] == "queued" and body["content"] == ""
+                assert body["attempt_count"] == 0 and body["cancel_requested"] is False
+                # A read alone neither schedules work nor creates a second task.
+                for no_auth in (
+                    await second.get("/tasks/by-key/stable"),
+                    await second.get(
+                        "/tasks/by-key/stable", headers={"Authorization": "Bearer invalid"}
+                    ),
+                ):
+                    assert no_auth.status_code == 401
+                    assert no_auth.headers["cache-control"] == "no-store"
+                assert counts() == before_reads
+                assert not s.execution._jobs and not s.calls
+
+                # Deliberate same-key probe keeps the existing uncertainty refusal.
+                probe = await first.post(
+                    "/chat",
+                    headers={**a, "Idempotency-Key": "stable"},
+                    json={"message": "synthetic text"},
+                )
+                assert probe.status_code == 503, probe.text
+                assert probe.json()["detail"] == {
+                    "code": "history_unavailable",
+                    "task_id": None,
+                    "retry_safe": False,
+                }
+                assert probe.headers["cache-control"] == "no-store"
+                assert counts() == before_reads
+                assert not s.execution._jobs and not s.calls
+                assert s.db.sql("SELECT count(*) FROM devices") == "2"
+    finally:
+        if redis is not None:
+            await redis.aclose()
+        owner.close()
 
 
 @pytest.mark.asyncio

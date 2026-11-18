@@ -465,20 +465,25 @@ async def test_unset_route_keeps_its_rows_lexically_discoverable(mock_store, que
 
     assert [memory["id"] for memory in memories] == [route_row["id"]]
     searches = [
-        (call.kwargs["embedding_models"], call.kwargs["match_any_term"])
+        (
+            call.kwargs["embedding_models"],
+            call.kwargs["match_any_term"],
+            call.kwargs["term_coverage_space"],
+        )
         for call in mock_store.search_memories_bm25.await_args_list
     ]
-    ((spaces, match_any_term),) = searches
+    ((spaces, match_any_term, coverage_space),) = searches
     assert spaces[0] == "voyage-4-large"
     assert embedding_adapter.STORAGE_MODEL in spaces
     if query == "embedded":
-        # Vectors are still only compared within the query's own space, and
-        # with a query vector BM25 keeps the calibrated all-terms match (#580).
+        # Vectors are still only compared within the query's own space. With a
+        # query vector, only rows without a vector in that space may match some
+        # terms, discounted by coverage (#580).
         assert mock_store.search_memories.call_args.kwargs["embedding_model"] == "voyage-4-large"
-        assert match_any_term is False
+        assert (match_any_term, coverage_space) == (False, "voyage-4-large")
     else:
         # Without a query vector, lexical rank is the only signal (#580).
-        assert match_any_term is True
+        assert (match_any_term, coverage_space) == (True, None)
 
 
 @pytest.mark.asyncio

@@ -439,6 +439,45 @@ async def test_adapter_rechecks_current_catalog_after_previous_success(projectio
                 )
 
 
+FENCE = CANDIDATE.parent / "073_history_native_fence.sql"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "drift",
+    [
+        None,
+        "ALTER TABLE task_history_binding DISABLE TRIGGER task_history_binding_native_fence",
+        "ALTER TABLE task_history_binding ENABLE TRIGGER task_history_binding_native_fence",
+        "CREATE OR REPLACE FUNCTION public.history_native_fence() RETURNS trigger "
+        "LANGUAGE plpgsql SET search_path=pg_catalog AS $$ BEGIN RETURN NULL; END $$",
+        "CREATE TRIGGER task_history_acceptance_native_fence BEFORE INSERT ON "
+        "task_history_acceptance FOR EACH STATEMENT EXECUTE FUNCTION public.history_native_fence()",
+        "ALTER FUNCTION public.history_native_fence() SECURITY DEFINER",
+    ],
+    ids=["exact", "disabled", "origin-only", "body-replaced", "second-use", "definer"],
+)
+async def test_h_catalog_admits_exactly_the_073_native_fence(projection_db, drift):
+    # #731: H-selected qualification accepts migration 073's binder fence as
+    # installed and refuses any other shape of it (or any reuse of its function).
+    import asyncio
+    from orchestrator.services.restore_history.model import HistoryError
+
+    projection_db.sql("BEGIN;" + FENCE.read_text() + "COMMIT;")
+    if drift is not None:
+        projection_db.sql(drift)
+    async with projection_db.connection("md_acceptor") as conn:
+        qualified = adapter_for().qualify(
+            conn, writing=True, deadline=asyncio.get_running_loop().time() + 5
+        )
+        async with conn.transaction():
+            if drift is None:
+                await qualified
+            else:
+                with pytest.raises(HistoryError):
+                    await qualified
+
+
 @pytest.mark.asyncio
 async def test_native_key_namespace_and_generation_do_not_overwrite(projection_db):
     async def hook(conn, frame):

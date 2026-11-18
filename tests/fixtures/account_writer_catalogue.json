@@ -824,6 +824,30 @@
       "rationale": "Explicit terminal-v3 history open and original W qualification; conservative filesystem wrapper candidate. Isolated synthetic qualification does not complete account deletion, retention or restore fencing."
     },
     {
+      "owner_source": "orchestrator.db",
+      "qualname": "init_app_state",
+      "kind": "filesystem_write",
+      "line_hint": 97,
+      "fingerprint": "21c3d977648728f7",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Scanner flags NativeFence.open (#731 L1): a dedicated PostgreSQL presence connection taking a shared advisory lock and proving H unbound; no filesystem or account write. Explicitly inventoried; no account-lifecycle coverage claimed. Uncovered."
+    },
+    {
+      "owner_source": "orchestrator.worker.worker",
+      "qualname": "on_startup",
+      "kind": "filesystem_write",
+      "line_hint": 166,
+      "fingerprint": "fe77fdc22cf3a46f",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Scanner flags NativeFence.open (#731 L1) in unselected worker startup: PostgreSQL presence connection and shared advisory lock only; no filesystem or account write. Explicitly inventoried; no account-lifecycle coverage claimed. Uncovered."
+    },
+    {
       "owner_source": "orchestrator.tasks.runner",
       "qualname": "run_chat_task",
       "kind": "store_write",

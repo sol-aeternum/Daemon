@@ -481,6 +481,9 @@ def composition_violations(sources: dict[str, str]) -> list[str]:
                     startup_imports = {
                         ("orchestrator/db.py", "configuration"): {"configured_history"},
                         ("orchestrator/db.py", "model"): {"HistoryError"},
+                        # #731 unselected-host fence (L1 presence, L2 pool guard).
+                        ("orchestrator/db.py", "native_fence"): {"NativeFence"},
+                        ("orchestrator/worker/worker.py", "native_fence"): {"NativeFence"},
                         ("orchestrator/db.py", "runtime"): {
                             "HistoryRuntime",
                             "physical_completion",
@@ -498,6 +501,10 @@ def composition_violations(sources: dict[str, str]) -> list[str]:
                         ("orchestrator/main.py", "ingress"): {"HistoryObservationOnlyMiddleware"},
                         ("orchestrator/routes/tasks.py", "read_supervisor"): {
                             "HistoryReadSupervisor"
+                        },
+                        # #731: by-key shares the unbound-H predicate; read-only.
+                        ("orchestrator/routes/tasks.py", "runtime"): {
+                            "history_unselected_compatible"
                         },
                     }
                     startup_read_only = (
@@ -697,6 +704,7 @@ def composition_violations(sources: dict[str, str]) -> list[str]:
                         ("orchestrator/services/restore_history/acceptance_host.py", "_submit"),
                         ("orchestrator/services/restore_history/acceptance_host.py", "_lookup"),
                         ("orchestrator/services/restore_history/acceptance_host.py", "_cancel"),
+                        ("orchestrator/services/restore_history/acceptance_host.py", "_ui_read"),
                         ("orchestrator/services/restore_history/observation.py", "_lookup"),
                         ("orchestrator/services/restore_history/effects.py", "_mark"),
                         ("orchestrator/services/restore_history/effects.py", "_cancel"),

@@ -32,6 +32,7 @@ from orchestrator.services.deletion_journal.barrier import (
 from orchestrator.services.deletion_journal.errors import JournalError
 from orchestrator.services.restore_history.configuration import configured_history
 from orchestrator.services.restore_history.model import HistoryError
+from orchestrator.services.restore_history.native_fence import NativeFence
 from orchestrator.services.restore_history.runtime import (
     HistoryRuntime,
     physical_completion,
@@ -159,14 +160,27 @@ async def on_startup(ctx: WorkerContext) -> None:
     ctx["task_store"] = None
     ctx["task_composition"] = None
 
+    # #731 L1 before any other database work; every acquire is L2-guarded.
+    fence = NativeFence()
+    try:
+        await fence.open(app_settings.database_url)
+    except HistoryError:
+        raise
+    except Exception:
+        raise JournalError("database_required") from None
     try:
         db_pool = await asyncpg.create_pool(
             dsn=app_settings.database_url,
             min_size=2,
             max_size=10,
+            setup=fence.guard,
         )
-    except Exception:
-        raise JournalError("database_required") from None
+    except BaseException as original:
+        await fence.close()
+        if isinstance(original, Exception):
+            raise JournalError("database_required") from None
+        raise
+    ctx["native_fence"] = fence
     try:
         await require_multi_query_schema(db_pool, app_settings)
         await require_revision_schema(db_pool)
@@ -205,7 +219,11 @@ async def on_startup(ctx: WorkerContext) -> None:
 
         get_handler()
     except BaseException:
-        await db_pool.close()
+        try:
+            await db_pool.close()
+        finally:
+            await fence.close()
+            ctx.pop("native_fence", None)
         ctx.pop("db_pool", None)
         ctx["store"] = None
         ctx["task_store"] = None
@@ -228,7 +246,12 @@ async def on_shutdown(ctx: WorkerContext) -> None:
             try:
                 await attestation.stop()
             finally:
-                await db_pool.close()
+                try:
+                    await db_pool.close()
+                finally:
+                    fence = ctx.pop("native_fence", None)
+                    if isinstance(fence, NativeFence):
+                        await fence.close()
             logger.info("Worker DB pool closed")
 
 

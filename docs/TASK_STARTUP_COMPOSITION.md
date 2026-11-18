@@ -95,12 +95,15 @@ only once readiness is established and actual state is read back.
 
 ## Exact ordinary-role fixture qualification
 
-`tests/fixtures/exact_worker_privileges.json` pins the proposed ordinary W map;
-`tests/exact_worker_privileges.py` applies it only to owned synthetic databases.
+`config/task_privileges/worker.json` pins the ordinary W map and
+`config/task_privileges/acceptor.json` the A map. `tests/exact_worker_privileges.py`
+applies them to owned synthetic databases with the same statement builder as the
+live provisioning script (below).
 The shared backend/worker W role includes ordinary auth, content and billing
 capabilities. The five extra column UPDATE grants are real mutation authority,
 including four row-lock requirements and the ownership interval trigger write;
-they must not be described as read-only access. No live grant is supplied here.
+they must not be described as read-only access. Live grants come only from
+`scripts/provision_task_roles.py`.
 The map covers the memory revision objects from migration 066 and the summary
 provenance tables from 072: the memory triggers run with the caller's rights, so
 W writes revision, mutation and clock rows directly. Its UPDATE on those
@@ -108,8 +111,47 @@ tables is limited to the columns the code changes: clock `clock_regressed`,
 `erasure_epoch`, `last_clock_at` and `sequence` (the clock is also row-locked
 `FOR UPDATE`), mutation `observed_committed_by`, segment `content_tsv`,
 `embedding` and `embedding_model`, tombstone `hard`, and summary version
-`revoked_at` and `sealed`. `proposal_sha256` is the
-SHA-256 of the map without that field, serialized as sorted, compact JSON.
+`revoked_at` and `sealed`. It also covers reminders (067) and the account-owned
+skills tables (068, 070): skills and skill revisions get SELECT, INSERT and DELETE
+plus UPDATE on the columns the skills service writes; the store key and shipped
+catalogue get SELECT, INSERT and UPDATE on their two changing columns.
+`proposal_sha256` is the SHA-256 of the map without that field, serialized as
+sorted, compact JSON.
+
+## Live role provisioning
+
+`scripts/provision_task_roles.py` creates both LOGIN roles (no superuser, create
+or replication attributes, no memberships) and applies the two maps in one
+transaction. Before COMMIT it checks every public table, view and sequence for
+each role: effective table and column privileges must equal the map exactly,
+mapped functions must be executable, and the protected task functions must not be
+executable except where W's map lists them. `verify` repeats that check read-only.
+Both commands first require the migration runner's complete history:
+`_migrations` must equal the sorted `migrations/*.sql` set exactly (a hole, an
+unknown row or a missing table refuses with `migration_history_incomplete`; the
+runner records filenames only, no checksums). They hold the runner's advisory
+lock for the transaction, so a concurrent migration refuses
+(`migration_in_progress`) and none can land before COMMIT. It also refuses an
+existing role, a tampered map digest, and secret files that are not private
+regular files. Passwords are sent as client-computed SCRAM-SHA-256 verifiers.
+
+The A map holds what startup's ordinary checks require and what NEW acceptance
+runs: SELECT on the account fence tables, task attempts and journal markers;
+SELECT/INSERT/UPDATE on tasks, conversations and messages; SELECT/UPDATE on
+entitlement accounts; SELECT/INSERT on task events and the journal binding (the
+backend creates the first binding); and the four-column INSERT on
+`task_inference_recovery`. It grants no DELETE and no function EXECUTE.
+
+`tests/test_task_role_provisioning_postgres.py` applies both maps to a database
+with every migration except the restore-history ones (056, 057, 064, 065; see
+#731) and reruns the real startup, acceptance, worker and exact-W suites against
+it. That history is deliberately incomplete, so `apply`/`verify` refuse it and
+have no test-only bypass. `tests/test_task_role_provisioning_chain_postgres.py`
+runs them, as a superuser and through the CLI, on a database migrated by the
+real runner through the latest file (H included), including the hole, unknown
+row and concurrent-migration refusals. A database that holds the
+restore-history schema refuses unselected startup, so neither is evidence that a
+fully migrated host can run.
 
 The real-PostgreSQL tests cover the effective ACL map, ordinary lifespan/auth,
 owner isolation, budget settlement, seeded-spend refunds, projections, audit,
@@ -126,7 +168,11 @@ The existing independent-dispatch/restore and #477 gates are not waived.
 independent H/W identity and parity checks before native recovery writes, and
 retains actual pool reset completion. Selected workers deliberately refuse
 startup after qualification: the observation-only backend is not execution
-readiness. Unselected services must prove H schema absence before recovery.
+readiness. Unselected services must prove H schema absence, or an exactly
+shaped unbound H schema (#731), before recovery. They first open the native
+fence presence connection and guard every pool acquire with it, so migration 073
+refuses a binding for as long as any unselected process runs; losing the
+presence connection exits the process.
 
 The [H bootstrap qualification](RESTORE_HISTORY_RUNTIME.md#application-startup-and-bootstrap-boundary)
 uses the full application lifespan and a fresh supported-launcher process, with
