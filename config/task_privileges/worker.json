@@ -1,7 +1,7 @@
 {
   "schema": "exact-worker-privileges/v1",
   "baseline": "808744bb76883f3ef63526febc12b6f8e46a8ca7",
-  "proposal_sha256": "9df1ae5223d95b0262fca3471be7a04dd5f0dbf9916331c6df2aee8d52537df3",
+  "proposal_sha256": "867eb9f5bd46ce2eac00b5acdfaa971f7e42a5e38236f839fee41903f78c961c",
   "ordinary_tables": [
     {
       "table": "public.account_deletions",
@@ -121,7 +121,8 @@
       "table_privileges": [
         "SELECT",
         "INSERT",
-        "UPDATE"
+        "UPDATE",
+        "DELETE"
       ],
       "update_columns": []
     },
@@ -251,7 +252,11 @@
         "SELECT",
         "INSERT"
       ],
-      "update_columns": []
+      "update_columns": [
+        "dedup_results",
+        "extracted_facts",
+        "input_snippet"
+      ]
     },
     {
       "table": "public.memory_knowledge_clock",
@@ -356,7 +361,14 @@
         "SELECT",
         "INSERT"
       ],
-      "update_columns": []
+      "update_columns": [
+        "candidate_memory_ids",
+        "candidate_scores",
+        "query_embedding",
+        "query_text",
+        "retrieval_context",
+        "selected_memory_ids"
+      ]
     },
     {
       "table": "public.sessions",

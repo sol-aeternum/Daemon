@@ -115,6 +115,12 @@ tables is limited to the columns the code changes: clock `clock_regressed`,
 skills tables (068, 070): skills and skill revisions get SELECT, INSERT and DELETE
 plus UPDATE on the columns the skills service writes; the store key and shipped
 catalogue get SELECT, INSERT and UPDATE on their two changing columns.
+Memory erasure (`orchestrator/memory/lineage.py`) runs as W on every memory
+delete, so the map also grants DELETE on entities and UPDATE on exactly the
+columns erasure scrubs: extraction log `dedup_results`, `extracted_facts` and
+`input_snippet`, and retrieval log `candidate_memory_ids`, `candidate_scores`,
+`query_embedding`, `query_text`, `retrieval_context` and `selected_memory_ids`
+(#740).
 `proposal_sha256` is the SHA-256 of the map without that field, serialized as
 sorted, compact JSON.
 
