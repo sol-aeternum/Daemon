@@ -1,6 +1,7 @@
 """Offline regressions for the bounded embedding activation review repairs."""
 
 import uuid
+from dataclasses import replace
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -17,8 +18,10 @@ async def test_bootstrap_checks_only_selected_embedding_candidate(monkeypatch, s
     from scripts import attest_inference_routes as script
     from orchestrator.entitlements.policy import load_inference_policy
 
-    policy = load_inference_policy()
-    settings = SimpleNamespace(database_url="postgresql://fictional", embedding_route_id=selector)
+    # The parser rejects an unknown selection; an in-memory policy still
+    # exercises the script's own refusal before any database work.
+    policy = replace(load_inference_policy(), selected_embedding_route_id=selector or None)
+    settings = SimpleNamespace(database_url="postgresql://fictional")
     monkeypatch.setattr(script, "get_settings", lambda: settings)
     monkeypatch.setattr(script, "apply_resolved_database_url", lambda settings: None)
     monkeypatch.setattr(script, "load_inference_policy", lambda: policy)

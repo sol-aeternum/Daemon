@@ -73,6 +73,7 @@
       "notes": "M1 proposal only: not approved or attested. Later approval must separately convert to monitored with a baseline for the single pinned provider; M1.5 chooses the route and timeout. No existing route approval is inherited."
     }
   ],
+  "selected_embedding_route_id": null,
   "embedding_routes": [
     {
       "route_id": "azure-openrouter-small-1024",
@@ -108,7 +109,7 @@
         "provider_slug": "azure",
         "data_policy": {"training": false, "retainsPrompts": false}
       },
-      "notes": "UNAPPROVED. Dedicated input-token adapter only; not a completion candidate. Enable only after route-specific privacy, quality and accounting checks, dated operator review and a fresh sticky-revocation attestation. No region/residency claim. EMBEDDING_ROUTE_ID is empty by default; no retry or provider fallback. No existing vector migration."
+      "notes": "UNAPPROVED. Dedicated input-token adapter only; not a completion candidate. Enable only after route-specific privacy, quality and accounting checks, dated operator review and a fresh sticky-revocation attestation. No region/residency claim. selected_embedding_route_id is null in this portable policy; no retry or provider fallback. No existing vector migration."
     }
   ],
   "tool_services": [

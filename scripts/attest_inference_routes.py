@@ -46,7 +46,7 @@ async def main() -> int:
         return 2
     policy = load_inference_policy()
     routes: list[MonitorableRoute] = list(policy.routes.values())
-    selector = settings.embedding_route_id.strip()
+    selector = policy.selected_embedding_route_id
     if selector:
         embedding_route = policy.embedding_route(selector)
         if embedding_route is None:

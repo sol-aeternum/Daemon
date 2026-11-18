@@ -1130,6 +1130,10 @@ class InferencePolicy:
     embedding_routes: Mapping[str, EmbeddingRoutePolicy] = field(
         default_factory=lambda: MappingProxyType({})
     )
+    #: The one ``embedding_routes`` entry memory embeddings dispatch to, or
+    #: ``None`` when the dedicated adapter is off. Load-time validation only
+    #: checks that it names an entry; approval stays a dispatch-time check.
+    selected_embedding_route_id: str | None = None
 
     def embedding_route(self, route_id: str) -> EmbeddingRoutePolicy | None:
         return self.embedding_routes.get(route_id)
@@ -1592,6 +1596,19 @@ def parse_inference_policy(data: object, *, source_path: str = "<memory>") -> In
             raise PolicyError(f"duplicate accounting route_id: {service.service_id}")
         tool_services[service.service_id] = service
 
+    raw_selected = mapping.get("selected_embedding_route_id")
+    selected_embedding_route_id: str | None = None
+    if raw_selected is not None:
+        if not isinstance(raw_selected, str):
+            raise PolicyError("selected_embedding_route_id must be a string or null")
+        if raw_selected.strip():
+            selected_embedding_route_id = raw_selected.strip()
+            if selected_embedding_route_id not in embedding_routes:
+                raise PolicyError(
+                    f"selected_embedding_route_id {selected_embedding_route_id!r} "
+                    "is not present in embedding_routes"
+                )
+
     raw_default = mapping.get("default_route_id")
     default_route_id: str | None
     if raw_default is None:
@@ -1609,6 +1626,7 @@ def parse_inference_policy(data: object, *, source_path: str = "<memory>") -> In
         default_route_id=default_route_id,
         source_path=source_path,
         embedding_routes=MappingProxyType(embedding_routes),
+        selected_embedding_route_id=selected_embedding_route_id,
     )
 
 

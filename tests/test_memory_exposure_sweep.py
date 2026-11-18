@@ -548,7 +548,19 @@ def dataset():
 
 @pytest.fixture
 def configured(monkeypatch):
-    monkeypatch.setenv("EMBEDDING_ROUTE_ID", "synthetic-selected-route")
+    from dataclasses import replace
+
+    from orchestrator.entitlements import policy as policy_module
+    from orchestrator.memory import embedding as embedding_module
+
+    # Route selection is inference-policy configuration; the parser rejects an
+    # unknown id, so the synthetic selection is set on an in-memory copy. An
+    # explicit path keeps settings uncached until the test sets its env.
+    policy = replace(
+        policy_module.load_inference_policy(policy_module.DEFAULT_INFERENCE_POLICY),
+        selected_embedding_route_id="synthetic-selected-route",
+    )
+    monkeypatch.setattr(embedding_module, "load_inference_policy", lambda: policy)
     monkeypatch.setenv("RETRIEVAL_LOGGING_ENABLED", "false")
     monkeypatch.setenv("RETRIEVAL_LOGGING_DEBUG", "false")
 

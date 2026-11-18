@@ -92,7 +92,6 @@ def _settings(dsn: str = BENCH_DSN) -> SimpleNamespace:
         embedding_dimensions=1024,
         daemon_inference_policy=None,
         daemon_model_routing=None,
-        embedding_route_id="",
     )
 
 
@@ -1601,7 +1600,9 @@ async def test_manifest_pins_run_identity(tmp_path: Path, monkeypatch: pytest.Mo
     assert manifest["run_id"] == RUN_ID
     assert manifest["baseline_qualified"] is True
     assert manifest["effective_config"]["harness"]["benchmark_mode"] is True
-    assert "embedding_route_id" in manifest["effective_config"]["settings"]
+    # Route selection is pinned through the inference policy file, not a setting.
+    assert "embedding_route_id" not in manifest["effective_config"]["settings"]
+    assert manifest["effective_config"]["files"]["inference_policy"]
     assert "daemon_encryption_key" not in manifest["effective_config"]["settings"]
     assert manifest["phases"]["evaluate"]["active_seconds"] >= 0
     assert "last_progress_at" in manifest["invocations"][0]
@@ -1743,7 +1744,7 @@ async def test_resume_with_only_an_environment_config_change_is_refused(
     runner.checkpoint_path.parent.mkdir(parents=True)
     runner.checkpoint_path.write_text(json.dumps(_ingested_checkpoint(dataset_path)))
     runtime = BenchRuntime(monkeypatch)
-    runtime.settings.embedding_route_id = "azure-openrouter-small-1024"
+    runtime.settings.embedding_query_model = "voyage-4-lite"
 
     async def fake_eval(**kwargs: Any) -> dict[str, Any]:
         stop.request(signal.SIGTERM)
@@ -1753,15 +1754,63 @@ async def test_resume_with_only_an_environment_config_change_is_refused(
     with pytest.raises(HarnessInterrupted):
         await runner.evaluate()
 
-    # Same code, same database; only EMBEDDING_ROUTE_ID is unset now.
-    runtime.settings.embedding_route_id = ""
+    # Same code, same database; only EMBEDDING_QUERY_MODEL differs now.
+    runtime.settings.embedding_query_model = "voyage-4-large"
     evaluate_mock = AsyncMock()
     monkeypatch.setattr(fact_harness, "evaluate_single_parity", evaluate_mock)
-    with pytest.raises(ManifestPinError, match="settings.embedding_route_id"):
+    with pytest.raises(ManifestPinError, match="settings.embedding_query_model"):
         await _runner(tmp_path, dataset_path).evaluate()
     evaluate_mock.assert_not_awaited()
     checkpoint = json.loads(runner.checkpoint_path.read_text())
     assert list(checkpoint["phases"]["evaluate"]["results"]) == ["q1"]
+
+
+@pytest.mark.asyncio
+async def test_resume_with_only_an_embedding_selection_change_is_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from orchestrator.entitlements import policy as policy_module
+
+    production = json.loads(
+        (
+            Path(__file__).resolve().parents[1] / "config/inference_policy.production.json"
+        ).read_text()
+    )
+    selected_path = tmp_path / "policy_selected.json"
+    selected_path.write_text(json.dumps(production))
+    # The runbook's lexical arm: the same policy with the selection cleared.
+    lexical_path = tmp_path / "policy_lexical.json"
+    lexical_path.write_text(json.dumps({**production, "selected_embedding_route_id": None}))
+    policy_path = {"current": selected_path}
+
+    def load_policy(path: Any = None) -> Any:
+        chosen = policy_path["current"]
+        return policy_module.parse_inference_policy(
+            json.loads(chosen.read_text()), source_path=str(chosen)
+        )
+
+    monkeypatch.setattr(policy_module, "load_inference_policy", load_policy)
+    dataset_path = _write_dataset(tmp_path)
+    stop = StopController()
+    runner = _runner(tmp_path, dataset_path, stop=stop)
+    runner.checkpoint_path.parent.mkdir(parents=True)
+    runner.checkpoint_path.write_text(json.dumps(_ingested_checkpoint(dataset_path)))
+    BenchRuntime(monkeypatch)
+
+    async def fake_eval(**kwargs: Any) -> dict[str, Any]:
+        stop.request(signal.SIGTERM)
+        return _result(kwargs["question_id"])
+
+    monkeypatch.setattr(fact_harness, "evaluate_single_parity", fake_eval)
+    with pytest.raises(HarnessInterrupted):
+        await runner.evaluate()
+
+    policy_path["current"] = lexical_path
+    evaluate_mock = AsyncMock()
+    monkeypatch.setattr(fact_harness, "evaluate_single_parity", evaluate_mock)
+    with pytest.raises(ManifestPinError, match="files.inference_policy"):
+        await _runner(tmp_path, dataset_path).evaluate()
+    evaluate_mock.assert_not_awaited()
 
 
 @pytest.mark.asyncio

@@ -62,6 +62,9 @@ def _settings(**overrides) -> SimpleNamespace:
 
 
 class _Policy:
+    #: No dedicated route selected: these checks cover the legacy providers.
+    selected_embedding_route_id: str | None = None
+
     def __init__(self, approved: set[str], *, error: Exception | None = None):
         self._approved = set(approved)
         self._error = error
@@ -173,6 +176,22 @@ def test_invalid_policy_is_invalid_configuration(monkeypatch):
     assert configuration == "unavailable"
     assert "invalid_configuration" in reasons
     assert "route_unapproved" not in reasons
+
+
+def test_unloadable_policy_reports_invalid_configuration_not_unknown(monkeypatch):
+    _forbid_network(monkeypatch)
+    monkeypatch.setattr(embedding_module, "get_settings", lambda: _settings())
+
+    def unloadable():
+        raise PolicyError("bad policy")
+
+    monkeypatch.setattr(embedding_module, "load_inference_policy", unloadable)
+
+    assert describe_embedding_configuration() == ("unavailable", ("invalid_configuration",))
+    status = get_embedding_status()
+    assert status["configuration"] == "unavailable"
+    assert status["reason_codes"] == ["invalid_configuration"]
+    assert status["adapters"]["azure-openrouter"]["selected"] is False
 
 
 def test_malformed_configuration_values_are_reported(monkeypatch):

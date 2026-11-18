@@ -22,7 +22,8 @@ estimate first.
   or rebase the run's checkout while a run is in progress; use a dedicated worktree.
 - **One configuration per run.** The manifest records `effective_config`: hashes of every
   non-secret `Settings` field, the inference policy, model routing, the config pin and the harness
-  options. Resuming with any of them changed (for example a different `EMBEDDING_ROUTE_ID`) is
+  options. Resuming with any of them changed (for example a policy with a different
+  `selected_embedding_route_id`) is
   refused with no override. Start a fresh `--output-dir` instead.
 - **Results live outside the repo** until the run is finished. Copy in only what you would publish
   (step 9).
@@ -56,10 +57,17 @@ Export only the provider key. Do not source a production `.env`. `bench_db.sh ru
 `DATABASE_URL`, `DAEMON_ENCRYPTION_KEY`, `DAEMON_AUTH_PEPPER`, `PYTHONPATH` and
 `DAEMON_INFERENCE_POLICY=config/inference_policy.production.json`.
 
+The embedding route is selected by `selected_embedding_route_id` in the inference policy, not by
+an environment variable. The production policy selects `azure-openrouter-small-1024`.
+
 | Mode | Set | Effect |
 |---|---|---|
-| Qualified embeddings | `EMBEDDING_ROUTE_ID=azure-openrouter-small-1024` | Ingest stores document embeddings, evaluate embeds the query |
-| Lexical | leave `EMBEDDING_ROUTE_ID` unset | Retrieval uses the lexical fallback, as production does without a route |
+| Qualified embeddings | nothing (`bench_db.sh run` uses the production policy) | Ingest stores document embeddings, evaluate embeds the query |
+| Lexical | `DAEMON_INFERENCE_POLICY="$RUN/policy_lexical.json"` inside the `run --` command (step 6) | Retrieval uses the lexical fallback, as production does without a route |
+
+`bench_db.sh run` always sets `DAEMON_INFERENCE_POLICY` to the production policy, so the lexical
+arm overrides it inside the command with `env`. The manifest pins the policy file by hash, so the
+two arms record different configurations, as they should.
 
 Document embeddings are written during **ingest**. To compare the two retrieval modes on one
 corpus, ingest once *with* the route, then run one evaluate with it (A) and one without it (B). The
@@ -166,7 +174,6 @@ from the exact ingest state:
 
 ```sh
 tests/benchmark_longmemeval/bench_db.sh restore "$RUN/ingest.dump"
-EMBEDDING_ROUTE_ID=azure-openrouter-small-1024 \
 systemd-inhibit --what=sleep:idle:handle-lid-switch --who=longmemeval --why="benchmark run" \
   tests/benchmark_longmemeval/bench_db.sh run -- \
   uv run --locked python -m orchestrator.eval.longmemeval evaluate \
@@ -175,11 +182,15 @@ systemd-inhibit --what=sleep:idle:handle-lid-switch --who=longmemeval --why="ben
     --ingest-snapshot "$RUN/ingest.dump" \
     --output-dir "$RUN/eval_a_qualified"
 
+# Lexical arm: the production policy with the selection cleared, written once per run.
+jq '.selected_embedding_route_id = null' config/inference_policy.production.json \
+  > "$RUN/policy_lexical.json"
 tests/benchmark_longmemeval/bench_db.sh restore "$RUN/ingest.dump"
-# same command without EMBEDDING_ROUTE_ID, --output-dir "$RUN/eval_b_lexical"
+# same command, with `env DAEMON_INFERENCE_POLICY="$RUN/policy_lexical.json"` right after
+# `bench_db.sh run --`, and --output-dir "$RUN/eval_b_lexical"
 ```
 
-(fish: prefix with `env EMBEDDING_ROUTE_ID=...` instead.) The evaluate refuses if the database
+The evaluate refuses if the database
 fingerprint differs from the ingest's. `--allow-state-mismatch` overrides this, is recorded, and
 makes the results non-comparable.
 
