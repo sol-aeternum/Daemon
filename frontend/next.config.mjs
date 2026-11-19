@@ -20,6 +20,11 @@ const nextConfig = {
   // Keep file tracing scoped to this app to avoid monorepo root inference
   // when unrelated lockfiles exist in the parent directory.
   outputFileTracingRoot: path.dirname(fileURLToPath(import.meta.url)),
+  // The production image builds with frontend/ as its Docker context, so the
+  // build's type check must not reach test files that import repository-root
+  // fixtures (#746). `npm run type-check` still checks everything via
+  // tsconfig.json.
+  typescript: { tsconfigPath: 'tsconfig.build.json' },
 };
 
 export default withSerwist(nextConfig);
