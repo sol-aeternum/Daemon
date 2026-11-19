@@ -322,11 +322,15 @@ routes pin, the operator approved:
   per million**, matching the endpoint's current listed price (0.16 / 0.49).
 - **Routine fallback placement.** `routine`, `background` and `research` gain a
   second candidate group, `flash_fallback`, containing these two routes after the
-  `luna` group. Selection takes the first group with a qualified candidate, so the
-  fallback serves only while no Luna route qualifies; within it the cheaper
-  bounded estimate wins. This placement is an operator decision, not a measured
-  quality result: neither route has been evaluated against Luna on these
-  workloads.
+  `luna` group. Luna is always tried first while qualified; the fallback serves
+  when no Luna route qualifies and, as in every multi-group automatic profile,
+  when a qualified Luna attempt fails before output (provider error, timeout,
+  revocation or budget denial). Within the group the cheaper bounded estimate
+  wins. Each attempt reserves and settles on its own, so a failover turn holds
+  two reservations, and after an ambiguous first attempt both providers may have
+  received the prompt. The owner approved this failover scope on the PR review
+  (#750). This placement is an operator decision, not a measured quality result:
+  neither route has been evaluated against Luna on these workloads.
 - **Merge judge stays on Luna.** The memory-merge equivalence judge was qualified
   only on Luna, so it moves to its own Luna-only `memory_equivalence` routing
   profile and never reaches the fallback; without a qualified Luna route it

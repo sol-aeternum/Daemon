@@ -32,7 +32,7 @@ def test_deployment_owned_pre_pr_routing_loads_and_selects_existing_profile(monk
     # Semantic SHA-256 of the shipped config/model_routing.json, re-pinned for the
     # #747 flash_fallback groups, judge profile and DeepSeek 1017.
     assert hashlib.sha256(json.dumps(raw, sort_keys=True).encode()).hexdigest() == (
-        "8a2cbd7c2491c74b69b237aa4878154a0afea68b8ebf37c1eaef2eb00e1b7380"
+        "56b254ac5ebc4229467cd5a065c2bf9cc36ac50fd5ecfb3b69d5db9f551e256a"
     )
     path = tmp_path / "deployment-routing.json"
     path.write_text(json.dumps(raw))

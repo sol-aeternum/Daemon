@@ -19,6 +19,7 @@ from orchestrator.entitlements.policy import (
     RouteNotApproved,
     parse_inference_policy,
 )
+from tests.test_compute_runtime import _status_error
 
 ROOT = Path(__file__).resolve().parents[1]
 # Evaluation time: the latest operator review in the shipped policy (#747).
@@ -242,7 +243,7 @@ async def test_flash_fallback_serves_only_when_no_luna_route_qualifies(
     monkeypatch, production_policy: InferencePolicy, mocked_dispatch, profile
 ):
     # #747: the operator-placed flash_fallback group answers these profiles when
-    # Luna's route is not qualified, and is never chosen over a qualified Luna.
+    # Luna's route is not qualified, and is never selected ahead of a qualified Luna.
     flash_only = replace(
         production_policy,
         routes={
@@ -260,6 +261,75 @@ async def test_flash_fallback_serves_only_when_no_luna_route_qualifies(
 
     monkeypatch.setattr(compute_runtime, "load_inference_policy", lambda: production_policy)
     assert compute_runtime.choose_route(profile=profile).route_id == "luna-azure-eu"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("profile", ["routine", "background", "research"])
+async def test_failing_qualified_luna_fails_over_to_flash_on_a_second_hold(
+    production_policy: InferencePolicy, mocked_dispatch, profile
+):
+    # #750 review: the owner approved failover, so a qualified Luna that fails
+    # at dispatch hands the same turn to the flash group, as any automatic
+    # multi-group profile does. Each attempt reserves and settles on its own.
+    service, provider = mocked_dispatch
+    service.reserve.side_effect = ["luna-hold", "flash-hold"]
+    provider.side_effect = [_status_error(503), {"choices": []}]
+    with model_routing.routing_context(profile):
+        await compute_runtime.guarded_completion(messages=[{"role": "user", "content": "fixture"}])
+    sent = [call.kwargs["model"] for call in provider.await_args_list]
+    assert len(sent) == 2
+    assert "gpt-6-luna" in sent[0]
+    assert any(flash in sent[1] for flash in ("deepseek-v4.1-flash-1017", "glm-5.3-flash"))
+    assert service.reserve.await_count == 2
+    assert [call.args[0] for call in service.settle.await_args_list] == [
+        "luna-hold",
+        "flash-hold",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_pre_output_luna_stream_failure_fails_over_to_flash(
+    production_policy: InferencePolicy, mocked_dispatch
+):
+    service, provider = mocked_dispatch
+    service.reserve.side_effect = ["luna-hold", "flash-hold"]
+
+    async def failing_chunks():
+        raise _status_error(503)
+        yield {}  # pragma: no cover - unreachable; marks this an async generator
+
+    async def ok_chunks():
+        yield {"text": "recovered"}
+
+    provider.side_effect = [failing_chunks(), ok_chunks()]
+    with model_routing.routing_context("routine"):
+        stream = await compute_runtime.guarded_completion(
+            messages=[{"role": "user", "content": "fixture"}], stream=True
+        )
+        received = [chunk async for chunk in stream]
+    assert received == [{"text": "recovered"}]
+    sent = [call.kwargs["model"] for call in provider.await_args_list]
+    assert "gpt-6-luna" in sent[0] and "gpt-6-luna" not in sent[1]
+    assert [call.args[0] for call in service.settle.await_args_list] == [
+        "luna-hold",
+        "flash-hold",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_failing_luna_judge_never_fails_over(
+    production_policy: InferencePolicy, mocked_dispatch
+):
+    # The merge judge's profile has no second group, so a Luna failure ends it.
+    service, provider = mocked_dispatch
+    provider.side_effect = [_status_error(503)]
+    with model_routing.routing_context("memory_equivalence"):
+        with pytest.raises(compute_runtime.ComputeUnavailable):
+            await compute_runtime.guarded_completion(
+                messages=[{"role": "user", "content": "fixture"}]
+            )
+    assert provider.await_count == 1
+    assert service.reserve.await_count == 1
 
 
 @pytest.mark.asyncio

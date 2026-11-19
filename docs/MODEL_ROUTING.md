@@ -40,8 +40,10 @@ route. No existing profile candidates or route approvals change. See
 For [#747](https://github.com/sol-aeternum/Daemon/issues/747) the operator added a
 second automatic group, `flash_fallback`, to `routine`, `background` and
 `research`: DeepSeek V4.1 Flash (now the `-1017` checkpoint) and GLM 5.3 Flash.
-It is reached only when no `luna` candidate is qualified; within it the cheaper
-bounded estimate wins. The placement is unmeasured: no evaluation compares these
+Luna is tried first while qualified. The fallback serves when no `luna` candidate
+qualifies and, through the normal candidate walk, when a qualified Luna attempt
+fails before output; that attempt and the fallback each hold their own
+reservation. Within the group the cheaper bounded estimate wins. The placement is unmeasured: no evaluation compares these
 routes with Luna on these workloads. The memory-merge equivalence judge, qualified
 only on Luna, moves from `background` to its own optional Luna-only
 `memory_equivalence` profile, so the fallback never decides merges: without a

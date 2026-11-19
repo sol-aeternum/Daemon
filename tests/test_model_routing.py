@@ -174,8 +174,8 @@ def test_approved_luna_first_placement_keeps_flash_fallback_behind_luna() -> Non
     """Luna stays the first and only evaluated group for the routine profiles.
 
     The placement is a real, narrow measurement rather than a price ranking. The
-    operator-placed flash fallback (#747) sits in a later group, so it is reached
-    only when no Luna route qualifies; every other model stays unplaced and is
+    operator-placed flash fallback (#747) sits in a later group, so Luna is always
+    tried first while qualified; every other model stays unplaced and is
     unreachable automatically however cheap or qualified it is, and the escalation
     ladders for demanding work stay where they were.
     """

@@ -38,7 +38,7 @@
         "memory_decomposition": {"reasoning_effort": "none"},
         "council": {"reasoning_effort": "medium", "include_reasoning": true}
       },
-      "notes": "Provisional economical candidate and the single evaluated automatic candidate for the routine, background and research profiles, at its medium default effort; those profiles fall back to the unmeasured flash group only when Luna is not qualified (#747). Medium was approved on 3 October 2026 after the B3 evaluation (docs/REASONING_EVAL_PROTOCOL.md): it passed the pre-registered rule on the test split, which could not separate it from low; its gain over low rests on development and validation tool and planning cases. The earlier low placement rested on 16/16 human-acceptable held-out answers inside one narrow bounded screen. Neither is evidence for memory helpers, general reasoning, coding or demanding work, and the council preset and the reasoning/council placements are unchanged."
+      "notes": "Provisional economical candidate and the single evaluated automatic candidate for the routine, background and research profiles, at its medium default effort; those profiles fall back to the unmeasured flash group when Luna is not qualified or a Luna attempt fails before output (#747). Medium was approved on 3 October 2026 after the B3 evaluation (docs/REASONING_EVAL_PROTOCOL.md): it passed the pre-registered rule on the test split, which could not separate it from low; its gain over low rests on development and validation tool and planning cases. The earlier low placement rested on 16/16 human-acceptable held-out answers inside one narrow bounded screen. Neither is evidence for memory helpers, general reasoning, coding or demanding work, and the council preset and the reasoning/council placements are unchanged."
     },
     {
       "model": "openrouter/google/gemini-3.8-flash",
@@ -162,7 +162,7 @@
           ]
         }
       ],
-      "notes": "Interactive chat and tool work. Luna at its medium default effort is the first group and the only evaluated candidate. The flash_fallback group (DeepSeek Flash 1017, GLM 5.3 Flash) is an operator-placed, unmeasured fallback added on 2026-11-19 after Luna's route was revoked (#747); it is reached only when no Luna route is qualified, and within it the lowest bounded cost for the request wins. Premium is never auto-considered here: routine and background stay routine unless the account explicitly selects a premium model. An exact manual selection is still honoured and still has to clear qualification, capability, entitlement and budget checks."
+      "notes": "Interactive chat and tool work. Luna at its medium default effort is the first group and the only evaluated candidate. The flash_fallback group (DeepSeek Flash 1017, GLM 5.3 Flash) is an operator-placed, unmeasured fallback added on 2026-11-19 after Luna's route was revoked (#747); it serves when no Luna route is qualified or a qualified Luna attempt fails before output, and within it the lowest bounded cost for the request wins. Premium is never auto-considered here: routine and background stay routine unless the account explicitly selects a premium model. An exact manual selection is still honoured and still has to clear qualification, capability, entitlement and budget checks."
     },
     {
       "profile": "background",
@@ -184,7 +184,7 @@
           ]
         }
       ],
-      "notes": "Titles, extraction and basic summaries use this routine-funded pool, which carries the same groups as routine: Luna at medium effort first, then the operator-placed, unmeasured flash_fallback group (#747) only when no Luna route is qualified. Substantial background reasoning and consolidation use the separate reasoning profile under the same account limits."
+      "notes": "Titles, extraction and basic summaries use this routine-funded pool, which carries the same groups as routine: Luna at medium effort first, then the operator-placed, unmeasured flash_fallback group (#747) when no Luna route is qualified or a Luna attempt fails before output. The memory-merge judge uses its own Luna-only memory_equivalence profile instead. Substantial background reasoning and consolidation use the separate reasoning profile under the same account limits."
     },
     {
       "profile": "reasoning",
@@ -230,7 +230,7 @@
           ]
         }
       ],
-      "notes": "Ordinary source synthesis remains accessible on routine capacity; complex analysis is classified as reasoning. Luna at medium effort is the first group and the only evaluated candidate, at this profile's larger comparable output floor; the operator-placed, unmeasured flash_fallback group (#747) is reached only when no Luna route is qualified. The demanding and escalation groups are removed, so there is no automatic premium candidate. allow_premium stays true, but with no premium model in the group it now admits no automatic premium candidate; a manually selected premium route still requires account eligibility and funding."
+      "notes": "Ordinary source synthesis remains accessible on routine capacity; complex analysis is classified as reasoning. Luna at medium effort is the first group and the only evaluated candidate, at this profile's larger comparable output floor; the operator-placed, unmeasured flash_fallback group (#747) serves when no Luna route is qualified or a Luna attempt fails before output. The demanding and escalation groups are removed, so there is no automatic premium candidate. allow_premium stays true, but with no premium model in the group it now admits no automatic premium candidate; a manually selected premium route still requires account eligibility and funding."
     },
     {
       "profile": "council",
