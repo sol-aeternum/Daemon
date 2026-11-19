@@ -177,6 +177,12 @@ jobs:
       - name: Build
         run: npm run build
 
+      # Build the production image from frontend/ alone, as Compose does, so
+      # imports that escape that context or files dropped by .dockerignore
+      # fail here rather than at deploy time (#746).
+      - name: Production image build (frontend context)
+        run: docker build --file Dockerfile .
+
   # Non-blocking inventory runs beside the required Frontend gates job so its
   # browser runtime stays off the critical path. Not a required check.
   browser-inventory:
