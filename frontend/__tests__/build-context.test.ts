@@ -1,14 +1,14 @@
 // @vitest-environment node
-import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import ts from 'typescript';
 import { expect, it } from 'vitest';
 
 // The production image builds with frontend/ as its Docker context (#746), so
-// every file the build type-checks must resolve its relative imports inside it.
+// the build's type check must stay inside it. CI also builds the real image
+// (Frontend gates), which covers `.dockerignore` and anything this misses.
 const root = path.resolve(__dirname, '..');
 
-function buildScope(): string[] {
+function parsedBuildConfig(): ts.ParsedCommandLine {
   const configPath = path.join(root, 'tsconfig.build.json');
   const { config, error } = ts.readConfigFile(configPath, ts.sys.readFile);
   expect(error).toBeUndefined();
@@ -18,55 +18,37 @@ function buildScope(): string[] {
     root,
     undefined,
     configPath,
-  ).fileNames;
+  );
 }
 
-function relativeSpecifiers(file: string): string[] {
-  const source = ts.createSourceFile(
-    file,
-    readFileSync(file, 'utf8'),
-    ts.ScriptTarget.Latest,
-    true,
-  );
-  const found: string[] = [];
-  const visit = (node: ts.Node) => {
-    if (
-      (ts.isImportDeclaration(node) || ts.isExportDeclaration(node)) &&
-      node.moduleSpecifier &&
-      ts.isStringLiteral(node.moduleSpecifier)
-    ) {
-      found.push(node.moduleSpecifier.text);
-    } else if (
-      ts.isCallExpression(node) &&
-      node.arguments.length > 0 &&
-      ts.isStringLiteral(node.arguments[0]) &&
-      (node.expression.kind === ts.SyntaxKind.ImportKeyword ||
-        (ts.isIdentifier(node.expression) &&
-          node.expression.text === 'require'))
-    ) {
-      found.push(node.arguments[0].text);
-    }
-    ts.forEachChild(node, visit);
-  };
-  visit(source);
-  return found.filter((s) => s.startsWith('.'));
-}
+const isTestFile = (f: string) =>
+  /(^|\/)(__tests__|e2e)\//.test(f) || /\.(test|spec)\.[cm]?[jt]sx?$/.test(f);
 
-it('excludes tests from the production build type check', () => {
-  const scope = buildScope().map((f) => path.relative(root, f));
-  expect(scope.length).toBeGreaterThan(0);
-  expect(scope.filter((f) => /(^|\/)(__tests__|e2e)\//.test(f))).toEqual([]);
-  expect(scope.filter((f) => /\.(test|spec)\.tsx?$/.test(f))).toEqual([]);
+it('excludes tests from the production build type check roots', () => {
+  const roots = parsedBuildConfig().fileNames.map((f) =>
+    path.relative(root, f),
+  );
+  expect(roots.length).toBeGreaterThan(0);
+  expect(roots.filter(isTestFile)).toEqual([]);
 });
 
-it('keeps every build-checked import inside the frontend build context', () => {
-  const escaping = buildScope().flatMap((file) =>
-    relativeSpecifiers(file)
-      .filter((spec) => {
-        const target = path.resolve(path.dirname(file), spec);
-        return path.relative(root, target).startsWith('..');
-      })
-      .map((spec) => `${path.relative(root, file)} -> ${spec}`),
-  );
-  expect(escaping).toEqual([]);
-});
+// Resolve the whole program, as the build's type check does, so `@/` paths,
+// type-only `import()` and transitive imports are followed too.
+it('keeps the resolved build program inside the frontend build context', () => {
+  const parsed = parsedBuildConfig();
+  const program = ts.createProgram({
+    rootNames: parsed.fileNames,
+    options: parsed.options,
+    projectReferences: parsed.projectReferences,
+  });
+  const files = program
+    .getSourceFiles()
+    .map((sf) => path.relative(root, sf.fileName))
+    .filter((f) => !f.split(path.sep).includes('node_modules'));
+  expect(files.filter((f) => f.startsWith('..'))).toEqual([]);
+  // Playwright configs are build roots and may import e2e/ helpers, which
+  // ship in the context; test suites themselves must stay out.
+  expect(
+    files.filter((f) => isTestFile(f) && !/^e2e\/[^/]+\.c?js$/.test(f)),
+  ).toEqual([]);
+}, 60_000);
