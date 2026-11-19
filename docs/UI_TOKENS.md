@@ -15,7 +15,8 @@ are mapped in `frontend/tailwind.config.ts`. This implements issue #34.
 - `min-h-touch` and `min-w-touch` reference `--touch-min` (44px).
 - Use scale utilities for ordinary spacing. Component geometry that cannot
   use the scale has a named token, including sidebar width, message widths,
-  preview heights, and the Studio and skill-editor grid columns.
+  preview heights, the Studio and skill-editor grid columns, and the chat
+  transcript/composer grid.
 - Safe-area utilities retain the device inset while respecting spacing tokens.
 
 The owner-approved Midnight P1 refresh evolves the existing blue/slate roles in

@@ -2514,7 +2514,7 @@ function ChatContent() {
             </header>
 
             {/* Keep the footer in the transcript column, not under the Contents rail. */}
-            <div className="grid min-h-0 flex-1 grid-cols-[minmax(0,1fr)_auto] grid-rows-[minmax(0,1fr)_auto]">
+            <div className="grid min-h-0 flex-1 grid-cols-chat grid-rows-chat">
               <main
                 ref={scrollContainerRef}
                 onScroll={onScroll}
