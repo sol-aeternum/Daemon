@@ -288,6 +288,64 @@ async def test_failing_qualified_luna_fails_over_to_flash_on_a_second_hold(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("stream", [False, True])
+async def test_failover_walk_is_bounded_by_luna_and_both_flash_routes(
+    production_policy: InferencePolicy, mocked_dispatch, stream
+):
+    # #750 review: the owner approved trying both Flash routes on one call.
+    # Luna and the cheaper Flash route fail before output, the other Flash
+    # route serves: three dispatches, three holds settled in order, no fourth.
+    service, provider = mocked_dispatch
+    service.reserve.side_effect = ["luna-hold", "flash-hold-a", "flash-hold-b"]
+
+    async def failing_chunks():
+        raise _status_error(503)
+        yield {}  # pragma: no cover - unreachable; marks this an async generator
+
+    async def ok_chunks():
+        yield {"text": "recovered"}
+
+    if stream:
+        provider.side_effect = [failing_chunks(), failing_chunks(), ok_chunks()]
+    else:
+        provider.side_effect = [_status_error(503), _status_error(503), {"choices": []}]
+    with model_routing.routing_context("routine"):
+        result = await compute_runtime.guarded_completion(
+            messages=[{"role": "user", "content": "fixture"}], stream=stream
+        )
+        if stream:
+            assert [chunk async for chunk in result] == [{"text": "recovered"}]
+    sent = [call.kwargs["model"] for call in provider.await_args_list]
+    assert len(sent) == 3
+    assert "gpt-6-luna" in sent[0]
+    # Cheaper bounded estimate first (GLM's ceilings are lower), then DeepSeek.
+    assert "glm-5.3-flash" in sent[1] and "deepseek-v4.1-flash-1017" in sent[2]
+    assert service.reserve.await_count == 3
+    assert [call.args[0] for call in service.settle.await_args_list] == [
+        "luna-hold",
+        "flash-hold-a",
+        "flash-hold-b",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_all_three_routes_failing_raises_after_three_holds(
+    production_policy: InferencePolicy, mocked_dispatch
+):
+    service, provider = mocked_dispatch
+    service.reserve.side_effect = ["luna-hold", "flash-hold-a", "flash-hold-b"]
+    provider.side_effect = [_status_error(503)] * 3
+    with model_routing.routing_context("routine"):
+        with pytest.raises(compute_runtime.ComputeUnavailable):
+            await compute_runtime.guarded_completion(
+                messages=[{"role": "user", "content": "fixture"}]
+            )
+    assert provider.await_count == 3
+    assert service.reserve.await_count == 3
+    assert service.settle.await_count == 3
+
+
+@pytest.mark.asyncio
 async def test_pre_output_luna_stream_failure_fails_over_to_flash(
     production_policy: InferencePolicy, mocked_dispatch
 ):

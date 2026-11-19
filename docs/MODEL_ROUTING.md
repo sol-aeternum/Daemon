@@ -42,8 +42,10 @@ second automatic group, `flash_fallback`, to `routine`, `background` and
 `research`: DeepSeek V4.1 Flash (now the `-1017` checkpoint) and GLM 5.3 Flash.
 Luna is tried first while qualified. The fallback serves when no `luna` candidate
 qualifies and, through the normal candidate walk, when a qualified Luna attempt
-fails before output; that attempt and the fallback each hold their own
-reservation. Within the group the cheaper bounded estimate wins. The placement is unmeasured: no evaluation compares these
+fails before output. Within the group the cheaper bounded estimate is tried
+first, then the other Flash route if that one also fails before output. Each
+attempt holds its own reservation: at most three dispatches, reservations and
+providers per call (two with Luna unqualified), all approved by the owner (#750). The placement is unmeasured: no evaluation compares these
 routes with Luna on these workloads. The memory-merge equivalence judge, qualified
 only on Luna, moves from `background` to its own optional Luna-only
 `memory_equivalence` profile, so the fallback never decides merges: without a

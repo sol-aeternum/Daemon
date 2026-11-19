@@ -326,10 +326,13 @@ routes pin, the operator approved:
   when no Luna route qualifies and, as in every multi-group automatic profile,
   when a qualified Luna attempt fails before output (provider error, timeout,
   revocation or budget denial). Within the group the cheaper bounded estimate
-  wins. Each attempt reserves and settles on its own, so a failover turn holds
-  two reservations, and after an ambiguous first attempt both providers may have
-  received the prompt. The owner approved this failover scope on the PR review
-  (#750). This placement is an operator decision, not a measured quality result:
+  is tried first, and if it also fails before output the other Flash route is
+  tried on the same call. Each attempt reserves and settles on its own. The bound
+  per call is therefore at most three dispatches, three reservations and three
+  providers (Luna, then both Flash routes), or two when Luna is unqualified; after
+  ambiguous failures every attempted provider may have received the prompt. The
+  owner approved this full failover scope, including both Flash routes on one
+  call, on the PR review (#750). This placement is an operator decision, not a measured quality result:
   neither route has been evaluated against Luna on these workloads.
 - **Merge judge stays on Luna.** The memory-merge equivalence judge was qualified
   only on Luna, so it moves to its own Luna-only `memory_equivalence` routing
