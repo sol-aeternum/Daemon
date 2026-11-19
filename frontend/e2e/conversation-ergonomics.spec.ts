@@ -53,6 +53,11 @@ const conversation = {
 
 async function mockApi(page: Page) {
   await mockCacheClear(page);
+  await page.route('**/api/entitlements', (route) =>
+    route.fulfill({
+      json: { plan: 'free', capabilities: ['chat'], limits: {} },
+    }),
+  );
   await page.route('**/api/v1/auth/config', (route) =>
     route.fulfill({
       json: {
@@ -436,4 +441,182 @@ test('streaming preserves reading position and Jump to latest resumes following'
   await expect
     .poll(() => messages.evaluate((element) => element.scrollTop))
     .toBeLessThan(350);
+});
+
+type BurstMode = 'text-only' | 'thinking-then-text';
+
+async function installBurstStream(
+  page: Page,
+  mode: BurstMode,
+  deltaCount: number,
+) {
+  await page.addInitScript(
+    ({ mode, count }: { mode: BurstMode; count: number }) => {
+      const originalFetch = window.fetch.bind(window);
+      window.fetch = async (input, init) => {
+        const url =
+          typeof input === 'string'
+            ? input
+            : input instanceof URL
+              ? input.href
+              : input.url;
+        if (!url.endsWith('/api/chat')) return originalFetch(input, init);
+        sessionStorage.setItem(
+          'burst-chat-requests',
+          String(
+            Number(sessionStorage.getItem('burst-chat-requests') ?? '0') + 1,
+          ),
+        );
+        const encoder = new TextEncoder();
+        return new Response(
+          new ReadableStream({
+            start(controller) {
+              const send = (chunk: object) =>
+                controller.enqueue(
+                  encoder.encode(`data: ${JSON.stringify(chunk)}\n\n`),
+                );
+              send({ type: 'start', messageId: 'burst-reply' });
+              // Every chunk is enqueued before the stream yields, so the
+              // client sees the whole burst with no task boundary between
+              // deltas: the shape that reproduced #752 and #185.
+              if (mode === 'thinking-then-text') {
+                for (let index = 0; index < count; index += 1) {
+                  send({
+                    type: 'data-event',
+                    data: {
+                      type: 'thinking',
+                      content: `Thought ${index + 1}. `,
+                    },
+                  });
+                }
+              }
+              send({ type: 'text-start', id: 'burst-text' });
+              for (let index = 0; index < count; index += 1) {
+                send({
+                  type: 'text-delta',
+                  id: 'burst-text',
+                  delta: `Delta ${index + 1}. `,
+                });
+              }
+              send({
+                type: 'text-delta',
+                id: 'burst-text',
+                delta: 'Burst reply complete.',
+              });
+              send({ type: 'text-end', id: 'burst-text' });
+              send({ type: 'finish' });
+              controller.close();
+            },
+          }),
+          {
+            headers: {
+              'content-type': 'text/event-stream',
+              'x-vercel-ai-ui-message-stream': 'v1',
+            },
+          },
+        );
+      };
+    },
+    { mode, count: deltaCount },
+  );
+}
+
+const burstRequestCount = (page: Page) =>
+  page.evaluate(() =>
+    Number(sessionStorage.getItem('burst-chat-requests') ?? '0'),
+  );
+
+test('a burst of 145 text deltas renders the reply, stays connected and is not resent on reload (#752)', async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 1440, height: 1000 });
+  await installBurstStream(page, 'text-only', 145);
+  await page.goto(`/?id=${conversation.id}`);
+  const messages = page.getByRole('main', { name: 'Conversation messages' });
+  await expect(messages.locator('article')).toHaveCount(100);
+  await page.locator('textarea').fill('Burst this reply');
+  await page.locator('textarea').press('Enter');
+
+  // The parsed reply carries every delta, not a truncated prefix of the burst.
+  // A synthetic burst is paced across tasks (#752), so it can take longer than
+  // a real stream; the default expect timeout is too short for 145 deltas.
+  await expect(messages).toContainText('Burst reply complete.', {
+    timeout: 30_000,
+  });
+  await expect(messages).toContainText('Delta 1. ');
+  await expect(messages).toContainText('Delta 145. ');
+
+  // A clean finish settles connected; the burst must not surface #185's
+  // transport failure or the error boundary.
+  await expect(
+    page.getByText('Connected', { exact: true }).filter({ visible: true }),
+  ).toHaveCount(1);
+  await expect(
+    page.getByText('Disconnected', { exact: true }).filter({ visible: true }),
+  ).toHaveCount(0);
+  await expect(page.getByText('Something went wrong')).toHaveCount(0);
+  await expect.poll(() => burstRequestCount(page)).toBe(1);
+
+  // Reload reads the synthetic saved completion, not backend persistence:
+  // the settled view renders from history and nothing is sent again.
+  const savedReply = 'Burst reply complete.';
+  await page.route(
+    (url) => url.pathname.endsWith(`/conversations/${conversation.id}`),
+    (route) =>
+      route.fulfill({
+        json: historyFixtureDetail(
+          {
+            ...conversation,
+            messages: [
+              ...conversation.messages,
+              { id: 'message-101', role: 'user', content: 'Burst this reply' },
+              { id: 'message-102', role: 'assistant', content: savedReply },
+            ],
+          },
+          new URL(route.request().url()),
+        ),
+      }),
+  );
+  await page.reload();
+  await expect(
+    messages.locator(`[data-message-id="${historyFixtureId(102)}"]`),
+  ).toContainText(savedReply);
+  await expect(
+    page.getByText('Disconnected', { exact: true }).filter({ visible: true }),
+  ).toHaveCount(0);
+  await expect.poll(() => burstRequestCount(page)).toBe(1);
+});
+
+test('a burst of 145 thinking deltas then 145 text deltas keeps the thought and reply (#752)', async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 1440, height: 1000 });
+  await installBurstStream(page, 'thinking-then-text', 145);
+  await page.goto(`/?id=${conversation.id}`);
+  const messages = page.getByRole('main', { name: 'Conversation messages' });
+  await expect(messages.locator('article')).toHaveCount(100);
+  await page.locator('textarea').fill('Burst this reply');
+  await page.locator('textarea').press('Enter');
+
+  await expect(messages).toContainText('Burst reply complete.', {
+    timeout: 30_000,
+  });
+  await expect(messages).toContainText('Delta 145. ');
+
+  // onFinish archives from the last committed React state, so the final
+  // thinking deltas must still be visible after the paced stream settles.
+  const thought = messages.getByRole('button', { name: /Thinking for \d+s/ });
+  await expect(thought).toBeVisible();
+  await thought.click();
+  await expect(messages).toContainText('Thought 1.');
+  await expect(messages).toContainText('Thought 145.');
+
+  await expect(
+    page.getByText('Connected', { exact: true }).filter({ visible: true }),
+  ).toHaveCount(1);
+  await expect(
+    page.getByText('Disconnected', { exact: true }).filter({ visible: true }),
+  ).toHaveCount(0);
+  await expect(page.getByText('Something went wrong')).toHaveCount(0);
+  await expect.poll(() => burstRequestCount(page)).toBe(1);
 });

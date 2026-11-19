@@ -60,6 +60,7 @@ import {
 } from 'react';
 import { TailAdoption } from '../lib/tailAdoption';
 import { projectDisplayedHistory } from '../lib/historyPages';
+import { paceChunkStream } from '../lib/streamPacing';
 import { useRouter } from 'next/navigation';
 import { Group, Panel, Separator } from 'react-resizable-panels';
 import {
@@ -763,8 +764,19 @@ function ChatContent() {
         fetch: fetchChat,
       });
     return {
-      sendMessages: (options) => transport().sendMessages(options),
-      reconnectToStream: (options) => transport().reconnectToStream(options),
+      // Parsed chunks are forwarded synchronously but a burst is split across
+      // browser tasks (#752): the SDK's per-chunk store notification stays
+      // synchronous, matching TailAdoption's published-before-setter snapshot
+      // invariant, while a fast or resumed stream cannot force every render
+      // into one task and trip #185.
+      sendMessages: (options) =>
+        transport()
+          .sendMessages(options)
+          .then((stream) => paceChunkStream(stream)),
+      reconnectToStream: (options) =>
+        transport()
+          .reconnectToStream(options)
+          .then((stream) => (stream ? paceChunkStream(stream) : stream)),
     };
   }, [fetchChat]);
 
