@@ -8,12 +8,14 @@ import json
 import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from orchestrator import model_routing
 from orchestrator.compute_runtime import ComputeUnavailable
 from orchestrator.memory import dedup, equivalence, tools
 from orchestrator.memory.encryption import ContentEncryption
@@ -144,6 +146,21 @@ def test_normal_terminal_text_control(style):
 
 
 @pytest.mark.asyncio
+async def test_routing_without_judge_profile_declines_without_borrowing(judge, monkeypatch):
+    # A deployment-owned routing file may predate the optional judge profile
+    # (#747); the judge then declines rather than borrowing background.
+    raw = json.loads(
+        (Path(__file__).resolve().parents[1] / "config/model_routing.json").read_text()
+    )
+    raw["profiles"] = [p for p in raw["profiles"] if p["profile"] != "memory_equivalence"]
+    legacy = model_routing.parse_model_routing(raw)
+    monkeypatch.setattr(model_routing, "load_model_routing", lambda *a, **kw: legacy)
+    plan = await equivalence.plan_equivalence(incoming(), [row()])
+    assert plan.equivalent_id is None
+    judge.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_pizza_full_payload_cross_source_slot_and_role(judge):
     fact = incoming()
     plan = await equivalence.plan_equivalence(fact, [row()])
@@ -152,7 +169,7 @@ async def test_pizza_full_payload_cross_source_slot_and_role(judge):
     payload = json.loads(sent["messages"][1]["content"])
     assert payload["incoming"]["content"] == fact.content
     assert payload["candidates"][0]["content"] == PIZZA
-    assert "model" not in sent and equivalence.EQUIVALENCE_PROFILE == "background"
+    assert "model" not in sent and equivalence.EQUIVALENCE_PROFILE == "memory_equivalence"
     assert "reason" not in payload["candidates"][0]
 
 

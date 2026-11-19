@@ -378,7 +378,8 @@ async def test_automatic_title_dispatches_luna_at_the_helper_budget(
     with dispatch_fixture(
         monkeypatch, routes, routing=None, provider=provider, auto_route=True
     ) as (service, _provider, _scope):
-        assert model_routing.load_model_routing().profile("background").ranked_models() == (LUNA,)
+        # Luna leads; the #747 flash_fallback group has no route in this fixture.
+        assert model_routing.load_model_routing().profile("background").ranked_models()[0] == LUNA
         title = await generate_conversation_title(
             [{"role": "user", "content": "Tell me about the daemon project"}]
         )

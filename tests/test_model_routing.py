@@ -22,7 +22,7 @@ from test_compute_runtime import _qualified_policy, _route, routing_document
 
 FLASH = "openrouter/z-ai/glm-5.3-flash"
 GLM = "openrouter/z-ai/glm-5.3"
-DEEPSEEK = "openrouter/deepseek/deepseek-v4.1-flash"
+DEEPSEEK = "openrouter/deepseek/deepseek-v4.1-flash-1017"
 GOOGLE = "openrouter/google/gemini-3.8-flash"
 LUNA = "openrouter/openai/gpt-6-luna"
 SOL = "openrouter/openai/gpt-6.1-sol"
@@ -170,14 +170,14 @@ def test_production_profiles_are_distinct_and_optional_effort_does_not_imply_sui
             pass
 
 
-def test_approved_luna_first_placement_is_the_only_automatic_candidate() -> None:
-    """The approved automatic shortlist is exactly one Luna per routine profile.
+def test_approved_luna_first_placement_keeps_flash_fallback_behind_luna() -> None:
+    """Luna stays the first and only evaluated group for the routine profiles.
 
-    The placement is a real, narrow measurement rather than a price ranking, so the
-    contract worth locking is that the other measured candidates are *not* silently
-    reinstated: an unplaced model is unreachable automatically however cheap or
-    qualified it is, and the escalation ladders for demanding work stay where they
-    were.
+    The placement is a real, narrow measurement rather than a price ranking. The
+    operator-placed flash fallback (#747) sits in a later group, so Luna is always
+    tried first while qualified; every other model stays unplaced and is
+    unreachable automatically however cheap or qualified it is, and the escalation
+    ladders for demanding work stay where they were.
     """
     config = model_routing.load_model_routing()
     # Still provisional: a bounded screen is not a general qualification.
@@ -188,12 +188,13 @@ def test_approved_luna_first_placement_is_the_only_automatic_candidate() -> None
         ("research", 2048, True),
     ]:
         profile = config.profile(name)
-        assert profile.ranked_models() == (LUNA,), name
-        assert profile.group_names() == ("luna",), name
+        # Luna first; the operator-placed flash fallback (#747) only after it.
+        assert profile.ranked_models() == (LUNA, DEEPSEEK, FLASH), name
+        assert profile.group_names() == ("luna", "flash_fallback"), name
         # The comparable output floor and the account contract are unchanged.
         assert profile.min_output_tokens == floor, name
         assert profile.allow_premium is premium, name
-        for unplaced in (DEEPSEEK, FLASH, GOOGLE, GLM, SOL, SONNET, OPUS, ASTRA):
+        for unplaced in (GOOGLE, GLM, SOL, SONNET, OPUS, ASTRA):
             assert model_routing.profile_candidate(name, unplaced) is None, (name, unplaced)
     # Luna is served at the effort approved after the B3 evaluation (3 October 2026).
     for name in ("routine", "background", "research"):
@@ -245,11 +246,14 @@ async def test_cheaper_qualified_route_never_displaces_the_accepted_luna_candida
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("alternate", [SOL, DEEPSEEK, OPUS])
+@pytest.mark.parametrize("alternate", [SOL, GOOGLE, OPUS])
 async def test_unavailable_luna_denies_truthfully_instead_of_substituting_an_alternate(
     monkeypatch: pytest.MonkeyPatch, alternate: str
 ) -> None:
     """No accepted automatic alternative means a refusal, not a quiet swap.
+
+    The flash fallback (#747) is the only accepted alternative to Luna; any model
+    outside the profile's groups is still refused.
 
     Each alternate is an approved, routine-class, fully capable route with budget
     behind it, so the *only* reason it cannot serve is that the profile does not

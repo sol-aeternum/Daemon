@@ -42,8 +42,8 @@ the short-prompt base price. Each route supports text, tools and JSON schema.
 | Model | Exact provider pin | Class | Context / output tokens | Input / output ceiling |
 |---|---|---|---|---|
 | `openai/gpt-6-luna` | `azure/eu` | routine | 1,050,000 / 128,000 | 0.22 / 0.825 |
-| `deepseek/deepseek-v4.1-flash` | `coreweave/fp8` | routine | 1,048,576 / 393,216 | 0.20 / 0.65 |
-| `z-ai/glm-5.3-flash` | `inceptron/fp8` | routine | 1,048,576 / 131,072 | 0.225 / 0.45 |
+| `deepseek/deepseek-v4.1-flash-1017` | `coreweave/fp8` | routine | 1,048,576 / 393,216 | 0.30 / 1.20 |
+| `z-ai/glm-5.3-flash` | `inceptron/fp8` | routine | 1,048,576 / 131,072 | 0.225 / 0.49 |
 | `openai/gpt-6.1-sol` | `azure/eu` | premium | 1,050,000 / 128,000 | 4.4 / 16.5 |
 | `anthropic/claude-sonnet-5.5` | `google-vertex/europe` | premium | 1,000,000 / 128,000 | 2.2 / 11 |
 | `anthropic/claude-opus-5.5` | `google-vertex/europe` | premium | 1,000,000 / 128,000 | 4.4 / 22 |
@@ -306,6 +306,53 @@ inference or live dispatch test is authorized or performed. No restart or deploy
 is part of this change: backend and worker cache policy and still require a
 separately approved rollout/reload before this configuration can affect dispatch.
 
+## Routine fallback and DeepSeek 1017 — 19 November 2026
+
+For [#747](https://github.com/sol-aeternum/Daemon/issues/747), after OpenRouter
+withdrew the regional endpoints the Luna, Sol, Astra, Sonnet, Opus and Grok
+routes pin, the operator approved:
+
+- **DeepSeek checkpoint.** `deepseek-flash-coreweave-fp8` now serves
+  `deepseek/deepseek-v4.1-flash-1017` (the 2026-10-17 checkpoint) on the same
+  `coreweave/fp8` pin, with ceilings of **USD 0.30 / 1.20 per million**
+  prompt/completion tokens (previously 0.20 / 0.65). Context and output limits
+  (1,048,576 / 393,216) are unchanged. The undated model ID is no longer routed.
+- **GLM Flash completion ceiling.** `glm-flash-inceptron-fp8` keeps its USD 0.225
+  prompt ceiling; **only** the completion ceiling rises from 0.45 to **USD 0.49
+  per million**, matching the endpoint's current listed price (0.16 / 0.49).
+- **Routine fallback placement.** `routine`, `background` and `research` gain a
+  second candidate group, `flash_fallback`, containing these two routes after the
+  `luna` group. Luna is always tried first while qualified; the fallback serves
+  when no Luna route qualifies and, as in every multi-group automatic profile,
+  when a qualified Luna attempt fails before output (provider error, timeout,
+  revocation or budget denial). Within the group the cheaper bounded estimate
+  is tried first, and if it also fails before output the other Flash route is
+  tried on the same call. Each attempt reserves and settles on its own. The bound
+  per call is therefore at most three dispatches, three reservations and three
+  providers (Luna, then both Flash routes), or two when Luna is unqualified; after
+  ambiguous failures every attempted provider may have received the prompt. The
+  owner approved this full failover scope, including both Flash routes on one
+  call, on the PR review (#750). This placement is an operator decision, not a measured quality result:
+  neither route has been evaluated against Luna on these workloads.
+- **Merge judge stays on Luna.** The memory-merge equivalence judge was qualified
+  only on Luna, so it moves to its own Luna-only `memory_equivalence` routing
+  profile and never reaches the fallback; without a qualified Luna route it
+  declines and nothing merges.
+
+Read-only public metadata checked on 19 November 2026: the
+[DeepSeek 1017 endpoint listing](https://openrouter.ai/api/v1/models/deepseek/deepseek-v4.1-flash-1017/endpoints)
+and the [ZDR listing](https://openrouter.ai/api/v1/endpoints/zdr) contain the exact
+`coreweave/fp8` endpoint at 0.30 / 1.20 with 1,048,576 context, tools, structured
+outputs and reasoning support; the GLM `inceptron/fp8` endpoint remains ZDR-listed
+at 0.16 / 0.49. The CoreWeave location decision below covers the new checkpoint
+on the same host.
+
+Both routes' baseline fingerprints change, so each needs a fresh `attested` row
+before it can dispatch; no paid inference or live dispatch test is part of this
+change, and no restart or deployment is authorised by it. Rollback is reverting
+the two route entries and the three `flash_fallback` groups; the undated
+DeepSeek model would need its own fresh evidence before being re-pinned.
+
 ## CoreWeave location decision
 
 The operator accepted CoreWeave's documented North American/European footprint,
@@ -338,8 +385,9 @@ variants were found. Full GLM 5.3 remains unapproved: the operator's Fireworks
 preference does not establish an accepted geographic exception for its global
 endpoint. Neither model has a route in this deployment policy.
 
-Routine/background/research retain Luna-first placement. Qualification does not
-promote other candidates into those profiles. The eight approved council
+Routine/background/research retain Luna-first placement, with only the
+operator-placed `flash_fallback` group behind it (see the 19 November 2026
+section). Qualification does not promote other candidates into those profiles. The eight approved council
 candidates span five developers; this is coverage, not proof of a successful
 live council. Search approval is now recorded separately in
 [SEARCH_SERVICE_APPROVALS.md](SEARCH_SERVICE_APPROVALS.md); no embedding, speech

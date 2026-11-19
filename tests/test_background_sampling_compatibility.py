@@ -239,10 +239,11 @@ async def test_automatic_background_call_sends_no_legacy_sampling(
 ) -> None:
     """A background helper dispatches on Luna without any sampling control.
 
-    ``PRODUCTION_ROUTING`` is used unmodified, so the seed-only background
-    candidate is the only automatic route: had the helper still sent
-    ``temperature``/``top_p``, the guard would have found no candidate and this
-    call would have raised instead of reaching the transport.
+    ``PRODUCTION_ROUTING`` is used unmodified and only Luna has a route here, so
+    the seed-only Luna candidate is the only dispatchable automatic route (the
+    #747 ``flash_fallback`` group has no route in this fixture): had the helper
+    still sent ``temperature``/``top_p``, the guard would have found no
+    candidate and this call would have raised instead of reaching the transport.
     """
     states = _record_routing(monkeypatch, module_path)
     provider = AsyncMock(return_value=TransportResponse(reply))
@@ -253,7 +254,9 @@ async def test_automatic_background_call_sends_no_legacy_sampling(
     ) as (service, _provider, scope):
         # The production config, not a permissive fixture.
         assert model_routing.load_model_routing() is PRODUCTION_ROUTING
-        assert PRODUCTION_ROUTING.profile("background").ranked_models() == (LUNA,)
+        background = PRODUCTION_ROUTING.profile("background")
+        assert background.group_names() == ("luna", "flash_fallback")
+        assert background.ranked_models()[0] == LUNA
         assert (
             model_routing.supports_sampling_parameters(LUNA, {"temperature": 0.1, "top_p": 1.0})
             is False

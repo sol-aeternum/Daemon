@@ -64,7 +64,10 @@ REQUIRED_ROUTING_PROFILES: Final[frozenset[str]] = frozenset(
     {"routine", "reasoning", "research", "background", "council"}
 )
 #: Known names are validated when present; optional helpers need not be configured.
-ROUTING_PROFILES: Final[frozenset[str]] = REQUIRED_ROUTING_PROFILES | {"memory_decomposition"}
+ROUTING_PROFILES: Final[frozenset[str]] = REQUIRED_ROUTING_PROFILES | {
+    "memory_decomposition",
+    "memory_equivalence",
+}
 
 #: Namespace prefix Daemon uses for OpenRouter model ids. Stripped before the
 #: developer is derived, so ``openrouter/z-ai/glm-5.3`` and ``z-ai/glm-5.3``

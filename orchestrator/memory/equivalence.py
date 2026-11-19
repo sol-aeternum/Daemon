@@ -12,13 +12,15 @@ from dataclasses import dataclass
 from typing import Any
 
 from orchestrator.compute_runtime import ComputeUnavailable, current_scope, guarded_completion
-from orchestrator.model_routing import routing_context
+from orchestrator.model_routing import RoutingError, routing_context
 from orchestrator.memory.temporal import EventScope
 
 MAX_CANDIDATES = 6
 MAX_FACT_CHARS = 2000
 MAX_PAYLOAD_CHARS = 18000
-EQUIVALENCE_PROFILE = "background"
+# Luna-only, the configuration the judge was qualified on (#747). A routing file
+# without this optional profile declines judging rather than borrowing another.
+EQUIVALENCE_PROFILE = "memory_equivalence"
 VERDICTS = frozenset({"equivalent", "distinct", "correction", "uncertain"})
 SNAPSHOT_FIELDS = (
     "id",
@@ -245,6 +247,10 @@ async def plan_equivalence(
             "modality_unavailable",
         }:
             return plan
+        raise
+    except RoutingError as exc:
+        if exc.code == "profile_unknown":
+            return plan  # A deployment routing file without the judge profile.
         raise
     content = strict_judge_content(response)
     if content is None:

@@ -169,7 +169,7 @@ async def test_final_outbound_preset_pin_cap_date_and_task_context(
     assert sent["num_retries"] == 0
     assert json.loads(sent["messages"][1]["content"]) == {
         "message": "x" * mq.MAX_INPUT_CHARS,
-        "as_of": "2026-10-03",
+        "as_of": REVIEWED.date().isoformat(),
     }
     assert spy.await_args is not None
     assert spy.await_args.kwargs["_route_id"] == route.route_id

@@ -39,7 +39,7 @@ flowchart TD
     CL -->|"Research signal without complexity"| RS["Research profile"]
     CL -->|"Otherwise"| RT["Routine profile"]
 
-    RT --> CRT["Routine and research candidates<br/>openai/gpt-6-luna · medium<br/>Only automatic candidate"]
+    RT --> CRT["Routine and research candidates<br/>1. openai/gpt-6-luna · medium<br/>2. deepseek/deepseek-v4.1-flash-1017 · low<br/>2. z-ai/glm-5.3-flash · low"]
     RS --> CRT
     RE --> CRE["Reasoning candidate groups<br/>1. z-ai/glm-5.3 · high (no deployment route)<br/>1. openai/gpt-6.1-sol · high<br/>1. anthropic/claude-sonnet-5.5 · high<br/>2. anthropic/claude-opus-5.5 · high<br/>2. openai/gpt-6-astra · high"]
 
@@ -70,7 +70,11 @@ flowchart TD
 | Profile | Group | Candidate | Effort | Deployment route | Review expires |
 | --- | --- | --- | --- | --- | --- |
 | routine | 1. luna | `openai/gpt-6-luna` | medium | routine | monitored |
+| routine | 2. flash_fallback | `deepseek/deepseek-v4.1-flash-1017` | low | routine | monitored |
+| routine | 2. flash_fallback | `z-ai/glm-5.3-flash` | low | routine | monitored |
 | research | 1. luna | `openai/gpt-6-luna` | medium | routine | monitored |
+| research | 2. flash_fallback | `deepseek/deepseek-v4.1-flash-1017` | low | routine | monitored |
+| research | 2. flash_fallback | `z-ai/glm-5.3-flash` | low | routine | monitored |
 | reasoning | 1. demanding | `z-ai/glm-5.3` | high | none | — |
 | reasoning | 1. demanding | `openai/gpt-6.1-sol` | high | premium | monitored |
 | reasoning | 1. demanding | `anthropic/claude-sonnet-5.5` | high | premium | monitored |
