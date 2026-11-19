@@ -35,6 +35,25 @@ an unapproved proposal in both shipped policies, never the approved general Luna
 route. No existing profile candidates or route approvals change. See
 [the M1 design](memory/multi_query_retrieval.md).
 
+### Premium re-pins, Sol 6.2 and Astra 6.2 — 19 November 2026
+
+For [#747](https://github.com/sol-aeternum/Daemon/issues/747) the operator re-pinned
+Luna, Sol, Astra, Sonnet, Opus and Grok to the remaining ZDR endpoints, which
+state no region, under a geographic exception. The same change replaced
+`gpt-6.1-sol` with `openrouter/openai/gpt-6.2-sol` and `gpt-6-astra` with
+`openrouter/openai/gpt-6.2-astra`.
+
+- **Placements:** all are unchanged. Sol 6.2 keeps the high presets (default,
+  reasoning and council), and Astra 6.2 stays in the escalation group.
+- **Reasoning:** both 6.2 models require it, so their declarations omit `none`.
+- **Evaluation:** neither bump is evaluated against its predecessor.
+- **Effect:** with Luna qualified again, routine work returns to Luna first and
+  the memory-merge judge works again; reasoning regains its demanding and
+  escalation groups.
+
+Pins, ceilings and evidence are in
+[INFERENCE_ROUTE_APPROVALS.md](INFERENCE_ROUTE_APPROVALS.md#premium-re-pins--19-november-2026).
+
 ### Flash fallback behind Luna — 19 November 2026
 
 For [#747](https://github.com/sol-aeternum/Daemon/issues/747) the operator added a

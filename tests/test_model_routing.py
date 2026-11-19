@@ -25,10 +25,10 @@ GLM = "openrouter/z-ai/glm-5.3"
 DEEPSEEK = "openrouter/deepseek/deepseek-v4.1-flash-1017"
 GOOGLE = "openrouter/google/gemini-3.8-flash"
 LUNA = "openrouter/openai/gpt-6-luna"
-SOL = "openrouter/openai/gpt-6.1-sol"
+SOL = "openrouter/openai/gpt-6.2-sol"
 SONNET = "openrouter/anthropic/claude-sonnet-5.5"
 OPUS = "openrouter/anthropic/claude-opus-5.5"
-ASTRA = "openrouter/openai/gpt-6-astra"
+ASTRA = "openrouter/openai/gpt-6.2-astra"
 PRODUCTION_ROUTING = model_routing.load_model_routing()
 
 
@@ -301,7 +301,7 @@ async def test_manual_pin_outside_the_luna_shortlist_stays_exact(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("profile", ["routine", "reasoning", "council"])
-async def test_operator_sol61_replacement_dispatches_high_in_every_used_profile(
+async def test_operator_sol62_replacement_dispatches_high_in_every_used_profile(
     monkeypatch: pytest.MonkeyPatch, profile: str
 ) -> None:
     sol = named_route(SOL, premium=True)
@@ -319,6 +319,8 @@ async def test_operator_sol61_replacement_dispatches_high_in_every_used_profile(
         assert service.reserve.await_args.kwargs["model"] == SOL
     assert not model_routing.supports_reasoning_effort(SOL, "none")
     assert PRODUCTION_ROUTING.model("openrouter/openai/gpt-6-sol") is None
+    # #747: Sol 6.2 replaces Sol 6.1 at the same presets; 6.1 is not routed.
+    assert PRODUCTION_ROUTING.model("openrouter/openai/gpt-6.1-sol") is None
 
 
 @pytest.mark.asyncio

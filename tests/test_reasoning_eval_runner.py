@@ -31,9 +31,22 @@ def _manifest_variant(tmp_path: Path, **changes: Any) -> Path:
     return path
 
 
+# Frozen manifests keep the route IDs they ran under; #747 renamed the shipped
+# routes when their withdrawn regional pins were replaced (prices unchanged).
+RENAMED_BY_747 = {
+    "luna-azure-eu": "luna-azure",
+    "sol-azure-eu": "sol-azure",
+    "sonnet-vertex-europe": "sonnet-vertex-global",
+}
+
+
 def _routes(manifest: runner.Manifest) -> dict[str, Any]:
     inference = load_inference_policy(POLICY)
-    return {c["label"]: inference.routes[c["route_id"]] for c in manifest.candidates}
+
+    def current(route_id: str) -> str:
+        return RENAMED_BY_747.get(route_id, route_id)
+
+    return {c["label"]: inference.routes[current(c["route_id"])] for c in manifest.candidates}
 
 
 def test_calibration_schedule_covers_every_dev_case_once_per_configuration(plan) -> None:
@@ -292,6 +305,6 @@ def test_sonnet55_manifest_adds_one_configuration_over_the_pilot_cases() -> None
     assert {(a.case_id, a.repeat) for a in schedule} == {(a.case_id, a.repeat) for a in pilot}
     assert profile.experiment == "reasoning-eval/b2-sonnet55-20261003"
     # The evaluation-only route is priced like the approved Sonnet 5 route.
-    sonnet5 = load_inference_policy(POLICY).routes["sonnet-vertex-europe"]
+    sonnet5 = load_inference_policy(POLICY).routes["sonnet-vertex-global"]
     totals = runner.planning_bound(schedule, fixtures.by_id(), {"sonnet55": sonnet5})
     assert sum(totals.values()) <= manifest.incremental_cap_microusd == 8_000_000

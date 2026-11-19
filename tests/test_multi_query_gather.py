@@ -300,7 +300,7 @@ async def test_missing_optional_profile_fails_open_before_completion(
         ),
         (
             "inference_policy.production.json",
-            "57cacbb488bee14e5693e2638bcf37361d41adc66c68974250330ce4eccdb8ff",
+            "61adb152365ef477c323b17786040728116abd9fbe5434d248445a65a06003a6",
         ),
     ],
 )

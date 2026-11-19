@@ -260,7 +260,7 @@ async def test_flash_fallback_serves_only_when_no_luna_route_qualifies(
     assert provider.await_args.kwargs["extra_body"]["provider"]["allow_fallbacks"] is False
 
     monkeypatch.setattr(compute_runtime, "load_inference_policy", lambda: production_policy)
-    assert compute_runtime.choose_route(profile=profile).route_id == "luna-azure-eu"
+    assert compute_runtime.choose_route(profile=profile).route_id == "luna-azure"
 
 
 @pytest.mark.asyncio
@@ -418,7 +418,7 @@ async def test_memory_equivalence_judge_never_falls_back_to_flash_routes(
     provider.assert_not_awaited()
 
     monkeypatch.setattr(compute_runtime, "load_inference_policy", lambda: production_policy)
-    assert compute_runtime.choose_route(profile="memory_equivalence").route_id == "luna-azure-eu"
+    assert compute_runtime.choose_route(profile="memory_equivalence").route_id == "luna-azure"
 
 
 @pytest.mark.asyncio
@@ -456,13 +456,16 @@ def test_deployment_policy_is_opt_in_and_fails_closed_without_attestation() -> N
     assert policy.approved_tool_service_ids(now=REVIEWED) == {"brave-web-search"}
     assert not default.approved_tool_service_ids(now=REVIEWED)
     assert policy.default_route_id is None
-    sol = policy.routes["sol-azure-eu"]
-    assert sol.model == "openrouter/openai/gpt-6.1-sol"
-    assert sol.review.reviewed_at == datetime(2026, 10, 3, tzinfo=timezone.utc)
-    assert all(r.model != "openrouter/openai/gpt-6-sol" for r in policy.routes.values())
-    sonnet = policy.routes["sonnet-vertex-europe"]
+    sol = policy.routes["sol-azure"]
+    assert sol.model == "openrouter/openai/gpt-6.2-sol"
+    assert sol.review.reviewed_at == REVIEWED
+    assert all(
+        r.model not in {"openrouter/openai/gpt-6-sol", "openrouter/openai/gpt-6.1-sol"}
+        for r in policy.routes.values()
+    )
+    sonnet = policy.routes["sonnet-vertex-global"]
     assert sonnet.model == "openrouter/anthropic/claude-sonnet-5.5"
-    assert sonnet.review.reviewed_at == datetime(2026, 10, 3, tzinfo=timezone.utc)
+    assert sonnet.review.reviewed_at == REVIEWED
     assert all(r.model != "openrouter/anthropic/claude-sonnet-5" for r in policy.routes.values())
     for route in policy.routes.values():
         if route.route_id == "memory-decomposition-luna-azure-eu":
@@ -515,8 +518,8 @@ def test_approved_deployment_resolves_profiles_and_denies_excluded_models(monkey
     )
     monkeypatch.setattr(compute_runtime, "load_inference_policy", lambda: deployment)
     for profile in ("routine", "background", "research"):
-        assert compute_runtime.choose_route(profile=profile).route_id == "luna-azure-eu"
-    assert compute_runtime.choose_route(profile="reasoning").route_id == "sonnet-vertex-europe"
+        assert compute_runtime.choose_route(profile=profile).route_id == "luna-azure"
+    assert compute_runtime.choose_route(profile="reasoning").route_id == "sonnet-vertex-global"
     assert compute_runtime.choose_route(DEEPSEEK_FLASH).route_id == DEEPSEEK_ROUTE
     for model in (
         "openrouter/deepseek/deepseek-v4.1-flash",
@@ -544,17 +547,88 @@ def test_unknown_or_revoked_attestation_closes_every_route() -> None:
         )
 
 
-def test_only_grok_was_approved_with_known_provider_retention() -> None:
+REPINNED_BY_747 = {
+    # route_id: (model, exact pin, (prompt, completion) microUSD per million)
+    "luna-azure": ("openrouter/openai/gpt-6-luna", "azure", (220_000, 825_000)),
+    "sol-azure": ("openrouter/openai/gpt-6.2-sol", "azure", (4_400_000, 16_500_000)),
+    "astra-azure": ("openrouter/openai/gpt-6.2-astra", "azure", (17_600_000, 66_000_000)),
+    "sonnet-vertex-global": (
+        "openrouter/anthropic/claude-sonnet-5.5",
+        "google-vertex/global",
+        (2_200_000, 11_000_000),
+    ),
+    "opus-vertex-global": (
+        "openrouter/anthropic/claude-opus-5.5",
+        "google-vertex/global",
+        (4_400_000, 22_000_000),
+    ),
+    "grok-bedrock-global": (
+        "openrouter/x-ai/grok-4.7",
+        "amazon-bedrock/global",
+        (4_400_000, 13_200_000),
+    ),
+}
+
+
+@pytest.mark.parametrize("route_id", sorted(REPINNED_BY_747))
+def test_premium_repins_pin_exact_global_endpoints_with_operator_caps(route_id: str) -> None:
+    # #747: the withdrawn regional pins are replaced by the remaining ZDR
+    # endpoints under a geographic exception; no substitution or fallback.
+    model, pin, (prompt, completion) = REPINNED_BY_747[route_id]
+    policy = _production()
+    route = policy.routes[route_id]
+    assert route.model == model
+    assert route.review.reviewed_at == REVIEWED
+    assert "docs/INFERENCE_ROUTE_APPROVALS.md#premium-re-pins--19-november-2026" in (
+        route.review.evidence
+    )
+    assert route.zdr_baseline is not None
+    assert route.zdr_baseline.provider_slug == pin.split("/")[0]
+    assert route.price_ceiling is not None
+    assert route.estimate_microusd(1_000_000, 1_000_000) == prompt + completion
+    provider = route.transport_payload(policy.requirements)["extra_body"]["provider"]
+    assert provider["only"] == provider["order"] == [pin]
+    assert provider["allow_fallbacks"] is False
+    assert provider["zdr"] is True
+    assert provider["max_price"] == {
+        "prompt": prompt / 1_000_000,
+        "completion": completion / 1_000_000,
+    }
+
+
+def test_withdrawn_regional_route_ids_and_models_are_gone() -> None:
+    policy = _production()
+    for old in (
+        "luna-azure-eu",
+        "sol-azure-eu",
+        "astra-azure-us",
+        "sonnet-vertex-europe",
+        "opus-vertex-europe",
+        "grok-zdr-us",
+    ):
+        assert old not in policy.routes
+    models = {route.model for route in policy.routes.values()}
+    assert not models & {"openrouter/openai/gpt-6.1-sol", "openrouter/openai/gpt-6-astra"}
+    regional = {"azure/eu", "azure/us", "google-vertex/europe", "xai/zdr/us"}
+    for route in policy.routes.values():
+        if route.approved:
+            assert not set(route.transport.provider_only or ()) & regional
+
+
+def test_no_route_is_approved_with_known_provider_retention() -> None:
+    # #747: Grok left xai/zdr/us (whose ordinary xAI policy reports 30-day
+    # retention) for Bedrock global, so every baseline now reports none.
     baselines = {
         route.route_id: dict(route.zdr_baseline.data_policy)
         for route in _production().routes.values()
         if route.zdr_baseline is not None
     }
-    assert baselines.pop("grok-zdr-us") == {
-        "training": False,
-        "retainsPrompts": True,
-        "retentionDays": 30,
-    }
+    grok = _production().routes["grok-bedrock-global"]
+    assert grok.zdr_baseline is not None
+    assert grok.zdr_baseline.provider_slug == "amazon-bedrock"
+    assert grok.transport_payload(_production().requirements)["extra_body"]["provider"]["only"] == [
+        "amazon-bedrock/global"
+    ]
     assert all(
         policy == {"training": False, "retainsPrompts": False} for policy in baselines.values()
     )

@@ -21,7 +21,7 @@ from tests.test_production_inference_policy import (
 
 
 def _approved(monkeypatch, policy):
-    original = policy.route("luna-azure-eu")
+    original = policy.route("luna-azure")
     assert original is not None
     route = replace(
         original,

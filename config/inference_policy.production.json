@@ -19,7 +19,7 @@
   "default_route_id": null,
   "routes": [
     {
-      "route_id": "luna-azure-eu",
+      "route_id": "luna-azure",
       "provider": "openrouter",
       "model": "openrouter/openai/gpt-6-luna",
       "endpoint": "https://openrouter.ai/api/v1",
@@ -32,7 +32,7 @@
       "approval_mode": "monitored",
       "privacy": {
         "transport": {
-          "provider_only": ["azure/eu"], "provider_order": ["azure/eu"],
+          "provider_only": ["azure"], "provider_order": ["azure"],
           "allow_fallbacks": false, "require_parameters": true,
           "data_collection": "deny", "zdr": true
         },
@@ -41,10 +41,11 @@
       },
       "operator_review": {
         "reviewer": "Daemon deployment operator",
-        "reviewed_at": "2026-10-03T00:00:00Z",
+        "reviewed_at": "2026-11-19T00:00:00Z",
         "evidence": [
           "docs/INFERENCE_ROUTE_APPROVALS.md#operator-approval-and-account-attestation",
           "docs/INFERENCE_ROUTE_APPROVALS.md#renewal--3-october-2026",
+          "docs/INFERENCE_ROUTE_APPROVALS.md#premium-re-pins--19-november-2026",
           "https://openrouter.ai/api/v1/models/openai/gpt-6-luna/endpoints",
           "https://openrouter.ai/api/v1/endpoints/zdr",
           "https://learn.microsoft.com/en-us/azure/foundry/responsible-ai/openai/data-privacy"
@@ -52,7 +53,7 @@
       },
       "zdr_baseline": {"provider_slug": "azure", "data_policy": {"training": false, "retainsPrompts": false}},
       "price_ceiling": {"microusd_per_1m_prompt": 220000, "microusd_per_1m_completion": 825000},
-      "notes": "Exact Azure EU ZDR listing; ceilings cover the >=272000-prompt-token pricing tier. Independent access to Azure resource logging configuration is unavailable; qualification relies on exact-route provider attestation plus operator account checks. Native limits are documented, not maximal-length live-tested."
+      "notes": "Exact Azure ZDR listing (untagged; no region stated) since the 19 November 2026 re-pin, after the azure/eu endpoint was withdrawn upstream (#747); operator-accepted geographic exception. ceilings cover the >=272000-prompt-token pricing tier. Independent access to Azure resource logging configuration is unavailable; qualification relies on exact-route provider attestation plus operator account checks. Native limits are documented, not maximal-length live-tested."
     },
     {
       "route_id": "deepseek-flash-coreweave-fp8",
@@ -134,9 +135,9 @@
       "notes": "Inceptron commits API payload processing to EU/EEA and default zero retention/no training. Exact FP8 endpoint retained. Output is limited to the documented 128K model maximum (131072), not host catalog's 943718."
     },
     {
-      "route_id": "sol-azure-eu",
+      "route_id": "sol-azure",
       "provider": "openrouter",
-      "model": "openrouter/openai/gpt-6.1-sol",
+      "model": "openrouter/openai/gpt-6.2-sol",
       "endpoint": "https://openrouter.ai/api/v1",
       "route_class": "premium",
       "model_capabilities": ["text", "tools", "json_schema"],
@@ -147,7 +148,7 @@
       "approval_mode": "monitored",
       "privacy": {
         "transport": {
-          "provider_only": ["azure/eu"], "provider_order": ["azure/eu"],
+          "provider_only": ["azure"], "provider_order": ["azure"],
           "allow_fallbacks": false, "require_parameters": true,
           "data_collection": "deny", "zdr": true
         },
@@ -156,23 +157,22 @@
       },
       "operator_review": {
         "reviewer": "Daemon deployment operator",
-        "reviewed_at": "2026-10-03T00:00:00Z",
+        "reviewed_at": "2026-11-19T00:00:00Z",
         "evidence": [
           "docs/INFERENCE_ROUTE_APPROVALS.md#operator-approval-and-account-attestation",
           "docs/INFERENCE_ROUTE_APPROVALS.md#renewal--3-october-2026",
-          "docs/INFERENCE_ROUTE_APPROVALS.md#sol-61-replacement--30-september-2026",
-          "docs/SOL_UPGRADE_EVALUATION.md",
-          "https://openrouter.ai/api/v1/models/openai/gpt-6.1-sol/endpoints",
+          "docs/INFERENCE_ROUTE_APPROVALS.md#premium-re-pins--19-november-2026",
+          "https://openrouter.ai/api/v1/models/openai/gpt-6.2-sol/endpoints",
           "https://openrouter.ai/api/v1/endpoints/zdr",
           "https://learn.microsoft.com/en-us/azure/foundry/responsible-ai/openai/data-privacy"
         ]
       },
       "zdr_baseline": {"provider_slug": "azure", "data_policy": {"training": false, "retainsPrompts": false}},
       "price_ceiling": {"microusd_per_1m_prompt": 4400000, "microusd_per_1m_completion": 16500000},
-      "notes": "Sol 6.1 replacement authorized 30 September 2026 at high effort; stable route ID, existing native limits, long-prompt price ceilings retained (approval monitored since 3 October 2026). Exact Azure EU ZDR listing and bounded live comparison verified; human semantic review remains pending. Provider attestation, not independent inspection of Azure resource logging."
+      "notes": "Sol 6.2 (gpt-6.2-sol-20261117) replaces Sol 6.1 at the same high presets and placements, and moves from the withdrawn azure/eu endpoint to the untagged Azure ZDR listing (no region stated) under an operator-accepted geographic exception, 19 November 2026 (#747). Native limits unchanged; long-prompt price ceilings retained. Not evaluated against Sol 6.1; the Sol 6.1 bounded comparison does not transfer. Provider attestation, not independent inspection of Azure resource logging."
     },
     {
-      "route_id": "sonnet-vertex-europe",
+      "route_id": "sonnet-vertex-global",
       "provider": "openrouter",
       "model": "openrouter/anthropic/claude-sonnet-5.5",
       "endpoint": "https://openrouter.ai/api/v1",
@@ -185,7 +185,7 @@
       "approval_mode": "monitored",
       "privacy": {
         "transport": {
-          "provider_only": ["google-vertex/europe"], "provider_order": ["google-vertex/europe"],
+          "provider_only": ["google-vertex/global"], "provider_order": ["google-vertex/global"],
           "allow_fallbacks": false, "require_parameters": true,
           "data_collection": "deny", "zdr": true
         },
@@ -194,23 +194,26 @@
       },
       "operator_review": {
         "reviewer": "Daemon deployment operator",
-        "reviewed_at": "2026-10-03T00:00:00Z",
+        "reviewed_at": "2026-11-19T00:00:00Z",
         "evidence": [
           "docs/INFERENCE_ROUTE_APPROVALS.md#operator-approval-and-account-attestation",
           "docs/INFERENCE_ROUTE_APPROVALS.md#renewal--3-october-2026",
+          "docs/INFERENCE_ROUTE_APPROVALS.md#premium-re-pins--19-november-2026",
           "docs/INFERENCE_ROUTE_APPROVALS.md#sonnet-55-replacement--3-october-2026",
           "docs/REASONING_EVAL_PROTOCOL.md#sonnet-55-result-3-october-2026",
           "https://openrouter.ai/api/v1/models/anthropic/claude-sonnet-5.5/endpoints",
           "https://openrouter.ai/api/v1/endpoints/zdr",
-          "https://openrouter.ai/api/frontend/v1/all-providers"
+          "https://openrouter.ai/api/frontend/v1/all-providers",
+          "https://cloud.google.com/vertex-ai/generative-ai/docs/data-governance",
+          "https://cloud.google.com/vertex-ai/generative-ai/docs/learn/locations"
         ]
       },
       "zdr_baseline": {"provider_slug": "google-vertex", "data_policy": {"training": false, "retainsPrompts": false}},
       "price_ceiling": {"microusd_per_1m_prompt": 2200000, "microusd_per_1m_completion": 11000000},
-      "notes": "Sonnet 5.5 replacement authorized 3 October 2026 at high effort; stable route ID, transport pin, native limits and price ceilings retained (approval monitored since 3 October 2026). Exact Vertex Europe ZDR endpoint (claude-sonnet-5.5-20260928); 119/120 blind-panel-acceptable on the reasoning evaluation pilot cases. No Global fallback, provider-native tools or explicit cache writes authorized. Endpoint qualification does not certify general task quality."
+      "notes": "Sonnet 5.5 replacement authorized 3 October 2026 at high effort; stable route ID, transport pin, native limits and price ceilings retained (approval monitored since 3 October 2026). Exact Vertex Global ZDR endpoint (claude-sonnet-5.5-20260928) since the 19 November 2026 re-pin, after google-vertex/europe was withdrawn upstream (#747); operator-accepted geographic exception. 119/120 blind-panel-acceptable on the reasoning evaluation pilot cases. No Bedrock substitution (it lacks structured outputs), provider-native tools or explicit cache writes authorized. Endpoint qualification does not certify general task quality."
     },
     {
-      "route_id": "opus-vertex-europe",
+      "route_id": "opus-vertex-global",
       "provider": "openrouter",
       "model": "openrouter/anthropic/claude-opus-5.5",
       "endpoint": "https://openrouter.ai/api/v1",
@@ -223,7 +226,7 @@
       "approval_mode": "monitored",
       "privacy": {
         "transport": {
-          "provider_only": ["google-vertex/europe"], "provider_order": ["google-vertex/europe"],
+          "provider_only": ["google-vertex/global"], "provider_order": ["google-vertex/global"],
           "allow_fallbacks": false, "require_parameters": true,
           "data_collection": "deny", "zdr": true
         },
@@ -232,23 +235,26 @@
       },
       "operator_review": {
         "reviewer": "Daemon deployment operator",
-        "reviewed_at": "2026-10-03T00:00:00Z",
+        "reviewed_at": "2026-11-19T00:00:00Z",
         "evidence": [
           "docs/INFERENCE_ROUTE_APPROVALS.md#operator-approval-and-account-attestation",
           "docs/INFERENCE_ROUTE_APPROVALS.md#renewal--3-october-2026",
+          "docs/INFERENCE_ROUTE_APPROVALS.md#premium-re-pins--19-november-2026",
           "https://openrouter.ai/api/v1/models/anthropic/claude-opus-5.5/endpoints",
           "https://openrouter.ai/api/v1/endpoints/zdr",
-          "https://openrouter.ai/api/frontend/v1/all-providers"
+          "https://openrouter.ai/api/frontend/v1/all-providers",
+          "https://cloud.google.com/vertex-ai/generative-ai/docs/data-governance",
+          "https://cloud.google.com/vertex-ai/generative-ai/docs/learn/locations"
         ]
       },
       "zdr_baseline": {"provider_slug": "google-vertex", "data_policy": {"training": false, "retainsPrompts": false}},
       "price_ceiling": {"microusd_per_1m_prompt": 4400000, "microusd_per_1m_completion": 22000000},
-      "notes": "Exact Vertex Europe ZDR endpoint for the existing escalation candidate. No Global fallback or additional quality-evaluation claim."
+      "notes": "Exact Vertex Global ZDR endpoint for the existing escalation candidate since the 19 November 2026 re-pin, after google-vertex/europe was withdrawn upstream (#747); operator-accepted geographic exception. No Bedrock substitution or additional quality-evaluation claim."
     },
     {
-      "route_id": "astra-azure-us",
+      "route_id": "astra-azure",
       "provider": "openrouter",
-      "model": "openrouter/openai/gpt-6-astra",
+      "model": "openrouter/openai/gpt-6.2-astra",
       "endpoint": "https://openrouter.ai/api/v1",
       "route_class": "premium",
       "model_capabilities": ["text", "tools", "json_schema"],
@@ -259,7 +265,7 @@
       "approval_mode": "monitored",
       "privacy": {
         "transport": {
-          "provider_only": ["azure/us"], "provider_order": ["azure/us"],
+          "provider_only": ["azure"], "provider_order": ["azure"],
           "allow_fallbacks": false, "require_parameters": true,
           "data_collection": "deny", "zdr": true
         },
@@ -268,21 +274,22 @@
       },
       "operator_review": {
         "reviewer": "Daemon deployment operator",
-        "reviewed_at": "2026-10-03T00:00:00Z",
+        "reviewed_at": "2026-11-19T00:00:00Z",
         "evidence": [
           "docs/INFERENCE_ROUTE_APPROVALS.md#operator-approval-and-account-attestation",
           "docs/INFERENCE_ROUTE_APPROVALS.md#renewal--3-october-2026",
-          "https://openrouter.ai/api/v1/models/openai/gpt-6-astra/endpoints",
+          "docs/INFERENCE_ROUTE_APPROVALS.md#premium-re-pins--19-november-2026",
+          "https://openrouter.ai/api/v1/models/openai/gpt-6.2-astra/endpoints",
           "https://openrouter.ai/api/v1/endpoints/zdr",
           "https://learn.microsoft.com/en-us/azure/foundry/responsible-ai/openai/data-privacy"
         ]
       },
       "zdr_baseline": {"provider_slug": "azure", "data_policy": {"training": false, "retainsPrompts": false}},
-      "price_ceiling": {"microusd_per_1m_prompt": 22000000, "microusd_per_1m_completion": 82500000},
-      "notes": "Exact Azure US ZDR endpoint; no Azure EU variant observed during qualification. Ceilings cover the >=272000-prompt-token pricing tier. Base Astra, not Astra Pro."
+      "price_ceiling": {"microusd_per_1m_prompt": 17600000, "microusd_per_1m_completion": 66000000},
+      "notes": "Astra 6.2 (gpt-6.2-astra-20261117) replaces Astra at the same placements, on the untagged Azure ZDR listing (no region stated) after azure/us was withdrawn upstream, under an operator-accepted geographic exception, 19 November 2026 (#747). Ceilings tightened to 1.1x the >=272000-prompt-token tier (16/60). Base Astra, not Astra Pro. Not evaluated against the previous Astra."
     },
     {
-      "route_id": "grok-zdr-us",
+      "route_id": "grok-bedrock-global",
       "provider": "openrouter",
       "model": "openrouter/x-ai/grok-4.7",
       "endpoint": "https://openrouter.ai/api/v1",
@@ -295,7 +302,7 @@
       "approval_mode": "monitored",
       "privacy": {
         "transport": {
-          "provider_only": ["xai/zdr/us"], "provider_order": ["xai/zdr/us"],
+          "provider_only": ["amazon-bedrock/global"], "provider_order": ["amazon-bedrock/global"],
           "allow_fallbacks": false, "require_parameters": true,
           "data_collection": "deny", "zdr": true
         },
@@ -304,19 +311,20 @@
       },
       "operator_review": {
         "reviewer": "Daemon deployment operator",
-        "reviewed_at": "2026-10-03T00:00:00Z",
+        "reviewed_at": "2026-11-19T00:00:00Z",
         "evidence": [
           "docs/INFERENCE_ROUTE_APPROVALS.md#operator-approval-and-account-attestation",
           "docs/INFERENCE_ROUTE_APPROVALS.md#renewal--3-october-2026",
+          "docs/INFERENCE_ROUTE_APPROVALS.md#premium-re-pins--19-november-2026",
           "https://openrouter.ai/api/v1/models/x-ai/grok-4.7/endpoints",
           "https://openrouter.ai/api/v1/endpoints/zdr",
-          "https://docs.x.ai/developers/faq/security",
-          "https://docs.x.ai/docs/key-information/regions"
+          "https://openrouter.ai/api/frontend/v1/all-providers",
+          "https://docs.aws.amazon.com/bedrock/latest/userguide/data-protection.html"
         ]
       },
-      "zdr_baseline": {"provider_slug": "xai", "data_policy": {"training": false, "retainsPrompts": true, "retentionDays": 30}},
+      "zdr_baseline": {"provider_slug": "amazon-bedrock", "data_policy": {"training": false, "retainsPrompts": false}},
       "price_ceiling": {"microusd_per_1m_prompt": 4400000, "microusd_per_1m_completion": 13200000},
-      "notes": "Exact xai/zdr/us listing overrides the ordinary provider's 30-day retention policy; no substitution to xai or xai/priority. Ceilings cover the >=200000-prompt-token pricing tier and US premium. Endpoint-advertised output limit, not maximal-length live-tested."
+      "notes": "Exact Amazon Bedrock Global ZDR listing since the 19 November 2026 re-pin (#747): xai/zdr/us was withdrawn upstream, xai/zdr was degraded and xai/zdr/priority exceeds the ceilings. Operator-accepted geographic exception; Bedrock global is cross-region inference with no region stated. Ceilings cover the >=200000-prompt-token pricing tier. Endpoint-advertised output limit, not maximal-length live-tested."
     },
     {
       "route_id": "memory-decomposition-luna-azure-eu",

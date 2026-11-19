@@ -30,9 +30,9 @@ def legacy_routing_document():
 def test_deployment_owned_pre_pr_routing_loads_and_selects_existing_profile(monkeypatch, tmp_path):
     raw = legacy_routing_document()
     # Semantic SHA-256 of the shipped config/model_routing.json, re-pinned for the
-    # #747 flash_fallback groups, judge profile and DeepSeek 1017.
+    # #747 flash_fallback groups, judge profile, DeepSeek 1017 and Sol/Astra 6.2.
     assert hashlib.sha256(json.dumps(raw, sort_keys=True).encode()).hexdigest() == (
-        "56b254ac5ebc4229467cd5a065c2bf9cc36ac50fd5ecfb3b69d5db9f551e256a"
+        "29b6a35180680694492905aa031b1d044b024cd5d6e23c302720607913dc0477"
     )
     path = tmp_path / "deployment-routing.json"
     path.write_text(json.dumps(raw))
@@ -92,10 +92,10 @@ def test_profile_presets_and_existing_candidates(monkeypatch):
         assert model_routing.model_parameter_presets(LUNA, name) == {"reasoning_effort": "medium"}
     assert routing.profile("reasoning").ranked_models() == (
         "openrouter/z-ai/glm-5.3",
-        "openrouter/openai/gpt-6.1-sol",
+        "openrouter/openai/gpt-6.2-sol",
         "openrouter/anthropic/claude-sonnet-5.5",
         "openrouter/anthropic/claude-opus-5.5",
-        "openrouter/openai/gpt-6-astra",
+        "openrouter/openai/gpt-6.2-astra",
     )
     assert routing.profile("memory_decomposition").ranked_models() == (LUNA,)
     missing = copy.deepcopy(raw)

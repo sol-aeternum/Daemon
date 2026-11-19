@@ -6,7 +6,9 @@ qualification rule. PR #447 still requires final integration gates and review.**
 This is a fictional-only screen of the PR's configured automatic background
 judge: `openrouter/openai/gpt-6-luna`, medium effort, pinned to `azure/eu`.
 It does not qualify the older deployment checkout's low-effort preset, another
-route, the complete account-budget runtime, or arbitrary future inputs.
+route, the complete account-budget runtime, or arbitrary future inputs. Since
+the 19 November 2026 re-pin (#747), the live judge route is `luna-azure` on the
+untagged `azure` listing. This screen has not been rerun on that pin.
 
 ## Method and authorization
 

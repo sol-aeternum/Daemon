@@ -61,7 +61,7 @@ class FictionalServer:
             assert "authorization" not in request.headers
             self.gets.append(str(request.url))
             if str(request.url) == screen.attestation.ZDR_LISTING_URL:
-                data = {"data": [{"model_id": "openai/gpt-6-luna", "tag": "azure/eu"}]}
+                data = {"data": [{"model_id": "openai/gpt-6-luna", "tag": "azure"}]}
             else:
                 data = {
                     "data": [
@@ -214,7 +214,7 @@ def test_ledger_freeze_corruption_and_exclusive_lock(tmp_path):
 
 
 @pytest.mark.parametrize("model", ["openai/gpt-6-luna"])
-@pytest.mark.parametrize("provider", ["Azure", "azure/eu"])
+@pytest.mark.parametrize("provider", ["Azure", "azure"])
 def test_exact_normal_receipt_identity(model, provider):
     receipt = response_for(screen.fixtures()[0])
     receipt.update(model=model, provider=provider)

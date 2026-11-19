@@ -19,17 +19,17 @@ ROUTE = "memory-decomposition-luna-azure-eu"
 NOW = datetime(2026, 11, 4, tzinfo=timezone.utc)
 BASELINE = {
     "inference_policy.json": "5aeeec92c36ed0e22c8daf26b86526175bec73ca51d8cd1c3e154c71a2403f66",
-    "inference_policy.production.json": "c2000d72bd42a92e2c77279c98f34e7eed8cedf18ee3f7e1fae986f8bd7a7185",
+    "inference_policy.production.json": "1e8648205f767df96b80a123009c6c03075eb45e1e658ee6901ec422dd444392",
 }
 FINGERPRINTS = {
-    "luna-azure-eu": "244b094cb27d0b9935ac991ce607aa1f07f54febf97d3fe2b889c5715e9786bf",
+    "luna-azure": "4840f7a2260476a7bfe27915c661d70013408d38a2841671f3838be3c0928b42",
     "deepseek-flash-coreweave-fp8": "1b2f90c2fb75f199842c761372d36ff26cd057ccb7382edd63d041569436372f",
     "glm-flash-inceptron-fp8": "947e96a619e03a55c438e686441a7ad7f6e4c12537d4694008d303974cf3deeb",
-    "sol-azure-eu": "081680c02cbb32fc8c5ce2ce237105e3cedead08d8761feaf6a650e480f693a4",
-    "sonnet-vertex-europe": "731eed3875999d4e27632edffa8bea79ff8f2ac066e1c8983ff397d9bcc8935a",
-    "opus-vertex-europe": "accd757b6c443deaf5dc75b717ac5e76757a1f305d70009c1e1ff11a6bd45e38",
-    "astra-azure-us": "fa7ce89485cc1177d2ef7243e15260e0a0838cd7f8a66ae6957dfbb58b719111",
-    "grok-zdr-us": "d820757768d7e852805f52228859fd175b9703c2dc95479e59f11358b205be03",
+    "sol-azure": "36d1158fa6df83a10246b13a7d42d32cd5234612ed13c7cd174c4a871476969b",
+    "sonnet-vertex-global": "a797d65b593acde7585c7a30d09e0cfa5c0a6ef7fc44df7f42b9f11e42609d24",
+    "opus-vertex-global": "fc3fc2272112465c849bcc479a0319db34868ca31fe4771ca471c631a7bda6cd",
+    "astra-azure": "64dd1e0ccdee386b24c7dfe2e440c12c542ca94c8cfc0a476f92b428784c4f3c",
+    "grok-bedrock-global": "40751e6fc809ad323844cf71b04122b9bf255e51abeace716dc989e868f6a200",
 }
 
 
@@ -155,14 +155,14 @@ def test_new_mode_rejects_variants_missing_price_and_approved_multi():
 
 def test_monitored_singleton_sort_valid_multi_forbidden_and_embedding_unaffected():
     raw = _raw()
-    original = next(r for r in raw["routes"] if r["route_id"] == "luna-azure-eu")
+    original = next(r for r in raw["routes"] if r["route_id"] == "luna-azure")
     original["privacy"]["transport"].update(multi_provider=True, sort="latency")
-    route = parse_inference_policy(raw).route("luna-azure-eu")
+    route = parse_inference_policy(raw).route("luna-azure")
     assert route is not None
     assert attestation.baseline_fingerprint(route) == FINGERPRINTS[route.route_id]
     assert "sort" in route.transport.as_transport_kwargs()["extra_body"]["provider"]
     changed = copy.deepcopy(raw)
-    entry = next(r for r in changed["routes"] if r["route_id"] == "luna-azure-eu")
+    entry = next(r for r in changed["routes"] if r["route_id"] == "luna-azure")
     entry["privacy"]["transport"].update(
         provider_only=["azure/eu", "azure/us"], provider_order=["azure/eu", "azure/us"]
     )

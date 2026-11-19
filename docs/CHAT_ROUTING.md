@@ -41,7 +41,7 @@ flowchart TD
 
     RT --> CRT["Routine and research candidates<br/>1. openai/gpt-6-luna · medium<br/>2. deepseek/deepseek-v4.1-flash-1017 · low<br/>2. z-ai/glm-5.3-flash · low"]
     RS --> CRT
-    RE --> CRE["Reasoning candidate groups<br/>1. z-ai/glm-5.3 · high (no deployment route)<br/>1. openai/gpt-6.1-sol · high<br/>1. anthropic/claude-sonnet-5.5 · high<br/>2. anthropic/claude-opus-5.5 · high<br/>2. openai/gpt-6-astra · high"]
+    RE --> CRE["Reasoning candidate groups<br/>1. z-ai/glm-5.3 · high (no deployment route)<br/>1. openai/gpt-6.2-sol · high<br/>1. anthropic/claude-sonnet-5.5 · high<br/>2. anthropic/claude-opus-5.5 · high<br/>2. openai/gpt-6.2-astra · high"]
 
     PIN --> G
     CRT --> G
@@ -76,10 +76,10 @@ flowchart TD
 | research | 2. flash_fallback | `deepseek/deepseek-v4.1-flash-1017` | low | routine | monitored |
 | research | 2. flash_fallback | `z-ai/glm-5.3-flash` | low | routine | monitored |
 | reasoning | 1. demanding | `z-ai/glm-5.3` | high | none | — |
-| reasoning | 1. demanding | `openai/gpt-6.1-sol` | high | premium | monitored |
+| reasoning | 1. demanding | `openai/gpt-6.2-sol` | high | premium | monitored |
 | reasoning | 1. demanding | `anthropic/claude-sonnet-5.5` | high | premium | monitored |
 | reasoning | 2. escalation | `anthropic/claude-opus-5.5` | high | premium | monitored |
-| reasoning | 2. escalation | `openai/gpt-6-astra` | high | premium | monitored |
+| reasoning | 2. escalation | `openai/gpt-6.2-astra` | high | premium | monitored |
 
 - Within a group, the lowest bounded cost for the request is tried first; list order is not priority.
 - Effort is the preset applied after selection (`default`, overlaid by the profile's own preset).
