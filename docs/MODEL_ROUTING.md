@@ -24,7 +24,7 @@ measured task quality. The supplied inference policy still approves no routes.
 Public catalog checks on 27 September 2026 inform the candidate pools; they do
 not certify account privacy settings or endpoint hosting location.
 
-Routing profiles: `routine`, `reasoning`, `research`, `background`, `council`, `memory_decomposition`.
+Routing profiles: `routine`, `reasoning`, `research`, `background`, `council`, `memory_decomposition`, `memory_equivalence`.
 
 `memory_decomposition` is an optional, default-off M1 helper, not a chat candidate.
 Deployment-owned files with only the original five profiles remain valid; an
@@ -34,6 +34,21 @@ stays medium. Its caller additionally pins `memory-decomposition-luna-azure-eu`,
 an unapproved proposal in both shipped policies, never the approved general Luna
 route. No existing profile candidates or route approvals change. See
 [the M1 design](memory/multi_query_retrieval.md).
+
+### Flash fallback behind Luna — 19 November 2026
+
+For [#747](https://github.com/sol-aeternum/Daemon/issues/747) the operator added a
+second automatic group, `flash_fallback`, to `routine`, `background` and
+`research`: DeepSeek V4.1 Flash (now the `-1017` checkpoint) and GLM 5.3 Flash.
+It is reached only when no `luna` candidate is qualified; within it the cheaper
+bounded estimate wins. The placement is unmeasured: no evaluation compares these
+routes with Luna on these workloads. The memory-merge equivalence judge, qualified
+only on Luna, moves from `background` to its own optional Luna-only
+`memory_equivalence` profile, so the fallback never decides merges: without a
+qualified Luna route, or with a routing file that lacks the profile, the judge
+declines and nothing merges. Ceilings and evidence are in
+[INFERENCE_ROUTE_APPROVALS.md](INFERENCE_ROUTE_APPROVALS.md#routine-fallback-and-deepseek-1017--19-november-2026).
+Rollback is removing the three groups from `config/model_routing.json`.
 
 ### Operator-selected Sol 6.1 high — 30 September 2026
 
@@ -46,7 +61,8 @@ This is an explicit rollout decision; human semantic verdicts remain pending and
 no measured quality superiority is claimed. The same Azure EU deployment route
 retains its limits, price ceilings, privacy controls and 6 October expiry; see
 [INFERENCE_ROUTE_APPROVALS.md](INFERENCE_ROUTE_APPROVALS.md#sol-61-replacement--30-september-2026).
-Routine/background/research remain Luna-only for automatic selection.
+Routine/background/research remained Luna-only for automatic selection until
+the 19 November 2026 fallback below.
 
 ### Sonnet 5.5 replaces Sonnet 5 — 3 October 2026
 
@@ -433,7 +449,7 @@ extraction changes should retain the existing precision/recall evaluation and
 source restrictions, not only test that JSON parses.
 
 Public reference endpoints:
-- [DeepSeek V4.1 Flash](https://openrouter.ai/api/v1/model/deepseek/deepseek-v4.1-flash)
+- [DeepSeek V4.1 Flash (1017)](https://openrouter.ai/api/v1/model/deepseek/deepseek-v4.1-flash-1017)
 - [GLM 5.3 Flash](https://openrouter.ai/api/v1/model/z-ai/glm-5.3-flash)
 - [GLM 5.3](https://openrouter.ai/api/v1/model/z-ai/glm-5.3)
 - [OpenRouter provider pinning](https://openrouter.ai/docs/guides/routing/provider-selection)

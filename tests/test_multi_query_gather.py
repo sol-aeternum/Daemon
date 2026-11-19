@@ -300,7 +300,7 @@ async def test_missing_optional_profile_fails_open_before_completion(
         ),
         (
             "inference_policy.production.json",
-            "6b52ed0becd1be8c53dcc91cac662f1215f808a92954aeea4a21ac1615028b54",
+            "57cacbb488bee14e5693e2638bcf37361d41adc66c68974250330ce4eccdb8ff",
         ),
     ],
 )
@@ -311,7 +311,7 @@ async def test_deployment_owned_legacy_policy_needs_no_proposal_or_transport_fie
     raw["routes"] = [r for r in raw["routes"] if r["route_id"] != mq.DECOMPOSITION_ROUTE_ID]
     # A legacy deployment-owned copy predates embedding route selection too.
     raw.pop("selected_embedding_route_id", None)
-    # Whole-document semantic identity with origin/main at this rebase.
+    # Whole-document semantic identity with the shipped policy (re-pinned for #747).
     assert hashlib.sha256(json.dumps(raw, sort_keys=True).encode()).hexdigest() == semantic_hash
     assert all("multi_provider" not in r["privacy"]["transport"] for r in raw["routes"])
     path = tmp_path / name
@@ -641,11 +641,10 @@ async def test_concurrent_guarded_ledger_holds_settle_once_and_context_isolated(
     service.reserve.side_effect = ["hold-one", "hold-two"]
     route = production_policy.embedding_route("azure-openrouter-small-1024")
     assert route is not None
-    # Confirm both independent fixture denials before repairing the synthetic
-    # evidence: the clock is Oct 3, but embedding review is Oct 5, and the
+    # Confirm the fixture denial before repairing the synthetic evidence: the
     # completion fixture attests only completion routes, not embedding routes.
+    # (The clock moved past the Oct 5 embedding review with #747.)
     reasons = route.rejection_reasons(production_policy.requirements, now=REVIEWED)
-    assert "operator_review_date_invalid" in reasons
     assert "zdr_attestation_stale" in reasons
     assert (
         route.route_id,

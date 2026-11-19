@@ -117,9 +117,9 @@ def reserve(ledger: dict[str, Any], batch: str, bound: int) -> dict[str, Any]:
 def configured_route():
     routing = model_routing.load_model_routing(ROUTING)
     policy = load_inference_policy(POLICY)
-    if equivalence.EQUIVALENCE_PROFILE != "background":
+    if equivalence.EQUIVALENCE_PROFILE != "memory_equivalence":
         raise ValueError("Production judge profile changed")
-    profile = routing.profile("background")
+    profile = routing.profile(equivalence.EQUIVALENCE_PROFILE)
     candidates = profile.ranked_models()
     # Offline preparation checks operator approval, not live qualification. The
     # production monitored gate needs DB history; this isolated screen instead
@@ -154,7 +154,7 @@ def configured_route():
     ):
         raise ValueError("Pinned transport, price or policy limits changed")
     preset = dict(routing.models[MODEL].presets["default"])
-    preset.update(routing.models[MODEL].presets.get("background", {}))
+    preset.update(routing.models[MODEL].presets.get(equivalence.EQUIVALENCE_PROFILE, {}))
     if preset != {"reasoning_effort": "medium"}:
         raise ValueError("Tested reasoning preset changed")
     return routing, route, provider, preset
@@ -252,7 +252,7 @@ async def prepare(*, followup: bool = False):
     async def capture(**params):
         state = model_routing.current_routing()
         if (
-            state.profile != "background"
+            state.profile != equivalence.EQUIVALENCE_PROFILE
             or params["max_tokens"] != OUTPUT
             or params["response_format"] != {"type": "json_object"}
         ):
@@ -525,7 +525,10 @@ async def screen(client, key, ledger_path, ledger, prepared) -> None:
             continue
 
         async def direct(**params):
-            if params != requests[name] or model_routing.current_routing().profile != "background":
+            if (
+                params != requests[name]
+                or model_routing.current_routing().profile != equivalence.EQUIVALENCE_PROFILE
+            ):
                 raise ValueError("Unfrozen production request")
             # Public metadata only, no headers/credentials, no production DB or
             # snapshot mutation. Recheck every dispatch; unreadable is denied.
@@ -579,7 +582,7 @@ async def screen(client, key, ledger_path, ledger, prepared) -> None:
         a["result"]["passed"] for a in ledger["attempts"]
     )
     ledger["claim_scope"] = (
-        "Only the frozen background Luna/Azure EU route, preset and fictional screen; no other routes or production-data claim."
+        "Only the frozen memory_equivalence Luna/Azure EU route, preset and fictional screen; no other routes or production-data claim."
     )
     write_json(ledger_path, ledger)
 

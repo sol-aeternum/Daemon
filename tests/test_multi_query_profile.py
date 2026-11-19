@@ -29,9 +29,10 @@ def legacy_routing_document():
 
 def test_deployment_owned_pre_pr_routing_loads_and_selects_existing_profile(monkeypatch, tmp_path):
     raw = legacy_routing_document()
-    # Semantic SHA-256 of origin/main:config/model_routing.json at this rebase.
+    # Semantic SHA-256 of the shipped config/model_routing.json, re-pinned for the
+    # #747 flash_fallback groups, judge profile and DeepSeek 1017.
     assert hashlib.sha256(json.dumps(raw, sort_keys=True).encode()).hexdigest() == (
-        "8c99984a8079ac286221fe798a678dd192af09799a72442a603ee59fd2a2d99a"
+        "8a2cbd7c2491c74b69b237aa4878154a0afea68b8ebf37c1eaef2eb00e1b7380"
     )
     path = tmp_path / "deployment-routing.json"
     path.write_text(json.dumps(raw))
@@ -83,7 +84,11 @@ def test_profile_presets_and_existing_candidates(monkeypatch):
         "reasoning_effort": "none"
     }
     for name in ("background", "routine", "research"):
-        assert routing.profile(name).ranked_models() == (LUNA,)
+        assert routing.profile(name).ranked_models() == (
+            LUNA,
+            "openrouter/deepseek/deepseek-v4.1-flash-1017",
+            "openrouter/z-ai/glm-5.3-flash",
+        )
         assert model_routing.model_parameter_presets(LUNA, name) == {"reasoning_effort": "medium"}
     assert routing.profile("reasoning").ranked_models() == (
         "openrouter/z-ai/glm-5.3",

@@ -42,7 +42,7 @@ def _remapped_research(tmp_path: Path) -> Path:
     for profile in data["profiles"]:
         if profile["profile"] == "research":
             profile["groups"] = [
-                {"group": "flash", "models": ["openrouter/deepseek/deepseek-v4.1-flash"]}
+                {"group": "flash", "models": ["openrouter/deepseek/deepseek-v4.1-flash-1017"]}
             ]
     path = tmp_path / "model_routing.json"
     path.write_text(json.dumps(data), encoding="utf-8")

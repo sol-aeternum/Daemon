@@ -393,8 +393,10 @@ async def test_reservation_fsync_failure_prevents_dispatch(tmp_path, monkeypatch
 def test_configured_profile_cannot_qualify_another_candidate_or_preset():
     routing, route, provider, preset = screen.configured_route()
     raw = json.loads(screen.ROUTING.read_text())
-    background = next(p for p in raw["profiles"] if p["profile"] == "background")
-    background["groups"][0]["models"].append("openrouter/z-ai/glm-5.3-flash")
+    glm = "openrouter/z-ai/glm-5.3-flash"
+    next(m for m in raw["models"] if m["model"] == glm)["suitability"].append("memory_equivalence")
+    judge = next(p for p in raw["profiles"] if p["profile"] == "memory_equivalence")
+    judge["groups"][0]["models"].append(glm)
     other = model_routing.parse_model_routing(raw)
     with patch.object(model_routing, "load_model_routing", return_value=other):
         with pytest.raises(ValueError, match="exclusively"):

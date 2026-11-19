@@ -21,10 +21,13 @@ from orchestrator.entitlements.policy import (
 )
 
 ROOT = Path(__file__).resolve().parents[1]
-REVIEWED = datetime(2026, 10, 3, tzinfo=timezone.utc)
+# Evaluation time: the latest operator review in the shipped policy (#747).
+REVIEWED = datetime(2026, 11, 19, tzinfo=timezone.utc)
 STALE = REVIEWED + attestation.STALE_AFTER + timedelta(minutes=1)
 GLM_FLASH = "openrouter/z-ai/glm-5.3-flash"
 GLM_ROUTE = "glm-flash-inceptron-fp8"
+DEEPSEEK_FLASH = "openrouter/deepseek/deepseek-v4.1-flash-1017"
+DEEPSEEK_ROUTE = "deepseek-flash-coreweave-fp8"
 
 
 def _production() -> InferencePolicy:
@@ -112,9 +115,9 @@ def test_glm_flash_operator_caps_units_and_retained_controls(
     assert route.free_model_training_opt_out is True
     assert route.price_ceiling is not None
     assert route.price_ceiling.microusd_per_1m_prompt == 225000
-    assert route.price_ceiling.microusd_per_1m_completion == 450000
+    assert route.price_ceiling.microusd_per_1m_completion == 490000
     assert route.estimate_microusd(1_000_000, 0) == 225000
-    assert route.estimate_microusd(0, 1_000_000) == 450000
+    assert route.estimate_microusd(0, 1_000_000) == 490000
     assert route.transport_payload(production_policy.requirements)["extra_body"]["provider"] == {
         "only": ["inceptron/fp8"],
         "order": ["inceptron/fp8"],
@@ -122,7 +125,30 @@ def test_glm_flash_operator_caps_units_and_retained_controls(
         "require_parameters": True,
         "data_collection": "deny",
         "zdr": True,
-        "max_price": {"prompt": 0.225, "completion": 0.45},
+        "max_price": {"prompt": 0.225, "completion": 0.49},
+    }
+
+
+def test_deepseek_flash_serves_1017_checkpoint_with_operator_caps(
+    production_policy: InferencePolicy,
+) -> None:
+    route = production_policy.routes[DEEPSEEK_ROUTE]
+    assert route.model == DEEPSEEK_FLASH
+    assert route.route_class == "routine"
+    assert route.model_capabilities == frozenset({"text", "tools", "json_schema"})
+    assert (route.max_context_tokens, route.max_output_tokens) == (1048576, 393216)
+    assert route.review.reviewed_at == datetime(2026, 11, 19, tzinfo=timezone.utc)
+    assert route.price_ceiling is not None
+    assert route.estimate_microusd(1_000_000, 0) == 300000
+    assert route.estimate_microusd(0, 1_000_000) == 1200000
+    assert route.transport_payload(production_policy.requirements)["extra_body"]["provider"] == {
+        "only": ["coreweave/fp8"],
+        "order": ["coreweave/fp8"],
+        "allow_fallbacks": False,
+        "require_parameters": True,
+        "data_collection": "deny",
+        "zdr": True,
+        "max_price": {"prompt": 0.3, "completion": 1.2},
     }
 
 
@@ -147,7 +173,7 @@ async def test_glm_flash_existing_selection_sends_production_caps(mocked_dispatc
     assert call["api_base"] == "https://openrouter.ai/api/v1"
     assert call["extra_body"]["provider"]["only"] == ["inceptron/fp8"]
     assert call["extra_body"]["provider"]["allow_fallbacks"] is False
-    assert call["extra_body"]["provider"]["max_price"] == {"prompt": 0.225, "completion": 0.45}
+    assert call["extra_body"]["provider"]["max_price"] == {"prompt": 0.225, "completion": 0.49}
     assert call["num_retries"] == 0
     assert service.reserve.await_args.kwargs["route_id"] == GLM_ROUTE
 
@@ -211,16 +237,75 @@ async def test_glm_flash_explicit_provider_failure_never_substitutes(mocked_disp
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("profile", ["routine", "background", "research", "reasoning"])
-async def test_glm_flash_not_added_as_automatic_fallback(
+@pytest.mark.parametrize("profile", ["routine", "background", "research"])
+async def test_flash_fallback_serves_only_when_no_luna_route_qualifies(
     monkeypatch, production_policy: InferencePolicy, mocked_dispatch, profile
 ):
-    # Even with GLM Flash as the only approved route and ample account budget,
-    # these profiles have no authorization to add it to their automatic groups.
-    only_flash = replace(production_policy, routes={GLM_ROUTE: production_policy.routes[GLM_ROUTE]})
-    monkeypatch.setattr(compute_runtime, "load_inference_policy", lambda: only_flash)
+    # #747: the operator-placed flash_fallback group answers these profiles when
+    # Luna's route is not qualified, and is never chosen over a qualified Luna.
+    flash_only = replace(
+        production_policy,
+        routes={
+            route_id: production_policy.routes[route_id] for route_id in (GLM_ROUTE, DEEPSEEK_ROUTE)
+        },
+    )
+    monkeypatch.setattr(compute_runtime, "load_inference_policy", lambda: flash_only)
     service, provider = mocked_dispatch
-    with model_routing.routing_context(profile):
+    with model_routing.routing_context(profile) as state:
+        await compute_runtime.guarded_completion(messages=[{"role": "user", "content": "fixture"}])
+        assert state.selected_group == "flash_fallback"
+        assert state.selected_route_id in {GLM_ROUTE, DEEPSEEK_ROUTE}
+    provider.assert_awaited_once()
+    assert provider.await_args.kwargs["extra_body"]["provider"]["allow_fallbacks"] is False
+
+    monkeypatch.setattr(compute_runtime, "load_inference_policy", lambda: production_policy)
+    assert compute_runtime.choose_route(profile=profile).route_id == "luna-azure-eu"
+
+
+@pytest.mark.asyncio
+async def test_memory_equivalence_judge_never_falls_back_to_flash_routes(
+    monkeypatch, production_policy: InferencePolicy, mocked_dispatch
+):
+    # #747: the merge judge was qualified only on Luna, so its profile carries
+    # no flash_fallback group; without a qualified Luna route it is refused.
+    routing = model_routing.load_model_routing()
+    assert routing.profile("memory_equivalence").ranked_models() == (
+        "openrouter/openai/gpt-6-luna",
+    )
+    assert routing.profile("background").group_names() == ("luna", "flash_fallback")
+    flash_only = replace(
+        production_policy,
+        routes={
+            route_id: production_policy.routes[route_id] for route_id in (GLM_ROUTE, DEEPSEEK_ROUTE)
+        },
+    )
+    monkeypatch.setattr(compute_runtime, "load_inference_policy", lambda: flash_only)
+    service, provider = mocked_dispatch
+    with model_routing.routing_context("memory_equivalence"):
+        with pytest.raises(compute_runtime.ComputeUnavailable):
+            await compute_runtime.guarded_completion(
+                messages=[{"role": "user", "content": "fixture"}]
+            )
+    service.reserve.assert_not_awaited()
+    provider.assert_not_awaited()
+
+    monkeypatch.setattr(compute_runtime, "load_inference_policy", lambda: production_policy)
+    assert compute_runtime.choose_route(profile="memory_equivalence").route_id == "luna-azure-eu"
+
+
+@pytest.mark.asyncio
+async def test_flash_routes_are_not_automatic_reasoning_candidates(
+    monkeypatch, production_policy: InferencePolicy, mocked_dispatch
+):
+    flash_only = replace(
+        production_policy,
+        routes={
+            route_id: production_policy.routes[route_id] for route_id in (GLM_ROUTE, DEEPSEEK_ROUTE)
+        },
+    )
+    monkeypatch.setattr(compute_runtime, "load_inference_policy", lambda: flash_only)
+    service, provider = mocked_dispatch
+    with model_routing.routing_context("reasoning"):
         with pytest.raises(compute_runtime.ComputeUnavailable):
             await compute_runtime.guarded_completion(
                 messages=[{"role": "user", "content": "fixture"}]
@@ -304,11 +389,9 @@ def test_approved_deployment_resolves_profiles_and_denies_excluded_models(monkey
     for profile in ("routine", "background", "research"):
         assert compute_runtime.choose_route(profile=profile).route_id == "luna-azure-eu"
     assert compute_runtime.choose_route(profile="reasoning").route_id == "sonnet-vertex-europe"
-    assert (
-        compute_runtime.choose_route("openrouter/deepseek/deepseek-v4.1-flash").route_id
-        == "deepseek-flash-coreweave-fp8"
-    )
+    assert compute_runtime.choose_route(DEEPSEEK_FLASH).route_id == DEEPSEEK_ROUTE
     for model in (
+        "openrouter/deepseek/deepseek-v4.1-flash",
         "openrouter/openai/gpt-6-sol",
         "openrouter/anthropic/claude-sonnet-5",
         "openrouter/qwen/qwen3.8-max-0902",

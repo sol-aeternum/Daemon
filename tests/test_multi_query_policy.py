@@ -19,12 +19,12 @@ ROUTE = "memory-decomposition-luna-azure-eu"
 NOW = datetime(2026, 11, 4, tzinfo=timezone.utc)
 BASELINE = {
     "inference_policy.json": "5aeeec92c36ed0e22c8daf26b86526175bec73ca51d8cd1c3e154c71a2403f66",
-    "inference_policy.production.json": "409045acbad8ec9ab8c33e9bd4f5707f18173b48e0102500cc8bee4da69a2ae9",
+    "inference_policy.production.json": "c2000d72bd42a92e2c77279c98f34e7eed8cedf18ee3f7e1fae986f8bd7a7185",
 }
 FINGERPRINTS = {
     "luna-azure-eu": "244b094cb27d0b9935ac991ce607aa1f07f54febf97d3fe2b889c5715e9786bf",
-    "deepseek-flash-coreweave-fp8": "58db3655c2cf9bcb09a84cf1ba80834e5211d2fbd72b497463f6f329582aae44",
-    "glm-flash-inceptron-fp8": "3435590e240caae84fe36e9d39cd281fab6f855e210ddf77fd9ffb83f8d7302f",
+    "deepseek-flash-coreweave-fp8": "1b2f90c2fb75f199842c761372d36ff26cd057ccb7382edd63d041569436372f",
+    "glm-flash-inceptron-fp8": "947e96a619e03a55c438e686441a7ad7f6e4c12537d4694008d303974cf3deeb",
     "sol-azure-eu": "081680c02cbb32fc8c5ce2ce237105e3cedead08d8761feaf6a650e480f693a4",
     "sonnet-vertex-europe": "731eed3875999d4e27632edffa8bea79ff8f2ac066e1c8983ff397d9bcc8935a",
     "opus-vertex-europe": "accd757b6c443deaf5dc75b717ac5e76757a1f305d70009c1e1ff11a6bd45e38",
