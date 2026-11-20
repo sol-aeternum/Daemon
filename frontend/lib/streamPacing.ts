@@ -23,7 +23,15 @@ export interface StreamPacingOptions {
 
 const yieldToTask = () =>
   new Promise<void>((resolve) => {
-    setTimeout(resolve, 0);
+    // Posted messages yield a browser task without the timer delays that
+    // accumulate across batches in a hidden tab.
+    const { port1, port2 } = new MessageChannel();
+    port1.onmessage = () => {
+      port1.close();
+      port2.close();
+      resolve();
+    };
+    port2.postMessage(null);
   });
 
 export function paceChunkStream<T>(

@@ -449,9 +449,10 @@ async function installBurstStream(
   page: Page,
   mode: BurstMode,
   deltaCount: number,
+  throttleHiddenTimers = false,
 ) {
   await page.addInitScript(
-    ({ mode, count }: { mode: BurstMode; count: number }) => {
+    ({ mode, count, throttleHiddenTimers }) => {
       const originalFetch = window.fetch.bind(window);
       window.fetch = async (input, init) => {
         const url =
@@ -461,6 +462,24 @@ async function installBurstStream(
               ? input.href
               : input.url;
         if (!url.endsWith('/api/chat')) return originalFetch(input, init);
+        if (throttleHiddenTimers) {
+          // Headless Chromium keeps both tabs visible. Model a hidden tab's
+          // deferred short timers deterministically once the burst starts.
+          // Leave other task sources and the genuine timer for longer waits.
+          Object.defineProperty(document, 'visibilityState', {
+            configurable: true,
+            value: 'hidden',
+          });
+          Object.defineProperty(document, 'hidden', {
+            configurable: true,
+            value: true,
+          });
+          const timerHost: Window = window;
+          const setTimeout = timerHost.setTimeout.bind(timerHost);
+          timerHost.setTimeout = (handler, delay = 0, ...args) =>
+            setTimeout(handler, delay <= 4 ? 60_000 : delay, ...args);
+          document.dispatchEvent(new Event('visibilitychange'));
+        }
         sessionStorage.setItem(
           'burst-chat-requests',
           String(
@@ -517,7 +536,7 @@ async function installBurstStream(
         );
       };
     },
-    { mode, count: deltaCount },
+    { mode, count: deltaCount, throttleHiddenTimers },
   );
 }
 
@@ -618,5 +637,32 @@ test('a burst of 145 thinking deltas then 145 text deltas keeps the thought and 
     page.getByText('Disconnected', { exact: true }).filter({ visible: true }),
   ).toHaveCount(0);
   await expect(page.getByText('Something went wrong')).toHaveCount(0);
+  await expect.poll(() => burstRequestCount(page)).toBe(1);
+});
+
+test('a hidden-tab chat burst finishes without short timers (#752)', async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 1440, height: 1000 });
+  await installBurstStream(page, 'thinking-then-text', 145, true);
+  await page.goto(`/?id=${conversation.id}`);
+  const messages = page.getByRole('main', { name: 'Conversation messages' });
+  await expect(messages.locator('article')).toHaveCount(100);
+  const composer = page.getByRole('textbox', { name: 'Message Daemon' });
+  await composer.fill('Burst this reply');
+  await composer.press('Enter');
+
+  // The simulated timer delay exceeds the test deadline. The final text and
+  // return to Send prove the stream drained and settled without a timer batch.
+  await expect(messages).toContainText('Delta 145. Burst reply complete.', {
+    timeout: 15_000,
+  });
+  await expect(
+    page.getByRole('button', { name: 'Send message' }),
+  ).toBeVisible();
+  await expect(
+    page.getByText('Connected', { exact: true }).filter({ visible: true }),
+  ).toHaveCount(1);
+  expect(await page.evaluate(() => document.visibilityState)).toBe('hidden');
   await expect.poll(() => burstRequestCount(page)).toBe(1);
 });
