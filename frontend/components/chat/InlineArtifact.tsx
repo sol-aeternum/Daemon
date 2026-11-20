@@ -21,14 +21,57 @@ type Preview =
   | { kind: 'ready'; html: string }
   | { kind: 'unsupported' | 'failed' };
 
+function hasUsableSvgViewport(shape: Element): boolean {
+  for (
+    let svg = shape.closest('svg');
+    svg;
+    svg = svg.parentElement?.closest('svg') ?? null
+  ) {
+    const width = Number.parseFloat(svg.getAttribute('width') ?? '');
+    const height = Number.parseFloat(svg.getAttribute('height') ?? '');
+    if (width <= 0 || height <= 0) return false;
+    const viewBox = svg
+      .getAttribute('viewBox')
+      ?.trim()
+      .split(/[\s,]+/);
+    if (
+      viewBox?.length === 4 &&
+      (Number(viewBox[2]) <= 0 || Number(viewBox[3]) <= 0)
+    ) {
+      return false;
+    }
+  }
+  return true;
+}
+
+function hasPreviewText(body: HTMLElement): boolean {
+  const text = body.ownerDocument.createNodeIterator(
+    body,
+    NodeFilter.SHOW_TEXT,
+  );
+  for (let node = text.nextNode(); node; node = text.nextNode()) {
+    const parent = node.parentElement;
+    if (
+      parent &&
+      node.textContent?.replace(/[\s\u200b-\u200d\u2060\ufeff]/g, '') &&
+      (!parent.closest('svg') ||
+        (parent.closest('svg text') && hasUsableSvgViewport(parent)))
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
 function preparePreview(htmlContent: string): Preview {
   try {
-    const markup = htmlContent.replace(/<!--(?:-?>|[\s\S]*?--!?>)/g, '');
+    // This is a conservative source-only classification, not sanitization.
+    // Do not rewrite the source; only sanitizeHtml's output can reach srcDoc.
     if (
       /<(?:script|style|link|form|input|select|option|textarea|button|iframe|object|embed|canvas|img|video|audio)\b/i.test(
-        markup,
+        htmlContent,
       ) ||
-      /<[a-z][^<>]*\s(?:style|on[a-z]+)\s*=/i.test(markup)
+      /<[a-z][^<>]*\s(?:style|on[a-z]+)\s*=/i.test(htmlContent)
     ) {
       return { kind: 'unsupported' };
     }
@@ -37,9 +80,10 @@ function preparePreview(htmlContent: string): Preview {
     // with no shapes) is not a usable preview, even if the iframe loads.
     const body = new DOMParser().parseFromString(html, 'text/html').body;
     if (
-      !body.textContent?.replace(/[\s\u200b-\u200d\u2060\ufeff]/g, '') &&
+      !hasPreviewText(body) &&
       !Array.from(body.querySelectorAll('svg path, svg rect, svg circle')).some(
         (shape) => {
+          if (!hasUsableSvgViewport(shape)) return false;
           const positive = (attr: string) =>
             Number.parseFloat(shape.getAttribute(attr) ?? '') > 0;
           if (shape.localName === 'path')

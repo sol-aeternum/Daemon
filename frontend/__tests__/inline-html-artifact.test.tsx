@@ -83,6 +83,26 @@ describe('inline HTML presentation', () => {
     expect(screen.queryByTitle('Static HTML preview')).toBeNull();
   });
 
+  it.each([
+    '<svg viewBox="0,0,40,0"><circle cx="20" cy="20" r="10" /></svg>',
+    '<svg width="0"><svg viewBox="0 0 40 40"><circle r="10" /></svg></svg>',
+    '<svg height="0"><text>Clipped label</text></svg>',
+    '<svg viewBox="0 0 40 40">Not painted</svg>',
+  ])('does not preview SVG-only content that cannot paint: %s', (svg) => {
+    render(<MarkdownMessage content={`${open}\n${svg}\n\`\`\``} />);
+    expect(screen.getByText(/no visible content/)).toBeTruthy();
+    expect(screen.queryByTitle('Static HTML preview')).toBeNull();
+  });
+
+  it('keeps visible HTML when an adjacent SVG cannot paint', () => {
+    const body =
+      '<h2>Visible summary</h2><svg viewBox="0 0 0 0"><circle r="10" /></svg>';
+    render(<MarkdownMessage content={`${open}\n${body}\n\`\`\``} />);
+    expect(
+      screen.getByTitle('Static HTML preview').getAttribute('srcdoc'),
+    ).toContain('<h2>Visible summary</h2>');
+  });
+
   it('keeps source available when load fires but the preview does not start', () => {
     vi.useFakeTimers();
     const hidden = vi.spyOn(document, 'hidden', 'get').mockReturnValue(true);

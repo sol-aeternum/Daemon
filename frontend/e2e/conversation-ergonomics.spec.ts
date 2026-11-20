@@ -821,6 +821,12 @@ test('HTML artifacts distinguish a streaming reply from saved preview and source
   const unsupported =
     '<div id="dashboard"></div><script>document.querySelector("#dashboard").textContent = "Generated using JS.";</script>\n';
   const unfinished = '  <div>Preserve this source verbatim.</div>\n\n';
+  const zeroViewport =
+    '<svg viewBox="0 0 0 0"><circle cx="20" cy="20" r="10" /></svg>\n';
+  const validSvg =
+    '<svg viewBox="0 0 40 40" width="40" height="40"><circle cx="20" cy="20" r="10" fill="orange" /></svg>\n';
+  const savedReply = (id: number) =>
+    main.locator(`[data-message-id="${historyFixtureId(id)}"]`);
   await page.route(
     (url) => url.pathname.endsWith(`/conversations/${conversation.id}`),
     (route) =>
@@ -850,6 +856,16 @@ test('HTML artifacts distinguish a streaming reply from saved preview and source
                 role: 'assistant',
                 content: open + unfinished,
               },
+              {
+                id: 'message-105',
+                role: 'assistant',
+                content: open + zeroViewport + close,
+              },
+              {
+                id: 'message-106',
+                role: 'assistant',
+                content: open + validSvg + close,
+              },
             ],
           },
           new URL(route.request().url()),
@@ -857,14 +873,24 @@ test('HTML artifacts distinguish a streaming reply from saved preview and source
       }),
   );
   await page.reload();
-  await expect(totals).toBeVisible();
-  await expect(frame).toHaveCount(1);
-  await expect(frame).toHaveCSS('opacity', '1');
+  await expect(frame).toHaveCount(2);
+  await expect(
+    savedReply(102)
+      .frameLocator('iframe[title="Static HTML preview"]')
+      .getByRole('heading', { name: 'Quarterly totals' }),
+  ).toBeVisible();
+  const svgFrame = savedReply(106).locator(
+    'iframe[title="Static HTML preview"]',
+  );
+  await expect(svgFrame).toHaveCSS('opacity', '1');
+  await expect(svgFrame.contentFrame().locator('circle')).toBeVisible();
   for (const [id, body, notice] of [
     [103, unsupported, /uses unsupported features/],
     [104, unfinished, /code block was not closed/],
+    [105, zeroViewport, /no visible content/],
   ] as const) {
-    const reply = main.locator(`[data-message-id="${historyFixtureId(id)}"]`);
+    const reply = savedReply(id);
+    await expect(reply.locator('iframe')).toHaveCount(0);
     await expect(reply.getByText(notice)).toBeVisible();
     await reply.getByText('View source').click();
     expect(await reply.locator('pre code').textContent()).toBe(body);
