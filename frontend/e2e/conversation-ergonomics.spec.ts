@@ -733,3 +733,169 @@ test('a hidden-tab chat burst finishes without short timers (#752)', async ({
   expect(await page.evaluate(() => document.visibilityState)).toBe('hidden');
   await expect.poll(() => burstRequestCount(page)).toBe(1);
 });
+
+test('HTML artifacts distinguish a streaming reply from saved preview and source-only states (#759)', async ({
+  page,
+}) => {
+  const source =
+    '  <h2>Quarterly totals</h2>\n<table><tr><td>42</td></tr></table>\n';
+  const open = '```html:interactive\n';
+  const close = '```\n\nEnd of preview.';
+  await page.addInitScript(
+    ({ open, source, close }) => {
+      const fetchOriginal = window.fetch.bind(window);
+      window.fetch = (input, init) => {
+        const url =
+          typeof input === 'string'
+            ? input
+            : input instanceof URL
+              ? input.href
+              : input.url;
+        if (!url.endsWith('/api/chat')) return fetchOriginal(input, init);
+        const encoder = new TextEncoder();
+        return Promise.resolve(
+          new Response(
+            new ReadableStream({
+              start(controller) {
+                const send = (frame: object) =>
+                  controller.enqueue(
+                    encoder.encode(`data: ${JSON.stringify(frame)}\n\n`),
+                  );
+                send({ type: 'start', messageId: 'artifact-reply' });
+                send({ type: 'text-start', id: 'text' });
+                send({ type: 'text-delta', id: 'text', delta: open + source });
+                (
+                  window as unknown as { closeArtifactFence: () => void }
+                ).closeArtifactFence = () =>
+                  send({ type: 'text-delta', id: 'text', delta: close });
+                (
+                  window as unknown as { finishArtifactReply: () => void }
+                ).finishArtifactReply = () => {
+                  send({ type: 'text-end', id: 'text' });
+                  send({ type: 'finish' });
+                  controller.close();
+                };
+              },
+            }),
+            {
+              headers: {
+                'content-type': 'text/event-stream',
+                'x-vercel-ai-ui-message-stream': 'v1',
+              },
+            },
+          ),
+        );
+      };
+    },
+    { open, source, close },
+  );
+  await page.goto(`/?id=${conversation.id}`);
+  const main = page.getByRole('main', { name: 'Conversation messages' });
+  await expect(main.locator('article')).toHaveCount(100);
+  const composer = page.getByRole('textbox', { name: 'Message Daemon' });
+  await composer.fill('Make a static preview');
+  await composer.press('Enter');
+
+  const frame = main.locator('iframe[title="Static HTML preview"]');
+  const totals = main
+    .frameLocator('iframe[title="Static HTML preview"]')
+    .getByRole('heading', { name: 'Quarterly totals' });
+  await expect(main.getByText('Receiving HTML…')).toBeVisible();
+  await expect(frame).toHaveCount(0);
+  await page.evaluate(() =>
+    (
+      window as unknown as { closeArtifactFence: () => void }
+    ).closeArtifactFence(),
+  );
+  await expect(main.getByText('End of preview.')).toBeVisible();
+  await expect(main.getByText('Receiving HTML…')).toBeVisible();
+  await expect(frame).toHaveCount(0);
+  await page.evaluate(() =>
+    (
+      window as unknown as { finishArtifactReply: () => void }
+    ).finishArtifactReply(),
+  );
+  await expect(totals).toBeVisible();
+  await expect(frame).toHaveCSS('opacity', '1');
+
+  const unsupported =
+    '<div id="dashboard"></div><script>document.querySelector("#dashboard").textContent = "Generated using JS.";</script>\n';
+  const unfinished = '  <div>Preserve this source verbatim.</div>\n\n';
+  const zeroViewport =
+    '<svg viewBox="0 0 0 0"><circle cx="20" cy="20" r="10" /></svg>\n';
+  const validSvg =
+    '<svg viewBox="0 0 40 40" width="40" height="40"><circle cx="20" cy="20" r="10" fill="orange" /></svg>\n';
+  const savedReply = (id: number) =>
+    main.locator(`[data-message-id="${historyFixtureId(id)}"]`);
+  await page.route(
+    (url) => url.pathname.endsWith(`/conversations/${conversation.id}`),
+    (route) =>
+      route.fulfill({
+        json: historyFixtureDetail(
+          {
+            ...conversation,
+            messages: [
+              ...conversation.messages,
+              {
+                id: 'message-101',
+                role: 'user',
+                content: 'Make a static preview',
+              },
+              {
+                id: 'message-102',
+                role: 'assistant',
+                content: open + source + close,
+              },
+              {
+                id: 'message-103',
+                role: 'assistant',
+                content: open + unsupported + close,
+              },
+              {
+                id: 'message-104',
+                role: 'assistant',
+                content: open + unfinished,
+              },
+              {
+                id: 'message-105',
+                role: 'assistant',
+                content: open + zeroViewport + close,
+              },
+              {
+                id: 'message-106',
+                role: 'assistant',
+                content: open + validSvg + close,
+              },
+            ],
+          },
+          new URL(route.request().url()),
+        ),
+      }),
+  );
+  await page.reload();
+  await expect(frame).toHaveCount(2);
+  await expect(
+    savedReply(102)
+      .frameLocator('iframe[title="Static HTML preview"]')
+      .getByRole('heading', { name: 'Quarterly totals' }),
+  ).toBeVisible();
+  const svgFrame = savedReply(106).locator(
+    'iframe[title="Static HTML preview"]',
+  );
+  await expect(svgFrame).toHaveCSS('opacity', '1');
+  await expect(svgFrame.contentFrame().locator('circle')).toBeVisible();
+  for (const [id, body, notice] of [
+    [103, unsupported, /uses unsupported features/],
+    [104, unfinished, /code block was not closed/],
+    [105, zeroViewport, /no visible content/],
+  ] as const) {
+    const reply = savedReply(id);
+    await expect(reply.locator('iframe')).toHaveCount(0);
+    await expect(reply.getByText(notice)).toBeVisible();
+    await reply.getByText('View source').click();
+    expect(await reply.locator('pre code').textContent()).toBe(body);
+    await expect(
+      reply.getByRole('button', { name: 'Copy source' }),
+    ).toBeVisible();
+  }
+});

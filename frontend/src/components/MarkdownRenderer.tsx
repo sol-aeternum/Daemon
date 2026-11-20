@@ -5,11 +5,16 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import rehypeHighlight from 'rehype-highlight';
 import { InlineArtifact } from '../../components/chat/InlineArtifact';
+import {
+  HTML_ARTIFACT_LANGUAGE,
+  readHtmlArtifactFence,
+} from '../../lib/htmlArtifactFence';
 import { canonicalUrlKey } from '../../lib/toolActivity';
 import type { ToolSource } from '../../lib/toolActivity';
 
 interface MarkdownRendererProps {
   content: string;
+  streaming?: boolean;
   compact?: boolean;
   className?: string;
   /**
@@ -57,46 +62,17 @@ const getClassNameValue = (value: unknown): string => {
   return '';
 };
 
-const isInteractiveHtmlClassName = (className: string): boolean => {
-  const normalized = className.toLowerCase();
-  return (
-    normalized.includes('language-html') && normalized.includes('interactive')
-  );
-};
-
-const isInteractiveHtmlPreNode = (node: unknown): boolean => {
-  if (!node || typeof node !== 'object') {
-    return false;
-  }
-
-  const maybeChildren = (node as { children?: unknown }).children;
-  if (!Array.isArray(maybeChildren) || maybeChildren.length === 0) {
-    return false;
-  }
-
-  const firstChild = maybeChildren[0];
-  if (!firstChild || typeof firstChild !== 'object') {
-    return false;
-  }
-
-  const properties = (firstChild as { properties?: unknown }).properties;
-  if (!properties || typeof properties !== 'object') {
-    return false;
-  }
-
-  const rawClassName = (properties as { className?: unknown }).className;
-  return isInteractiveHtmlClassName(getClassNameValue(rawClassName));
-};
-
 // Cache only the pure parse/render subtree for this mounted instance. Primitive
 // snapshots include every source field/order, so fresh equivalent source arrays
 // can reuse work without a text-only comparator freezing changed provenance.
 const MarkdownContent = memo(function MarkdownContent({
   content,
   sourceData,
+  streaming,
 }: {
   content: string;
   sourceData: string;
+  streaming: boolean;
 }) {
   const sources = JSON.parse(sourceData) as ToolSource[];
   // Host lowercase; path/query compared verbatim (case-sensitive), hash
@@ -140,17 +116,6 @@ const MarkdownContent = memo(function MarkdownContent({
         code: ({ node, className, children, ...props }) => {
           const match = /language-(\w+)/.exec(className || '');
           const isInline = !match && !className;
-          const normalizedClassName = (className || '').toLowerCase();
-
-          if (isInteractiveHtmlClassName(normalizedClassName)) {
-            return (
-              <InlineArtifact
-                htmlContent={String(children).trim()}
-                title="Interactive Artifact"
-              />
-            );
-          }
-
           if (isInline) {
             return (
               <code
@@ -169,8 +134,45 @@ const MarkdownContent = memo(function MarkdownContent({
           );
         },
         pre: ({ node, ...props }) => {
-          if (isInteractiveHtmlPreNode(node)) {
-            return <>{props.children}</>;
+          const code = node?.children[0];
+          const start = node?.position?.start.offset;
+          const end = node?.position?.end.offset;
+          if (
+            code?.type === 'element' &&
+            code.tagName === 'code' &&
+            getClassNameValue(code.properties.className)
+              .split(/\s+/)
+              .some(
+                (value) =>
+                  value.startsWith('language-') &&
+                  HTML_ARTIFACT_LANGUAGE.test(value.slice(9)),
+              ) &&
+            typeof start === 'number' &&
+            typeof end === 'number'
+          ) {
+            // rehype-highlight may wrap portions in spans. Recover the
+            // underlying code text only for nested Markdown containers.
+            const text = (child: (typeof code.children)[number]): string =>
+              child.type === 'text'
+                ? child.value
+                : child.type === 'element'
+                  ? child.children.map(text).join('')
+                  : '';
+            const artifact = readHtmlArtifactFence(
+              content,
+              start,
+              end,
+              code.children.map(text).join('').replace(/\n$/, ''),
+            );
+            if (artifact) {
+              return (
+                <InlineArtifact
+                  htmlContent={artifact.source}
+                  closed={artifact.closed}
+                  streaming={streaming}
+                />
+              );
+            }
           }
 
           return (
@@ -200,6 +202,7 @@ export default function MarkdownRenderer({
   compact = false,
   className = '',
   sources,
+  streaming = false,
 }: MarkdownRendererProps) {
   // Styles stay live independently of parsing. Child-owned state/context updates
   // (for example InlineArtifact controls/theme) are not blocked by React.memo.
@@ -223,6 +226,7 @@ export default function MarkdownRenderer({
       <MarkdownContent
         content={content}
         sourceData={JSON.stringify(sources || [])}
+        streaming={streaming}
       />
     </div>
   );

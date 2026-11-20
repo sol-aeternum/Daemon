@@ -144,8 +144,10 @@ import {
   getDaemonTaskId,
   getDaemonTaskStatus,
   getRequestRejection,
+  splitDaemonMessageNotice,
   TERMINAL_TASK_STATUSES,
 } from '../lib/chatMessages';
+import { hasHtmlArtifactFence } from '../lib/htmlArtifactFence';
 import { buildMessageCitationSources } from '../lib/messageSources';
 import { isToolResultOutcome } from '../lib/toolActivity';
 
@@ -2687,6 +2689,11 @@ function ChatContent() {
                         : [];
                       const liveThoughtContent = getThinkingContent(liveEvents);
                       const messageContent = getDaemonMessageText(message);
+                      const artifactText =
+                        message.role === 'assistant' &&
+                        hasHtmlArtifactFence(messageContent)
+                          ? splitDaemonMessageNotice(message, messageContent)
+                          : null;
                       const formattedMessageContent =
                         formatMessageContent(messageContent);
 
@@ -2873,9 +2880,22 @@ function ChatContent() {
                             <div className="w-full space-y-2">
                               <div className="w-full">
                                 <MarkdownMessage
-                                  content={messageContent}
+                                  content={
+                                    artifactText?.source ?? messageContent
+                                  }
                                   sources={citationSources}
+                                  streaming={
+                                    isLast &&
+                                    (status === 'streaming' ||
+                                      (serverTaskBusy &&
+                                        message.status === 'streaming'))
+                                  }
                                 />
+                                {artifactText?.notice && (
+                                  <MarkdownMessage
+                                    content={artifactText.notice}
+                                  />
+                                )}
                                 {getDaemonTaskId(message) && (
                                   <TaskResources
                                     key={`${authGeneration}-${getDaemonTaskId(message)}`}
