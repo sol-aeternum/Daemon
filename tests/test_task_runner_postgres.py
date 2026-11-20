@@ -21,8 +21,10 @@ from orchestrator.compute_runtime import ComputeUnavailable
 from orchestrator.config import get_settings
 from orchestrator.tasks import runner
 from orchestrator.tasks.fence import REPEATABLE_TOOLS, FencedTool, guard_registry, is_material
+from orchestrator.tasks.observe import observe_task
 from orchestrator.tasks.states import TaskStatus
 from orchestrator.tools.registry import Tool, ToolRegistry
+from orchestrator.turn_finish import answer_finish
 from tests.durable_tasks_support import (
     LEASE_S,
     Env,
@@ -51,6 +53,18 @@ MOCK_TEXT = "Scripted answer from a fake provider."
 CHUNKS = ["Scripted ", "answer ", "from ", "a ", "fake ", "provider."]
 
 
+def _answer_done(reason: str | None = "stop", *, conflicting: bool = False) -> dict[str, Any]:
+    if reason is None:
+        evidence = {"state": "conflicting" if conflicting else "missing"}
+    else:
+        evidence = {"state": "confirmed", "reason": reason, "provenance": "provider_wire"}
+    return {
+        "type": "done",
+        "returned_answer": True,
+        "turn_finish": answer_finish(evidence).model_dump(exclude_none=True),
+    }
+
+
 @pytest.fixture
 def mock_llm(monkeypatch: pytest.MonkeyPatch) -> None:
     """Replace the provider loop with a scripted, paced token stream.
@@ -70,7 +84,7 @@ def mock_llm(monkeypatch: pytest.MonkeyPatch) -> None:
         for chunk in CHUNKS:
             await asyncio.sleep(0.05)
             yield {"type": "content_delta", "content": chunk}
-        yield {"type": "done", "finish_reason": "stop"}
+        yield _answer_done()
 
     monkeypatch.setattr("orchestrator.daemon.completion_with_tools", scripted_completion)
 
@@ -121,6 +135,64 @@ async def test_task_completes_and_live_deltas_rebuild_the_result(env: Env, mock_
         ("user", "hello"),
         ("assistant", MOCK_TEXT),
     ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("reason", "conflicting", "status", "code"),
+    [
+        ("length", False, "failed", "provider_length"),
+        ("content_filter", False, "failed", "provider_content_filter"),
+        (None, False, "needs_attention", "finish_evidence_missing"),
+        (None, True, "needs_attention", "finish_evidence_conflict"),
+    ],
+)
+async def test_returned_non_success_has_one_commit_and_reopens_without_regeneration(
+    env: Env, mock_llm: None, monkeypatch, reason, conflicting, status, code
+):
+    sends = 0
+
+    async def completion(**_kwargs):
+        nonlocal sends
+        sends += 1
+        yield {"type": "content_delta", "content": MOCK_TEXT}
+        yield _answer_done(reason, conflicting=conflicting)
+
+    monkeypatch.setattr("orchestrator.daemon.completion_with_tools", completion)
+    accepted = await accept_task(env)
+    redis = FakeRedis()
+    assert await runner.run_chat_task(_ctx(env, redis), str(accepted.task_id)) == status
+    assert (
+        await runner.run_chat_task(_ctx(env, redis), str(accepted.task_id))
+        == "task_already_terminal"
+    )
+    assert sends == 1
+    snapshot = await env.tasks.snapshot(env.alice, accepted.task_id)
+    assert snapshot is not None and snapshot.turn_finish is not None
+    assert snapshot.content == MOCK_TEXT
+    assert snapshot.terminal_code == code
+    assert snapshot.regenerated_after_interruption == 0
+    assert snapshot.attempt_count == 1
+    attempt = await env.pool.fetchrow(
+        "SELECT terminal_code, partial_ciphertext FROM task_attempts WHERE task_id=$1",
+        accepted.task_id,
+    )
+    assert attempt["terminal_code"] == code
+    assert env.tasks._enc.decrypt(attempt["partial_ciphertext"]) == MOCK_TEXT
+    found = []
+    async for frame in observe_task(
+        env.tasks, redis, env.alice, accepted.task_id, request_id="finish_fixture"
+    ):
+        event, envelope = runner._parse_frame(frame)
+        if event in ("final", "done"):
+            found.append(envelope["data"])
+    assert len(found) == 2
+    expected = snapshot.turn_finish.model_dump(exclude_none=True)
+    assert found[0]["turn_finish"] == found[1]["turn_finish"] == expected
+    saved = await env.memory.get_recent_messages(accepted.conversation_id)
+    assert saved[-1]["content"] == MOCK_TEXT
+    assert saved[-1]["metadata"]["turn_finish"] == expected
+    assert all(entry[0] != "extract_memories" for entry in redis.enqueued)
 
 
 @pytest.mark.asyncio
@@ -189,7 +261,7 @@ async def test_saved_tool_outcome_matches_live_and_progress_replay(
         yield {"type": "tool_executing", "name": name, "arguments": {}}
         yield {"type": "tool_result", "name": name, "result": json.dumps(result)}
         yield {"type": "content_delta", "content": MOCK_TEXT}
-        yield {"type": "done", "finish_reason": "stop"}
+        yield _answer_done()
 
     monkeypatch.setattr("orchestrator.daemon.completion_with_tools", scripted_tool_completion)
     accepted = await accept_task(env)
@@ -224,7 +296,7 @@ async def test_cancel_during_stream_keeps_partial_and_ends_cancelled(
         for chunk in CHUNKS[:3]:
             yield {"type": "content_delta", "content": chunk}
         await asyncio.Event().wait()
-        yield {"type": "done", "finish_reason": "stop"}
+        yield _answer_done()
 
     monkeypatch.setattr("orchestrator.daemon.completion_with_tools", stalls_after_three_chunks)
     accepted = await accept_task(env)
@@ -549,7 +621,7 @@ async def test_unrenewable_lease_stops_execution(
         for _ in range(60):
             await asyncio.sleep(0.05)
             yield {"type": "content_delta", "content": "x"}
-        yield {"type": "done", "finish_reason": "stop"}
+        yield _answer_done()
 
     monkeypatch.setattr("orchestrator.daemon.completion_with_tools", long_completion)
 
@@ -579,7 +651,7 @@ async def test_history_is_cut_at_the_accepted_turn(
     async def capturing_completion(**kwargs: Any):
         seen.append(kwargs["messages"])
         yield {"type": "content_delta", "content": "ok"}
-        yield {"type": "done", "finish_reason": "stop"}
+        yield _answer_done()
 
     monkeypatch.setattr("orchestrator.daemon.completion_with_tools", capturing_completion)
     accepted = await accept_task(env, message="the accepted question")
@@ -618,7 +690,7 @@ async def test_execution_stops_at_the_lease_deadline_whatever_renewal_does(
             await asyncio.sleep(0.01)
             output_times.append(asyncio.get_running_loop().time())
             yield {"type": "content_delta", "content": "x"}
-        yield {"type": "done", "finish_reason": "stop"}
+        yield _answer_done()
 
     monkeypatch.setattr("orchestrator.daemon.completion_with_tools", long_completion)
 
@@ -654,7 +726,7 @@ async def test_reconciliation_outlasting_the_lease_never_executes(
 
     async def never(**_kwargs: Any):
         calls.append("provider")
-        yield {"type": "done", "finish_reason": "stop"}
+        yield _answer_done()
 
     monkeypatch.setattr(runner, "settle_lost_attempt_holds", slow_settle)
     monkeypatch.setattr("orchestrator.daemon.completion_with_tools", never)
@@ -706,7 +778,7 @@ async def test_many_later_turns_do_not_evict_the_accepted_context(
     async def capturing_completion(**kwargs: Any):
         seen.append(kwargs["messages"])
         yield {"type": "content_delta", "content": "ok"}
-        yield {"type": "done", "finish_reason": "stop"}
+        yield _answer_done()
 
     monkeypatch.setattr("orchestrator.daemon.completion_with_tools", capturing_completion)
     accepted = await accept_task(env, message="the accepted question")
@@ -748,7 +820,7 @@ def _refuse_admission(
             raise ComputeUnavailable("concurrency_exceeded", "refused")
         for chunk in CHUNKS:
             yield {"type": "content_delta", "content": chunk}
-        yield {"type": "done", "finish_reason": "stop"}
+        yield _answer_done()
 
     monkeypatch.setattr("orchestrator.daemon.completion_with_tools", completion)
 
@@ -815,7 +887,7 @@ async def test_cancel_between_claim_and_execution_makes_no_provider_call(
     async def counting_completion(**_kwargs: Any):
         nonlocal calls
         calls += 1
-        yield {"type": "done", "finish_reason": "stop"}
+        yield _answer_done()
 
     monkeypatch.setattr("orchestrator.daemon.completion_with_tools", counting_completion)
     accepted = await accept_task(env)

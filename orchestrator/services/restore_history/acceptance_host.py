@@ -84,9 +84,9 @@ from .model import HistoryError
 from .observation import HistoricalObservation, HistoryObservation
 from .read_supervisor import _observe, qualify_read_history
 from .store import _check_time
-from .terminal_projection import TerminalHistoryProjection
+from .terminal_projection import TERMINAL_PROFILES, TerminalHistoryProjection
 from .text_execution import HistoryTextExecution
-from .model import AcceptPrepare, StopIntent, TerminalOutputPrepare
+from .model import AcceptPrepare, StopIntent
 
 T = TypeVar("T")
 HEADERS = {"Cache-Control": "no-store"}
@@ -157,9 +157,9 @@ class IsolatedAcceptanceHost:
             or type(observation) is not HistoryObservation
             or type(acceptance._history) is not HistoryCoordinator
             or type(observation._history) is not HistoryCoordinator
-            or type(ap) not in (HistoryProjection, TerminalHistoryProjection)
+            or type(ap) not in (HistoryProjection, *TERMINAL_PROFILES)
             or type(ap) is not type(wp)
-            or ap.profile != ("terminal-v3" if type(ap) is TerminalHistoryProjection else "h1")
+            or ap.profile != TERMINAL_PROFILES.get(type(ap), "h1")
             or ap.profile != wp.profile
             or acceptance._history.profile != ap.profile
             or observation._history.profile != wp.profile
@@ -169,8 +169,8 @@ class IsolatedAcceptanceHost:
             or ap.acceptor != wp.acceptor
             or ap.worker != wp.worker
             or (
-                type(ap) is TerminalHistoryProjection
-                and (type(wp) is not TerminalHistoryProjection or ap.publisher != wp.publisher)
+                isinstance(ap, TerminalHistoryProjection)
+                and (not isinstance(wp, TerminalHistoryProjection) or ap.publisher != wp.publisher)
             )
             or acceptance._history is observation._history
             or acceptance._history._path != observation._history._path
@@ -199,14 +199,14 @@ class IsolatedAcceptanceHost:
         execution = self._execution
         if execution is not None and (
             type(execution) is not HistoryTextExecution
-            or type(ap) is not TerminalHistoryProjection
+            or type(ap) not in TERMINAL_PROFILES
             or execution.pool is not w._pool
             or execution.encryption is not w._enc
             or execution.projection is not ap
             or execution.history in (acceptance._history, observation._history)
             or execution.history._path != acceptance._history._path
             or execution.history._expected != ap.expected
-            or execution.history.profile != "terminal-v3"
+            or execution.history.profile != ap.profile
         ):
             raise HistoryError("isolated_host_refused")
 
@@ -659,6 +659,8 @@ class IsolatedAcceptanceHost:
                         )
                         async with guard_content_write(conn, current):
                             if not parity:
+                                if reader._projection.profile == "terminal-v4" and accepted_entries:
+                                    return self._ui_recovery()
                                 return _unavailable()
                             if len(accepted_entries) > 1:
                                 return self._ui_recovery()
@@ -690,7 +692,7 @@ class IsolatedAcceptanceHost:
                                 ):
                                     return self._ui_recovery()
                                 row = await reader._task_owned(
-                                    operation, conn, xid, auth, accepted, None, deadline
+                                    operation, conn, xid, auth, accepted, None, state, deadline
                                 )
                                 if row is None:
                                     return self._ui_recovery()
@@ -711,29 +713,7 @@ class IsolatedAcceptanceHost:
                                     accepted.task_id,
                                 ):
                                     return self._ui_recovery()
-                                if row["status"] == "completed":
-                                    if not any(
-                                        type(e.command.data) is TerminalOutputPrepare
-                                        and (
-                                            e.command.data.account_id,
-                                            e.command.data.account_generation,
-                                            e.command.data.task_id,
-                                            e.command.data.result_message_id,
-                                            e.command.data.acceptance_record_id,
-                                            e.command.data.epoch,
-                                        )
-                                        == (
-                                            auth.user_id,
-                                            current.generation,
-                                            accepted.task_id,
-                                            accepted.result_message_id,
-                                            entry.command.record_id,
-                                            row["lease_epoch"],
-                                        )
-                                        for e in state.entries
-                                    ):
-                                        return self._ui_recovery()
-                                elif row["status"] == "cancelled":
+                                if row["status"] == "cancelled":
                                     execution = self._execution
                                     if execution is None or execution.worker is None:
                                         return self._ui_recovery()
@@ -1139,7 +1119,7 @@ def create_isolated_acceptance_app(host: IsolatedAcceptanceHost) -> FastAPI:
 
 def create_isolated_ui_app(host: IsolatedAcceptanceHost) -> FastAPI:
     """Explicit inert opt-in; default app and production startup are unchanged."""
-    if type(host._reader._projection) is not TerminalHistoryProjection:
+    if type(host._reader._projection) not in TERMINAL_PROFILES:
         raise HistoryError("isolated_ui_refused")
     app = create_isolated_acceptance_app(host)
 

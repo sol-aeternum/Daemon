@@ -28,8 +28,11 @@ import {
   type PersistedAttachment,
 } from '../lib/draftPersistence';
 import {
+  clearPendingSubmissions,
   pendingSubmission,
+  recordSubmissionTask,
   registerSubmission,
+  submissionBlock,
 } from '../lib/pendingSubmission';
 
 const state = vi.hoisted(() => ({
@@ -61,6 +64,7 @@ const state = vi.hoisted(() => ({
   cancelTask: vi.fn(),
   taskForKey: vi.fn(),
   taskStatus: vi.fn(),
+  taskOutcome: vi.fn(),
   switchConversation: vi.fn(),
   messages: [] as DaemonMessage[],
   sdkError: undefined as Error | undefined,
@@ -139,6 +143,7 @@ vi.mock('../components/ConversationHistoryProvider', () => ({
       cancelTask: state.cancelTask,
       taskForKey: state.taskForKey,
       taskStatus: state.taskStatus,
+      taskOutcome: state.taskOutcome,
       createConversation: vi.fn(),
       updateConversation: vi.fn(),
       setConversationModel: state.setConversationModel,
@@ -331,6 +336,7 @@ beforeEach(() => {
   state.cancelTask.mockResolvedValue('cancelled');
   state.taskForKey.mockResolvedValue(null);
   state.taskStatus.mockResolvedValue('running');
+  state.taskOutcome.mockResolvedValue(undefined);
   state.refresh.mockResolvedValue(runningConversation(true));
   state.send.mockResolvedValue(undefined);
 });
@@ -1670,5 +1676,45 @@ describe('a held draft whose files are missing (#479 source review)', () => {
     await waitFor(() => expect(state.send).toHaveBeenCalledTimes(1));
     expect(state.send.mock.calls[0][1].body.idempotency_key).toBe('key-1');
     expect(state.send.mock.calls[0][1].body.attachments).toHaveLength(1);
+  });
+});
+
+describe('#759 superseded task outcomes', () => {
+  function supersededTask() {
+    clearPendingSubmissions();
+    state.conversation = {
+      ...runningConversation(false),
+      latestTask: { id: 'newer-task', status: 'running' },
+    };
+    registerSubmission('superseded-key', {
+      scope: 'conv-1',
+      requestConversationId: 'conv-1',
+      model: 'auto',
+      provider: null,
+    });
+    recordSubmissionTask('superseded-key', 'superseded-task');
+  }
+
+  it('settles a generic needs-attention lookup without a false cause', async () => {
+    supersededTask();
+    state.taskOutcome.mockResolvedValue({ status: 'needs_attention' });
+    render(<ChatPage />);
+    await waitFor(() => expect(pendingSubmission('superseded-key')).toBeNull());
+    expect(submissionBlock('superseded-key')).toBeNull();
+  });
+
+  it('blocks only an explicit unresolved-inference lookup', async () => {
+    supersededTask();
+    state.taskOutcome.mockResolvedValue({
+      status: 'needs_attention',
+      terminalCode: 'inference_dispatch_unresolved',
+    });
+    render(<ChatPage />);
+    await waitFor(() =>
+      expect(submissionBlock('superseded-key')).toBe(
+        'inference_dispatch_unresolved',
+      ),
+    );
+    expect(pendingSubmission('superseded-key')).not.toBeNull();
   });
 });

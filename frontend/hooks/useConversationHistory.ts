@@ -86,12 +86,27 @@ export type TaskCancelOutcome =
   | 'unconfirmed';
 
 /** A task as found by its idempotency key. */
-export type KeyedTask = { id: string; conversationId: string; status: string };
+export type KeyedTask = {
+  id: string;
+  conversationId: string;
+  status: string;
+  /** The server's explicit terminal code, when it recorded one. */
+  terminalCode?: string;
+};
+
+/** The authenticated task snapshot fields this client reasons about. */
+export type TaskLookup = {
+  status: string;
+  /** The server's explicit terminal code, when it recorded one. */
+  terminalCode?: string;
+};
 
 /** Server-owned work still in progress for a conversation (durable tasks). */
 export interface ActiveTask {
   id: string;
   status: string;
+  /** The server's explicit terminal code, when it recorded one. */
+  terminalCode?: string;
   content: string;
   cancelRequested: boolean;
 }
@@ -105,6 +120,9 @@ function toActiveTask(value: unknown): ActiveTask | null {
   return {
     id: task.id,
     status: task.status,
+    ...(typeof task.terminal_code === 'string' && task.terminal_code
+      ? { terminalCode: task.terminal_code }
+      : {}),
     content: typeof task.content === 'string' ? task.content : '',
     cancelRequested: task.cancel_requested === true,
   };
@@ -1070,7 +1088,13 @@ export function useConversationHistory() {
         if (result.status === 404) return null;
         if (result.status !== 200) return undefined;
         const task = result.data as Record<string, unknown>;
-        if (task.status === 'needs_attention') {
+        // Only the server's explicit code proves an unresolved inference
+        // dispatch; other needs_attention outcomes are terminal for
+        // bookkeeping without that quarantine.
+        if (
+          task.status === 'needs_attention' &&
+          task.terminal_code === 'inference_dispatch_unresolved'
+        ) {
           blockSubmission(key, 'inference_dispatch_unresolved');
           setTaskRecoveryProblem({
             generation: lease.generation,
@@ -1094,6 +1118,9 @@ export function useConversationHistory() {
               id: task.id,
               conversationId: task.conversation_id,
               status: task.status,
+              ...(typeof task.terminal_code === 'string' && task.terminal_code
+                ? { terminalCode: task.terminal_code }
+                : {}),
             }
           : undefined;
       } catch {
@@ -1105,9 +1132,13 @@ export function useConversationHistory() {
     [apiCandidates, getAuthHeaders, messageOwner],
   );
 
-  /** A task's current status, or ``undefined`` when it cannot be read. */
-  const taskStatus = useCallback(
-    async (taskId: string): Promise<string | undefined> => {
+  /**
+   * A task's authenticated snapshot summary, or ``undefined`` when it cannot
+   * be read. Reads the same endpoint ``taskStatus`` always has; only the
+   * narrowed terminal code is additional.
+   */
+  const taskOutcome = useCallback(
+    async (taskId: string): Promise<TaskLookup | undefined> => {
       const lease = messageOwner.captureOperation();
       try {
         const result = await readScopedHistory(
@@ -1126,8 +1157,17 @@ export function useConversationHistory() {
           );
           return undefined;
         }
-        const task = result.data as { status?: unknown };
-        return typeof task.status === 'string' ? task.status : undefined;
+        const task = result.data as {
+          status?: unknown;
+          terminal_code?: unknown;
+        };
+        if (typeof task.status !== 'string') return undefined;
+        return {
+          status: task.status,
+          ...(typeof task.terminal_code === 'string' && task.terminal_code
+            ? { terminalCode: task.terminal_code }
+            : {}),
+        };
       } catch {
         return undefined;
       } finally {
@@ -1135,6 +1175,13 @@ export function useConversationHistory() {
       }
     },
     [apiCandidates, getAuthHeaders, messageOwner, retainHistoryRefusal],
+  );
+
+  /** A task's current status, or ``undefined`` when it cannot be read. */
+  const taskStatus = useCallback(
+    async (taskId: string): Promise<string | undefined> =>
+      (await taskOutcome(taskId))?.status,
+    [taskOutcome],
   );
 
   /**
@@ -1196,6 +1243,7 @@ export function useConversationHistory() {
         ? taskRecoveryProblem.message
         : null,
     taskStatus,
+    taskOutcome,
     switchConversation,
     fetchConversationById,
     conversationLoadFailure,

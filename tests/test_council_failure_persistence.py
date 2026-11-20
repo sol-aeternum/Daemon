@@ -294,7 +294,12 @@ async def test_council_output_is_persisted_when_account_cleanup_fails(
     # client, and the abort is terminal.
     assert "council_output" in names
     assert names[-1] == "done"
-    assert _sse_payloads(response.text, "error")[0]["data"]["code"] == "internal_error"
+    final = _sse_payloads(response.text, "final")[-1]["data"]
+    assert final["finish_reason"] == "error"
+    assert "turn_finish" not in final
+    error = _sse_payloads(response.text, "error")[0]["data"]
+    assert error["code"] == "internal_error"
+    assert "turn_finish" not in error
     assert _sse_payloads(response.text, "done")[-1]["data"] == {"ok": False}
     assert "council_error" not in names
 

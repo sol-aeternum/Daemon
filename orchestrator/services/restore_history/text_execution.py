@@ -21,7 +21,7 @@ from .effects import HistoryEffects
 from .model import HistoryError
 from .read_supervisor import _observe, qualify_read_history
 from .store import _check_time
-from .terminal_projection import TerminalHistoryProjection
+from .terminal_projection import TERMINAL_PROFILES, TerminalHistoryProjection
 
 
 class HistoryTextExecution:
@@ -39,8 +39,9 @@ class HistoryTextExecution:
             type(pool) is not asyncpg.Pool
             or pool.get_max_size() < 2
             or type(history) is not HistoryCoordinator
-            or type(projection) is not TerminalHistoryProjection
-            or history.profile != "terminal-v3"
+            or type(projection) not in TERMINAL_PROFILES
+            or projection.profile != TERMINAL_PROFILES.get(type(projection))
+            or history.profile != projection.profile
             or history._expected != projection.expected
         ):
             raise HistoryError("text_execution_refused")

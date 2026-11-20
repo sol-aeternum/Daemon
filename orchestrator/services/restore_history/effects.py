@@ -46,12 +46,20 @@ from orchestrator.tasks.states import TaskStatus
 from .coordination import HistoryCoordinator, HistoryOperation
 from .effects_projection import HistoryProjection
 from .artifact_projection import ArtifactHistoryProjection
-from .terminal_projection import TerminalHistoryProjection
+from .terminal_finish import finish_matches, returned_finish
+from .terminal_projection import (
+    TERMINAL_PROFILES,
+    TerminalHistoryProjection,
+    TerminalV4HistoryProjection,
+)
 from .model import (
+    MAX_RECORDS,
+    TERMINAL_KINDS,
     AcceptPrepare,
     ArtifactPrepare,
     Command,
     HistoryError,
+    NonsuccessOutputPrepare,
     SendPossible,
     StopIntent,
     TerminalOutputPrepare,
@@ -78,8 +86,12 @@ class HistoryEffects:
             type(tasks) is not TaskStore
             or type(history) is not HistoryCoordinator
             or type(projection)
-            not in (HistoryProjection, ArtifactHistoryProjection, TerminalHistoryProjection)
+            not in (HistoryProjection, ArtifactHistoryProjection, *TERMINAL_PROFILES)
             or history.profile != projection.profile
+            or (
+                type(projection) in TERMINAL_PROFILES
+                and projection.profile != TERMINAL_PROFILES.get(type(projection))
+            )
             or type(tasks._inference) is not InferenceRecovery
         ):
             raise HistoryError("effects_composition_refused")
@@ -160,6 +172,8 @@ class HistoryEffects:
                 while True:
                     page = await self._projection.page(conn, after_seq=cursor, deadline=deadline)
                     facts.extend(page)
+                    if len(facts) > MAX_RECORDS:
+                        raise HistoryError("effects_reconciliation_required", uncertain=True)
                     if len(page) < 32:
                         break
                     cursor = page[-1].seq
@@ -194,7 +208,7 @@ class HistoryEffects:
         ):
             raise HistoryError("historical_stop", uncertain=True)
         if positive and any(
-            type(e.command.data) is TerminalOutputPrepare and e.command.data.task_id == task
+            type(e.command.data) in TERMINAL_KINDS and e.command.data.task_id == task
             for e in state.entries
         ):
             raise HistoryError("historical_terminal", uncertain=True)
@@ -220,8 +234,7 @@ class HistoryEffects:
         if not negative:
             self._no_stop(state, binding.task_id)
         elif any(
-            type(e.command.data) is TerminalOutputPrepare
-            and e.command.data.task_id == binding.task_id
+            type(e.command.data) in TERMINAL_KINDS and e.command.data.task_id == binding.task_id
             for e in state.entries
         ):
             raise HistoryError("historical_terminal", uncertain=True)
@@ -842,6 +855,10 @@ class HistoryEffects:
         self._no_stop(state, task, positive=False)
 
         async def stage(conn: Any, row: Any, outcome: CancelOutcome) -> None:
+            if type(self._projection) is TerminalV4HistoryProjection:
+                # An already terminal native task returns before this callback.
+                # A restored/stale native row is not permission to append Stop.
+                self._no_stop(state, task)
             origin = self._tasks._origin(row)
             if (
                 origin.account_id != accepted.account_id
@@ -991,15 +1008,19 @@ class HistoryEffects:
             state = await self._parity(operation, deadline)
             from orchestrator.tasks._history_binding import required_history
 
-            if required_history.get() is not None:
+            projection = self._projection
+            fields = dict(message_fields or {})
+            metadata = fields.get("metadata")
+            has_finish = isinstance(metadata, dict) and "turn_finish" in metadata
+            if required_history.get() is not None or (
+                type(projection) is TerminalV4HistoryProjection and has_finish
+            ):
                 self._worker_history(state, binding)
             accepted = self._accepted(state, binding.origin.account_id, task)
             if accepted.account_generation != binding.origin.generation:
                 raise HistoryError("effects_origin_refused")
             self._no_stop(state, task)
-            projection = self._projection
-            if type(projection) is TerminalHistoryProjection:
-                fields = dict(message_fields or {})
+            if isinstance(projection, TerminalHistoryProjection):
                 if (binding.task_id, binding.epoch, binding.user_id, binding.result_message_id) != (
                     task,
                     epoch,
@@ -1014,6 +1035,17 @@ class HistoryEffects:
                         if await self._tasks._completion_control(conn, row):
                             result = TaskStatus.NEEDS_ATTENTION
                         else:
+                            if isinstance(metadata, dict) and "turn_finish" in metadata:
+                                if returned_finish(metadata["turn_finish"]).outcome != "complete":
+                                    raise HistoryError("terminal_finish_invalid")
+                                if type(projection) is TerminalHistoryProjection:
+                                    # Retain only the legacy completed contract. This
+                                    # does not make provider evidence durable in v3.
+                                    fields["metadata"] = {
+                                        key: value
+                                        for key, value in metadata.items()
+                                        if key not in {"turn_finish", "finish_reason"}
+                                    }
                             await projection.qualify(conn, writing=False, deadline=deadline)
                             ancestor = next(
                                 e.command.record_id
@@ -1058,6 +1090,92 @@ class HistoryEffects:
                 result = await self._tasks.complete(
                     task, epoch, content=content, message_fields=message_fields, binding=binding
                 )
+            _check_time(deadline)
+        _check_time(deadline)
+        return result
+
+    async def publish_non_success(
+        self,
+        claim: Claim,
+        *,
+        content: str,
+        message_fields: dict[str, Any],
+        deadline: float,
+    ) -> TaskStatus:
+        """Stage one original returned answer; negative H precedes guarded native SQL."""
+        return await self._run(
+            lambda limit: self._publish_non_success(claim, content, message_fields, limit),
+            deadline,
+        )
+
+    async def _publish_non_success(
+        self, claim: Claim, content: str, message_fields: dict[str, Any], deadline: float
+    ) -> TaskStatus:
+        projection = self._projection
+        if type(projection) is not TerminalV4HistoryProjection or type(claim) is not Claim:
+            raise HistoryError("terminal_finish_profile_refused")
+        async with self._history.operation(deadline=deadline) as operation, retain_pool_cleanup():
+            state = await self._parity(operation, deadline)
+            self._worker_history(state, claim)
+            accepted = self._accepted(state, claim.user_id, claim.task_id)
+            try:
+                async with self._tasks._worker(
+                    claim.task_id, claim.epoch, claim, allow_interrupted=True
+                ) as (conn, row):
+                    if await self._tasks._completion_control(conn, row):
+                        result = TaskStatus.NEEDS_ATTENTION
+                    else:
+                        finish = self._tasks._non_success_finish(message_fields)
+                        finish = returned_finish(finish.model_dump(exclude_none=True))
+                        if row["attempt_count"] < 1 or not await conn.fetchval(
+                            "SELECT EXISTS(SELECT 1 FROM public.task_attempts "
+                            "WHERE task_id=$1 AND epoch=$2 AND execution_started_at IS NOT NULL)",
+                            claim.task_id,
+                            claim.epoch,
+                        ):
+                            raise HistoryError("terminal_attempt_not_executed")
+                        status, code = await self._tasks._non_success_status(conn, row, finish)
+                        if status not in (TaskStatus.FAILED, TaskStatus.NEEDS_ATTENTION) or not (
+                            finish_matches(finish, status.value, code)
+                        ):
+                            raise HistoryError("terminal_finish_invalid")
+                        await projection.qualify(conn, writing=False, deadline=deadline)
+                        ancestor = next(
+                            e.command.record_id for e in state.entries if e.command.data is accepted
+                        )
+                        prepared = await operation.append(
+                            Command(
+                                uuid4(),
+                                NonsuccessOutputPrepare(
+                                    accepted.account_id,
+                                    accepted.account_generation,
+                                    accepted.task_id,
+                                    accepted.result_message_id,
+                                    ancestor,
+                                    claim.epoch,
+                                    "native-nonsuccess-body-v1",
+                                    "failed" if status is TaskStatus.FAILED else "needs_attention",
+                                    code,
+                                ),
+                            )
+                        )
+                        if not prepared.created:
+                            raise HistoryError("historical_terminal", uncertain=True)
+                        _check_time(deadline)
+                        result = await self._tasks._stage_non_success_body(
+                            conn, row, claim.epoch, content, message_fields, finish, status, code
+                        )
+                        if (
+                            result is not status
+                            or not (
+                                await projection.stage_terminal(
+                                    conn, prepared.entry, deadline=deadline
+                                )
+                            ).inserted
+                        ):
+                            raise HistoryError("historical_terminal", uncertain=True)
+            except TaskControlled as controlled:
+                result = controlled.status
             _check_time(deadline)
         _check_time(deadline)
         return result
@@ -1120,10 +1238,7 @@ class HistoryEffects:
                 # snapshot grants filesystem effects.
                 prepared = None
                 projection = self._projection
-                if (
-                    type(projection) is ArtifactHistoryProjection
-                    or type(projection) is TerminalHistoryProjection
-                ):
+                if isinstance(projection, ArtifactHistoryProjection):
                     await projection.qualify_publisher(conn, deadline=deadline)
                     command = observed["_command"]
                     if (
@@ -1171,10 +1286,7 @@ class HistoryEffects:
                     _check_time(deadline)
                 result = await publisher._publish_reserved(conn, identity, intent_id, content)
                 if prepared is not None:
-                    assert (
-                        type(projection) is ArtifactHistoryProjection
-                        or type(projection) is TerminalHistoryProjection
-                    )
+                    assert isinstance(projection, ArtifactHistoryProjection)
                     if not (
                         await projection.stage_artifact(conn, prepared.entry, deadline=deadline)
                     ).inserted:

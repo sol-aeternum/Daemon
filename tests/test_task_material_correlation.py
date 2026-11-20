@@ -48,7 +48,9 @@ class MediaTool(Tool):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("mode", ["available", "late", "missing", "crash", "omitted", "postdone"])
+@pytest.mark.parametrize(
+    "mode", ["available", "late", "missing", "crash", "omitted", "postdone", "length"]
+)
 async def test_real_fenced_media_result_enriches_one_operation(env: Env, monkeypatch, mode):
     monkeypatch.setenv("MOCK_LLM", "false")
     monkeypatch.setenv("DAEMON_ENCRYPTION_KEY", Fernet.generate_key().decode())
@@ -112,6 +114,15 @@ async def test_real_fenced_media_result_enriches_one_operation(env: Env, monkeyp
 
     monkeypatch.setattr(completion, "tool_context_budget", budget)
     monkeypatch.setattr(completion, "guarded_completion", fake_provider)
+    monkeypatch.setattr(
+        completion,
+        "provider_finish",
+        lambda stream: {
+            "state": "confirmed",
+            "reason": "length" if mode == "length" else "stop",
+            "provenance": "provider_wire",
+        },
+    )
     monkeypatch.setattr("orchestrator.daemon.completion_with_tools", real_completion)
     accepted = await accept_task(env)
 
@@ -215,7 +226,7 @@ async def test_real_fenced_media_result_enriches_one_operation(env: Env, monkeyp
             await asyncio.sleep(0.01)
         release.set()
         assert await asyncio.wait_for(job, 5) == (
-            "needs_attention" if mode == "crash" else "completed"
+            "needs_attention" if mode in {"crash", "length"} else "completed"
         )
         if observer is not None:
             await asyncio.wait_for(observer, 5)
@@ -240,6 +251,12 @@ async def test_real_fenced_media_result_enriches_one_operation(env: Env, monkeyp
         if mode != "crash":
             progress = next(e for e in events if e.kind == "tool_result")
             assert progress.payload["operation_id"] == results[-1]["operation_id"]
+        if mode == "length":
+            snapshot = await env.tasks.snapshot(env.alice, accepted.task_id)
+            assert snapshot is not None and snapshot.turn_finish is not None
+            assert snapshot.terminal_code == "uncertain_effect"
+            assert snapshot.turn_finish.provider.reason == "length"
+            assert snapshot.content == "Finished"
         # Repeat delivery after completion/uncertain crash cannot repeat effects.
         assert (
             await runner.run_chat_task({"task_store": env.tasks}, str(accepted.task_id))

@@ -53,6 +53,8 @@ export interface ConversationHistoryContextValue {
     typeof useConversationHistory
   >['taskRecoveryProblem'];
   taskStatus: ReturnType<typeof useConversationHistory>['taskStatus'];
+  /** The same authenticated lookup, including its explicit terminal code. */
+  taskOutcome: ReturnType<typeof useConversationHistory>['taskOutcome'];
   searchQuery: ReturnType<typeof useConversationHistory>['searchQuery'];
   setSearchQuery: ReturnType<typeof useConversationHistory>['setSearchQuery'];
   conversationSearch: ReturnType<

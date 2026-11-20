@@ -151,6 +151,7 @@ from orchestrator.memory.temporal import TemporalReadScope, TemporalRefusal
 from orchestrator.memory.revisions import resolve as resolve_memory_scope
 from orchestrator.tasks.observe import observe_task
 from orchestrator.tasks.store import ConversationBusy, IdempotencyConflict, TaskNotFound
+from orchestrator.turn_finish import TurnFinish, parse_turn_finish, refused_finish, unknown_finish
 from orchestrator.models_cache import fetch_openrouter_models
 from orchestrator.model_router import (
     CLASSIFIER_VERSION,
@@ -1172,6 +1173,23 @@ def _parse_sse_frame(frame: str) -> tuple[str | None, dict[str, Any] | None]:
     return event_type, None
 
 
+def _compat_finish(event: str | None, data: dict[str, Any], prior: TurnFinish) -> TurnFinish:
+    if event not in ("done", "error"):
+        return prior
+    evidence = parse_turn_finish(data.get("turn_finish"))
+    if event == "error":
+        if evidence is not None and evidence.outcome != "complete":
+            return evidence
+        return refused_finish("internal_error")
+    if evidence is None:
+        return prior if prior.outcome in ("failed", "cancelled", "incomplete") else unknown_finish()
+    if evidence.outcome == "complete" and (
+        data.get("status") != "completed" or prior.outcome in ("failed", "cancelled", "incomplete")
+    ):
+        return prior if prior.outcome in ("failed", "cancelled", "incomplete") else unknown_finish()
+    return evidence
+
+
 def _extract_council_event_for_persistence(frame: str) -> dict[str, Any] | None:
     event_type, payload = _parse_sse_frame(frame)
     if payload is None:
@@ -1627,17 +1645,11 @@ async def openai_chat_completions(
             return await request.is_disconnected()
 
         async def generator():
+            timestamp = int(time.time())
+            chunk_id = f"chatcmpl-{new_request_id()}"
+            reported_model = actual_model
+            finish = unknown_finish()
             try:
-                provider = provider_config.name  # noqa: F841
-                model = actual_model  # noqa: F841
-                timestamp = int(time.time())
-                chunk_id = f"chatcmpl-{new_request_id()}"
-
-                # Stream chunks
-                token_count = 0  # noqa: F841
-                content_buffer = ""
-                reported_model = actual_model
-
                 async for frame in _account_chat_frames(
                     getattr(request.app.state.app_state, "db_pool", None),
                     auth.user_id,
@@ -1659,88 +1671,51 @@ async def openai_chat_completions(
                     trusted_spawn_context=trusted_spawn_context,
                     user_timezone=user_timezone,
                 ):
-                    if frame.startswith("event: routing") or frame.startswith("event: final"):
-                        _, envelope = _parse_sse_frame(frame)
-                        candidate = (envelope or {}).get("data", {}).get("model")
+                    event, envelope = _parse_sse_frame(frame)
+                    data = (envelope or {}).get("data", {})
+                    if event in ("routing", "final"):
+                        candidate = data.get("model")
                         if isinstance(candidate, str) and candidate.startswith("openrouter/"):
                             reported_model = candidate
-                    # Parse the SSE frame
-                    if frame.startswith("event: token"):
-                        # Extract content from data: line
-                        lines = frame.split("\n")
-                        for line in lines:
-                            if line.startswith("data: "):
-                                try:
-                                    data = json.loads(line[6:])
-                                    delta_content = data.get("data", {}).get("delta", "")
-                                    if delta_content:
-                                        content_buffer += delta_content
-                                        chunk = OpenAIChatStreamChunk(
-                                            id=chunk_id,
-                                            created=timestamp,
-                                            model=reported_model,
-                                            choices=[
-                                                OpenAIChoice(
-                                                    index=0,
-                                                    delta=OpenAIDeltaMessage(
-                                                        role="assistant",
-                                                        content=delta_content,
-                                                    ),
-                                                    finish_reason=None,
-                                                )
-                                            ],
-                                        )
-                                        yield f"data: {chunk.model_dump_json()}\n\n"
-                                except Exception:
-                                    pass
-
-                    elif frame.startswith("event: final"):
-                        # Final chunk with finish_reason
-                        chunk = OpenAIChatStreamChunk(
-                            id=chunk_id,
-                            created=timestamp,
-                            model=reported_model,
-                            choices=[
-                                OpenAIChoice(
-                                    index=0,
-                                    delta=OpenAIDeltaMessage(),
-                                    finish_reason="stop",
-                                )
-                            ],
-                        )
-                        yield f"data: {chunk.model_dump_json()}\n\n"
-                        yield "data: [DONE]\n\n"
+                    if event == "token":
+                        delta = data.get("delta") or data.get("text")
+                        if isinstance(delta, str) and delta:
+                            chunk = OpenAIChatStreamChunk(
+                                id=chunk_id,
+                                created=timestamp,
+                                model=reported_model,
+                                choices=[
+                                    OpenAIChoice(
+                                        delta=OpenAIDeltaMessage(role="assistant", content=delta)
+                                    )
+                                ],
+                            )
+                            yield (
+                                f"data: {chunk.model_dump_json(exclude={'daemon_turn_finish'})}\n\n"
+                            )
+                    else:
+                        finish = _compat_finish(event, data, finish)
 
             except Exception as e:
-                # Streaming error — never emit `str(e)` to the client
-                # (issue #79 round-1 finding). Server-side gets the full
-                # exception with the request id; the SSE error chunk
-                # carries the stable token plus the correlation handle.
-                request_id_local = get_request_id(request)
                 capacity = compute_error(e)
                 if capacity is None:
                     logger.error("Streaming chat completion error")
-
-                error_chunk = OpenAIChatStreamChunk(
-                    id=f"chatcmpl-{new_request_id()}",
-                    created=int(time.time()),
-                    model=payload.model,
-                    choices=[
-                        OpenAIChoice(
-                            index=0,
-                            delta=OpenAIDeltaMessage(
-                                content=(
-                                    f"{capacity.message} (code: {capacity.code})"
-                                    if capacity
-                                    else _sse_error_message(request_id_local)
-                                ),
-                            ),
-                            finish_reason="stop",
-                        )
-                    ],
+                finish = refused_finish(
+                    capacity.code if capacity else "internal_error",
+                    category=capacity.category if capacity else None,
                 )
-                yield f"data: {error_chunk.model_dump_json()}\n\n"
-                yield "data: [DONE]\n\n"
+
+            chunk = OpenAIChatStreamChunk(
+                id=chunk_id,
+                created=timestamp,
+                model=reported_model,
+                choices=[
+                    OpenAIChoice(delta=OpenAIDeltaMessage(), finish_reason=finish.finish_reason)
+                ],
+                daemon_turn_finish=finish,
+            )
+            yield f"data: {chunk.model_dump_json()}\n\n"
+            yield "data: [DONE]\n\n"
 
         return StreamingResponse(
             stream_with_keepalives(generator(), settings.sse_keepalive_interval_s),
@@ -1756,6 +1731,8 @@ async def openai_chat_completions(
         # Collect all content
         content_parts = []
         reported_model = actual_model
+        finish: TurnFinish = unknown_finish()
+        terminal_text: str | None = None
 
         try:
 
@@ -1783,27 +1760,22 @@ async def openai_chat_completions(
                 trusted_spawn_context=trusted_spawn_context,
                 user_timezone=user_timezone,
             ):
-                if frame.startswith("event: routing") or frame.startswith("event: final"):
-                    _, envelope = _parse_sse_frame(frame)
-                    candidate = (envelope or {}).get("data", {}).get("model")
+                event, envelope = _parse_sse_frame(frame)
+                data = (envelope or {}).get("data", {})
+                if event in ("routing", "final"):
+                    candidate = data.get("model")
                     if isinstance(candidate, str) and candidate.startswith("openrouter/"):
                         reported_model = candidate
-                if frame.startswith("event: token"):
-                    lines = frame.split("\n")
-                    for line in lines:
-                        if line.startswith("data: "):
-                            try:
-                                data = json.loads(line[6:])
-                                # Try 'delta' first (normal mode), then 'text' (mock mode)
-                                token_content = data.get("data", {}).get("delta", "")
-                                if not token_content:
-                                    token_content = data.get("data", {}).get("text", "")
-                                if token_content:
-                                    content_parts.append(token_content)
-                            except Exception:
-                                pass
+                if event == "token":
+                    delta = data.get("delta") or data.get("text")
+                    if isinstance(delta, str) and delta:
+                        content_parts.append(delta)
+                elif event == "final" and isinstance(data.get("text"), str):
+                    terminal_text = data["text"]
+                else:
+                    finish = _compat_finish(event, data, finish)
 
-            final_content = "".join(content_parts)
+            final_content = "".join(content_parts) or terminal_text or ""
 
             # Fallback for mock mode: if no content was collected, use mock response
             if not final_content and settings.mock_llm:
@@ -1817,7 +1789,7 @@ async def openai_chat_completions(
                     OpenAIChoice(
                         index=0,
                         message=OpenAIMessage(role="assistant", content=final_content),
-                        finish_reason="stop",
+                        finish_reason=finish.finish_reason,
                     )
                 ],
                 usage=OpenAIUsage(
@@ -1825,13 +1797,21 @@ async def openai_chat_completions(
                     completion_tokens=len(final_content) // 4,
                     total_tokens=(len(system_prompt) + len(last_message) + len(final_content)) // 4,
                 ),
+                daemon_turn_finish=finish,
             )
 
         except Exception as exc:
             capacity = compute_error(exc)
             if capacity is not None:
                 raise HTTPException(
-                    status_code=503, detail={"code": capacity.code, "message": capacity.message}
+                    status_code=503,
+                    detail={
+                        "code": capacity.code,
+                        "message": capacity.message,
+                        "daemon_turn_finish": refused_finish(
+                            capacity.code, category=capacity.category
+                        ).model_dump(exclude_none=True),
+                    },
                 ) from exc
             logger.error("OpenAI-compatible chat completion failed")
             raise HTTPException(status_code=500, detail=_GENERIC_INTERNAL_ERROR) from exc
@@ -3172,6 +3152,19 @@ async def chat(
                         logger.info("Contextual home source-change admission unavailable")
         except Exception as exc:
             capacity = compute_error(exc)
+            # Council has its own finalisation and persisted output contract.
+            # This mapping describes the chat answer path, not council work.
+            council = is_council_config_response or is_council_command
+            finish_data = (
+                {}
+                if council
+                else {
+                    "turn_finish": refused_finish(
+                        capacity.code if capacity else "internal_error",
+                        category=capacity.category if capacity else None,
+                    ).model_dump(exclude_none=True)
+                }
+            )
             ts = now_rfc3339()
             provider, model = effective_provider_and_model(settings, provider_config)
             model_for_events = selected_model or actual_model or model
@@ -3206,7 +3199,8 @@ async def chat(
                         },
                         "model": model_for_events,
                         "provider": provider,
-                        "finish_reason": "error",
+                        "finish_reason": "error" if council else None,
+                        **finish_data,
                     },
                 },
             )
@@ -3222,6 +3216,7 @@ async def chat(
                         "code": capacity.code if capacity else "internal_error",
                         "message": capacity.message if capacity else _sse_error_message(request_id),
                         "retryable": bool(capacity and capacity.code in RETRYABLE_COMPUTE_CODES),
+                        **finish_data,
                     },
                 },
             )
@@ -3233,7 +3228,9 @@ async def chat(
                     "ts": ts,
                     "conversation_id": conversation_id,
                     "request_id": request_id,
-                    "data": {"ok": False},
+                    "data": {"ok": False}
+                    if council
+                    else {"ok": False, "status": "error", **finish_data},
                 },
             )
 

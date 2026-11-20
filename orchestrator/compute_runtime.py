@@ -736,6 +736,7 @@ class _StreamControl:
         self.invocation = scope.inference_invocation
         self.response = response
         self.deadline = deadline
+        self.finish_observer = inference_transport.observe_stream_finish(response)
         self.state = "open"
         self.cleanup_outcome: str | None = None
         self.cleanup_blocked = False
@@ -909,6 +910,9 @@ class _MeteredStream(AsyncIterator[Any]):
         self.closed = False
         self.pulling = False
         self.closing: asyncio.Task[None] | None = None
+        self.finish: inference_transport.ProviderFinish = {"state": "missing"}
+        self.finish_dispatch_id: str | None = None
+        self.finish_limits: tuple[tuple[str, int], ...] = ()
 
     async def _close_iterator(self) -> None:
         # Call only after the pull has unwound. Concurrent explicit close and
@@ -961,6 +965,26 @@ class _MeteredStream(AsyncIterator[Any]):
         await self.control().close()
         if not self.pulling:
             await self._close_iterator()
+
+
+def provider_finish(stream: Any) -> dict[str, Any]:
+    """Latest drained dispatch's wire observation, not a turn or billing outcome."""
+    if isinstance(stream, _MeteredStream):
+        evidence: dict[str, Any] = dict(stream.finish)
+        if stream.finish_dispatch_id is not None:
+            evidence["dispatch_id"] = stream.finish_dispatch_id
+        return evidence
+    return {"state": "missing"}
+
+
+def answer_limit_candidates(stream: Any) -> list[dict[str, Any]]:
+    if not isinstance(stream, _MeteredStream):
+        return []
+    # These are sizing inputs, not assertions that the provider hit the cap.
+    return [
+        {"kind": kind, "value": value, "unit": "tokens", "binding": False}
+        for kind, value in stream.finish_limits
+    ]
 
 
 def _hold_key(reservation: Any) -> Any:
@@ -3156,7 +3180,7 @@ async def guarded_completion(
     async def metered_stream() -> AsyncGenerator[Any, None]:
         nonlocal index, response, reservation, control
         while True:
-            bound, _, route, _, _ = candidates[index]
+            bound, output_tokens, route, premium, _ = candidates[index]
             settlement: tuple[int, dict[str, int]] | None = None
             completed = False
             emitted = False
@@ -3289,6 +3313,44 @@ async def guarded_completion(
                         f"Stream cleanup failed ({type(cleanup_error).__name__})"
                     )
             if not failed:
+                if (
+                    completed
+                    and metered is not None
+                    and not metered.closed
+                    and not control.cleanup_blocked
+                ):
+                    # Now the iterator and its usage tail have drained and the
+                    # existing finalizer has returned. Earlier responses (and
+                    # earlier route candidates) cannot supply this observation.
+                    if control.finish_observer is not None:
+                        metered.finish = control.finish_observer.result
+                    metered.finish_dispatch_id = f"{scope.scope_id.hex}-{completion_seq}-{index}"
+                    account = policy.limits_for(premium)
+                    target = policy.limits_for(scope.extended)
+                    input_tokens = input_size.estimate
+                    metered.finish_limits = tuple(
+                        (kind, value)
+                        for kind, value in (
+                            ("sent_output", output_tokens),
+                            ("requested_output", _requested_output(params)),
+                            (
+                                "budget_fitted_output",
+                                output_tokens if route.route_id in fitted_routes else None,
+                            ),
+                            ("route_output", route.max_output_tokens),
+                            ("route_context_remaining", route.max_context_tokens - input_tokens),
+                            ("account_output", account.max_output_tokens),
+                            (
+                                "account_context_remaining",
+                                (
+                                    target.max_context_tokens - input_tokens
+                                    if target.max_context_tokens is not None
+                                    else None
+                                ),
+                            ),
+                        )
+                        if type(value) is int and value >= 0
+                    )
                 return
             index, response, reservation = await first_response(index + 1)
             control = acquired_control(reservation)

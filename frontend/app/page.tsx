@@ -144,6 +144,7 @@ import {
   getDaemonTaskId,
   getDaemonTaskStatus,
   getRequestRejection,
+  getTurnFinishNotice,
   splitDaemonMessageNotice,
   TERMINAL_TASK_STATUSES,
 } from '../lib/chatMessages';
@@ -436,6 +437,7 @@ function ChatContent() {
     taskForKey,
     taskRecoveryProblem,
     taskStatus,
+    taskOutcome,
     switchConversation,
     setConversationModel,
     resolveSelectedModel,
@@ -832,8 +834,11 @@ function ChatContent() {
         }
       }
       const taskStatusSeen = getDaemonTaskStatus(message);
+      // A generic ``needs_attention`` is not proof that an inference dispatch
+      // is unresolved: only explicit evidence may quarantine a submission.
       if (
         taskStatusSeen === 'needs_attention' &&
+        hasUnresolvedInference(message) &&
         activeSubmissionKeyRef.current &&
         chatRequestGenerationRef.current === getAuthGeneration()
       ) {
@@ -842,11 +847,14 @@ function ChatContent() {
           'inference_dispatch_unresolved',
         );
       }
+      // A terminal task status (including needs_attention) settles the
+      // submission for bookkeeping. That is not a provider-success claim and
+      // never triggers a resend; only the explicit unresolved-dispatch
+      // evidence above quarantines the key.
+      const settledTask =
+        taskStatusSeen !== null && TERMINAL_TASK_STATUSES.has(taskStatusSeen);
       const outcomeKnown =
-        !rejection &&
-        ((!isAbort && !isDisconnect && !isError) ||
-          (taskStatusSeen !== null &&
-            TERMINAL_TASK_STATUSES.has(taskStatusSeen)));
+        !rejection && ((!isAbort && !isDisconnect && !isError) || settledTask);
       if (outcomeKnown && activeSubmissionKeyRef.current) {
         finishSubmission(activeSubmissionKeyRef.current);
       } else if (activeSubmissionKeyRef.current) {
@@ -1115,21 +1123,24 @@ function ChatContent() {
     for (const { key, taskId } of pendingTasksIn(currentConversation.id)
       .filter(({ taskId }) => !shown.has(taskId))
       .slice(0, 5)) {
-      void taskStatus(taskId).then((status) => {
+      void taskOutcome(taskId).then((task) => {
         if (
-          isHistoryScopeCurrent(scope) &&
-          status &&
-          TERMINAL_TASK_STATUSES.has(status)
-        ) {
-          if (status === 'needs_attention')
-            blockSubmission(key, 'inference_dispatch_unresolved');
-          finishSubmission(key);
+          !isHistoryScopeCurrent(scope) ||
+          !task ||
+          !TERMINAL_TASK_STATUSES.has(task.status)
+        )
+          return;
+        // Only the server's explicit code may quarantine the key; any other
+        // needs_attention outcome settles for bookkeeping.
+        if (task.terminalCode === 'inference_dispatch_unresolved') {
+          blockSubmission(key, 'inference_dispatch_unresolved');
         }
+        finishSubmission(key);
       });
     }
   }, [
     currentConversation,
-    taskStatus,
+    taskOutcome,
     messageHistory.scope,
     isHistoryScopeCurrent,
   ]);
@@ -1672,6 +1683,7 @@ function ChatContent() {
         currentId: () => currentIdRef.current,
         taskForKey,
         settle: finishSubmission,
+        block: blockSubmission,
         record: recordSubmission,
         // Never accepted: the held draft goes back in the composer, so
         // sending it again reuses its key (safe even if it lands late).
@@ -2694,6 +2706,12 @@ function ChatContent() {
                         hasHtmlArtifactFence(messageContent)
                           ? splitDaemonMessageNotice(message, messageContent)
                           : null;
+                      // Finish evidence is a status line beside the reply,
+                      // never part of its prose, copy or audio (#759).
+                      const turnFinishNotice =
+                        message.role === 'assistant'
+                          ? getTurnFinishNotice(message)
+                          : undefined;
                       const formattedMessageContent =
                         formatMessageContent(messageContent);
 
@@ -2895,6 +2913,14 @@ function ChatContent() {
                                   <MarkdownMessage
                                     content={artifactText.notice}
                                   />
+                                )}
+                                {turnFinishNotice && (
+                                  <p
+                                    role="status"
+                                    className="text-xs text-[var(--color-text-muted)]"
+                                  >
+                                    {turnFinishNotice}
+                                  </p>
                                 )}
                                 {getDaemonTaskId(message) && (
                                   <TaskResources

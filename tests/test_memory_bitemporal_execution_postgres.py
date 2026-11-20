@@ -43,7 +43,9 @@ async def prepare(api, monkeypatch):
     async def model(**kwargs):
         seen.append((kwargs, revisions.current_read_scope()))
         yield {"type": "content_delta", "content": "Fictional response."}
-        yield {"type": "done", "finish_reason": "stop"}
+        from tests.turn_finish_support import confirmed_stop
+
+        yield confirmed_stop()
 
     monkeypatch.setattr("orchestrator.daemon.completion_with_tools", model)
     return scope, seen

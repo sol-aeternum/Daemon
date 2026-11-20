@@ -18,6 +18,7 @@ from orchestrator.config import ProviderConfig, Settings
 from orchestrator.daemon import stream_sse_chat
 from orchestrator.memory import revisions
 from orchestrator.memory.temporal import KnowledgeWatermark, TemporalReadScope
+from orchestrator.turn_finish import answer_finish
 from tests.memory_capture_support import install_capture_pool
 
 
@@ -79,6 +80,15 @@ async def _not_disconnected() -> bool:
     return False
 
 
+def _answer_done(reason: str = "stop") -> dict[str, Any]:
+    finish = answer_finish({"state": "confirmed", "reason": reason, "provenance": "provider_wire"})
+    return {
+        "type": "done",
+        "returned_answer": True,
+        "turn_finish": finish.model_dump(exclude_none=True),
+    }
+
+
 async def _collect_stream(
     store: FakeMemoryStore,
     completion_events: AsyncIterator[dict[str, Any]],
@@ -135,11 +145,59 @@ async def test_real_stream_abort_leaves_streaming_row_with_partial_content() -> 
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("reason", "outcome"),
+    [("length", "incomplete"), ("content_filter", "failed"), ("unsupported", "unknown")],
+)
+async def test_non_success_keeps_exact_prose_and_skips_success_work(reason, outcome) -> None:
+    async def completion() -> AsyncIterator[dict[str, Any]]:
+        yield {"type": "content_delta", "content": "partial"}
+        yield _answer_done(reason)
+
+    store = FakeMemoryStore()
+    queue = FakeDedupQueue()
+    frames = await _collect_stream(store, completion(), queue=queue)
+    assert store.row is not None
+    assert store.row["content"] == "partial"
+    assert store.row["status"] == "error"
+    assert store.row["metadata"]["turn_finish"]["outcome"] == outcome
+    assert _terminal_data(frames)["turn_finish"] == store.row["metadata"]["turn_finish"]
+    assert not queue.attempts
+
+
+@pytest.mark.asyncio
+async def test_terminal_write_ack_loss_never_republishes_or_reports_stop() -> None:
+    class LostAcknowledgementStore(FakeMemoryStore):
+        async def update_message(self, *, message_id: uuid.UUID, **kwargs: Any) -> dict[str, Any]:
+            result = await super().update_message(message_id=message_id, **kwargs)
+            if kwargs.get("status") == "complete":
+                raise OSError("synthetic acknowledgement loss after write")
+            return result
+
+    async def completion() -> AsyncIterator[dict[str, Any]]:
+        yield {"type": "content_delta", "content": "answer"}
+        yield _answer_done()
+
+    store = LostAcknowledgementStore()
+    queue = FakeDedupQueue()
+    frames = await _collect_stream(store, completion(), queue=queue)
+    assert len([call for call in store.update_calls if call.get("status")]) == 1
+    assert not queue.attempts
+    finish = _terminal_data(frames)["turn_finish"]
+    assert finish["outcome"] == "unknown"
+    assert finish["provider"]["reason"] == "stop"
+    assert '"finish_reason":"stop"' not in "".join(frames)
+    # The independent durable read can still find the actual committed result.
+    assert store.row is not None
+    assert store.row["metadata"]["turn_finish"]["outcome"] == "complete"
+
+
+@pytest.mark.asyncio
 async def test_real_completed_stream_updates_single_row_to_complete() -> None:
     async def successful_completion() -> AsyncIterator[dict[str, Any]]:
         yield {"type": "content_delta", "content": "hel"}
         yield {"type": "content_delta", "content": "lo"}
-        yield {"type": "done", "finish_reason": "stop"}
+        yield _answer_done()
 
     store = FakeMemoryStore()
 
@@ -280,7 +338,7 @@ async def test_real_completed_stream_keeps_advisor_traces_on_preinserted_row() -
             "tokens_out": 2,
             "event_scope": "advisor",
         }
-        yield {"type": "done", "finish_reason": "stop"}
+        yield _answer_done()
 
     store = FakeMemoryStore()
 
@@ -298,7 +356,7 @@ async def test_real_completed_stream_keeps_advisor_traces_on_preinserted_row() -
 async def test_extraction_enqueue_uses_stable_conversation_debounce_key() -> None:
     async def successful_completion() -> AsyncIterator[dict[str, Any]]:
         yield {"type": "content_delta", "content": "answer"}
-        yield {"type": "done", "finish_reason": "stop"}
+        yield _answer_done()
 
     conversation_uuid = uuid.uuid4()
     queue = FakeDedupQueue()
@@ -461,7 +519,7 @@ def _complete_updates(store: FakeMemoryStore) -> list[dict[str, Any]]:
 async def test_disconnect_before_content_leaves_row_uncompleted_and_reports_cancelled() -> None:
     async def completion() -> AsyncIterator[dict[str, Any]]:
         yield {"type": "content_delta", "content": "should never be streamed"}
-        yield {"type": "done", "finish_reason": "stop"}
+        yield _answer_done()
 
     store = FakeMemoryStore()
     queue = FakeDedupQueue()
@@ -491,7 +549,14 @@ async def test_disconnect_before_content_leaves_row_uncompleted_and_reports_canc
     assert "error" not in event_types
     assert _terminal_data(frames) == {
         "status": "cancelled",
-        "reason": "Client disconnected during streaming",
+        "reason": "cancelled",
+        "turn_finish": {
+            "version": 1,
+            "outcome": "cancelled",
+            "reason": "cancelled",
+            "provider": {"state": "missing"},
+            "limits": [],
+        },
     }
     # No fabricated fallback answer is streamed on cancellation.
     assert not any("I encountered issues while executing tools" in frame for frame in frames)
@@ -504,7 +569,7 @@ async def test_disconnect_after_partial_content_keeps_partial_row_available() ->
     async def completion() -> AsyncIterator[dict[str, Any]]:
         yield {"type": "content_delta", "content": "par"}
         yield {"type": "content_delta", "content": "tial"}
-        yield {"type": "done", "finish_reason": "stop"}
+        yield _answer_done()
 
     store = FakeMemoryStore()
     queue = FakeDedupQueue()
@@ -549,7 +614,7 @@ async def test_disconnect_after_tool_calls_skips_skill_evaluation() -> None:
         for index in range(6):
             yield {"type": "content_delta", "content": "x"}
             yield {"type": "tool_executing", "name": f"tool_{index}", "arguments": "{}"}
-        yield {"type": "done", "finish_reason": "stop"}
+        yield _answer_done()
 
     store = FakeMemoryStore()
     queue = FakeDedupQueue()
@@ -606,7 +671,7 @@ async def test_asyncio_cancellation_never_persists_complete() -> None:
         yield {"type": "content_delta", "content": "half"}
         reached_blocking_await.set()
         await release.wait()
-        yield {"type": "done", "finish_reason": "stop"}
+        yield _answer_done()
 
     store = FakeMemoryStore()
     queue = FakeDedupQueue()
@@ -653,7 +718,7 @@ async def test_early_generator_close_never_persists_complete(historical, monkeyp
         assert revisions.current_read_scope() == scope
         yield {"type": "content_delta", "content": "par"}
         yield {"type": "content_delta", "content": "tial"}
-        yield {"type": "done", "finish_reason": "stop"}
+        yield _answer_done()
 
     store = FakeMemoryStore()
     queue = FakeDedupQueue()
@@ -696,7 +761,7 @@ async def test_early_generator_close_never_persists_complete(historical, monkeyp
 async def test_successful_stream_still_finalises_and_applies_success_work() -> None:
     async def completion() -> AsyncIterator[dict[str, Any]]:
         yield {"type": "content_delta", "content": "hello"}
-        yield {"type": "done", "finish_reason": "stop"}
+        yield _answer_done()
 
     store = FakeMemoryStore()
     queue = FakeDedupQueue()
@@ -720,7 +785,10 @@ async def test_successful_stream_still_finalises_and_applies_success_work() -> N
     assert len(_complete_updates(store)) == 1
     event_types = [event_type for event_type, _ in _parse_frames(frames)]
     assert "final" in event_types
-    assert _terminal_data(frames) == {"status": "completed"}
+    assert _terminal_data(frames) == {
+        "status": "completed",
+        "turn_finish": _answer_done()["turn_finish"],
+    }
     assert [attempt["args"][0] for attempt in queue.attempts] == ["extract_memories"]
     assert len(trust.calls) == 1
 

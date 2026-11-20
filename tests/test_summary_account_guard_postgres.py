@@ -1095,7 +1095,9 @@ async def test_actual_stream_duplicate_followup_carries_origin_or_legacy_skip(
 
     async def completion(**kwargs):
         yield {"type": "content_delta", "content": "Fictional reply"}
-        yield {"type": "done", "finish_reason": "stop"}
+        from tests.turn_finish_support import confirmed_stop
+
+        yield confirmed_stop()
 
     monkeypatch.setattr("orchestrator.daemon.completion_with_tools", completion)
 

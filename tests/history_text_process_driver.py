@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 import sys
 import time
+from types import SimpleNamespace
 from typing import Any, cast
 from uuid import UUID
 
@@ -91,6 +92,8 @@ async def main(packet, mode):
         execution=execution,
     )
     calls = 0
+    observations = {}
+    patch.setattr(runtime.inference_transport, "observe_stream_finish", observations.get)
 
     async def provider(**kwargs):
         nonlocal calls
@@ -103,6 +106,8 @@ async def main(packet, mode):
         # independent committed SQL inspection after this child's H witness.
         async with execution.history.operation(deadline=deadline()) as operation:
             assert len((await operation.verify()).entries) == 2
+
+        raw_finish = SimpleNamespace(result={"state": "missing"})
 
         async def stream():
             yield {"choices": [{"delta": {"content": "process original partial"}}]}
@@ -121,13 +126,20 @@ async def main(packet, mode):
                     "choices": [{"delta": {}, "finish_reason": "stop"}],
                     "usage": {"prompt_tokens": 1, "completion_tokens": 1},
                 }
+                raw_finish.result = {
+                    "state": "confirmed",
+                    "reason": "stop",
+                    "provenance": "provider_wire",
+                }
                 return
             print(
                 json.dumps({"task": str(row["id"]), "partial": partial, "calls": calls}), flush=True
             )
             await asyncio.Future()
 
-        return stream()
+        response = stream()
+        observations[response] = raw_finish
+        return response
 
     patch.setattr(runtime.litellm, "acompletion", provider)
     try:

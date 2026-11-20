@@ -23,11 +23,39 @@ ZERO = bytes(32)
 DOMAIN = b"daemon.restore-history.frame.v1\n"
 ARTIFACT_DOMAIN = b"daemon.restore-history.frame.v2\n"
 TERMINAL_DOMAIN = b"daemon.restore-history.frame.v3\n"
-Profile = Literal["h1", "artifact-v2", "terminal-v3"]
+NONSUCCESS_DOMAIN = b"daemon.restore-history.frame.v4\n"
+Profile = Literal["h1", "artifact-v2", "terminal-v3", "terminal-v4"]
+
+# These codes can describe a returned terminal answer, not a retry/Stop policy.
+NONSUCCESS_LOCAL_LIMIT_KINDS = {
+    "budget_exceeded": "compute_budget",
+    "extended_budget_exceeded": "extended_compute_budget",
+    "extended_agents_exceeded": "extended_agent_runs",
+    "trial_exhausted": "trial_budget",
+    "trial_extended_agents_exhausted": "trial_extended_agent_runs",
+    "context_limit": "context",
+    "tool_price_exceeded": "tool_price",
+    "embedding_price_exceeded": "embedding_price",
+    "rate_limited": "rate",
+    "concurrency_exceeded": "concurrency",
+    "deadline_exceeded": "time",
+}
+NONSUCCESS_FAILURE_REASONS = (
+    "provider_length",
+    "provider_content_filter",
+    "stream_done_with_pending",
+    *NONSUCCESS_LOCAL_LIMIT_KINDS,
+)
+NONSUCCESS_UNKNOWN_REASONS = ("finish_evidence_missing", "finish_evidence_conflict")
 
 
 def check_profile(profile: Profile) -> Profile:
-    if type(profile) is not str or profile not in ("h1", "artifact-v2", "terminal-v3"):
+    if type(profile) is not str or profile not in (
+        "h1",
+        "artifact-v2",
+        "terminal-v3",
+        "terminal-v4",
+    ):
         raise HistoryError("invalid_profile")
     return profile
 
@@ -215,6 +243,22 @@ class TerminalOutputPrepare:
     terminal_schema: Literal["native-complete-body-v1"]
 
 
+@dataclass(frozen=True, slots=True)
+class NonsuccessOutputPrepare:
+    account_id: UUID
+    account_generation: int
+    task_id: UUID
+    result_message_id: UUID
+    acceptance_record_id: UUID
+    epoch: int
+    terminal_schema: Literal["native-nonsuccess-body-v1"]
+    status: Literal["failed", "needs_attention"]
+    reason: str
+
+
+TERMINAL_KINDS = (TerminalOutputPrepare, NonsuccessOutputPrepare)
+
+
 RecordData = (
     AcceptPrepare
     | SendPossible
@@ -223,6 +267,7 @@ RecordData = (
     | RestoreAssessed
     | ArtifactPrepare
     | TerminalOutputPrepare
+    | NonsuccessOutputPrepare
 )
 _KINDS = {
     AcceptPrepare: ("ACCEPT_PREPARE", "backend"),
@@ -232,10 +277,33 @@ _KINDS = {
     RestoreAssessed: ("RESTORE_ASSESSED", "operator"),
     ArtifactPrepare: ("ARTIFACT_PREPARE", "backend"),
     TerminalOutputPrepare: ("TERMINAL_OUTPUT_PREPARE", "worker"),
+    NonsuccessOutputPrepare: ("NONSUCCESS_OUTPUT_PREPARE", "worker"),
 }
 
 
 def _data(kind: str, raw: Any) -> RecordData:
+    if kind == "NONSUCCESS_OUTPUT_PREPARE":
+        d = _keys(
+            raw,
+            "account_id account_generation task_id result_message_id acceptance_record_id epoch terminal_schema status reason",
+        )
+        status = _literal(d["status"], ("failed", "needs_attention"))
+        return NonsuccessOutputPrepare(
+            _uuid(d["account_id"]),
+            _number(d["account_generation"]),
+            _uuid(d["task_id"]),
+            _uuid(d["result_message_id"]),
+            _uuid(d["acceptance_record_id"]),
+            _number(d["epoch"], 1),
+            _literal(d["terminal_schema"], ("native-nonsuccess-body-v1",)),
+            status,
+            _literal(
+                d["reason"],
+                NONSUCCESS_FAILURE_REASONS
+                if status == "failed"
+                else (*NONSUCCESS_UNKNOWN_REASONS, "uncertain_effect"),
+            ),
+        )
     if kind == "TERMINAL_OUTPUT_PREPARE":
         d = _keys(
             raw,
@@ -385,16 +453,13 @@ def encode_entry(
 ) -> bytes:
     check_profile(profile)
     try:
-        artifact = type(command.data) is ArtifactPrepare
-        terminal = type(command.data) is TerminalOutputPrepare
-        if (artifact and profile not in ("artifact-v2", "terminal-v3")) or (
-            terminal and profile != "terminal-v3"
-        ):
+        version, domain, profiles = _FRAME_VERSIONS.get(type(command.data), (1, DOMAIN, None))
+        if profiles is not None and profile not in profiles:
             raise HistoryError("invalid_record")
         kind, actor = _KINDS[type(command.data)]
         payload = canonical(
             {
-                "v": 3 if terminal else 2 if artifact else 1,
+                "v": version,
                 "history_id": str(history_id),
                 "seq": seq,
                 "prev_digest": previous.hex(),
@@ -407,16 +472,19 @@ def encode_entry(
         if not 1 <= len(payload) <= MAX_PAYLOAD:
             raise HistoryError("invalid_record")
         raw = struct.pack(">I", len(payload)) + payload
-        frame = (
-            raw
-            + hashlib.sha256(
-                (TERMINAL_DOMAIN if terminal else ARTIFACT_DOMAIN if artifact else DOMAIN) + raw
-            ).digest()
-        )
+        frame = raw + hashlib.sha256(domain + raw).digest()
         decode_entry(frame, profile=profile)
         return frame
     except (AttributeError, KeyError, TypeError, ValueError):
         raise HistoryError("invalid_record") from None
+
+
+_FRAME_VERSIONS: dict[type[Any], tuple[int, bytes, tuple[Profile, ...]]] = {
+    ArtifactPrepare: (2, ARTIFACT_DOMAIN, ("artifact-v2", "terminal-v3", "terminal-v4")),
+    TerminalOutputPrepare: (3, TERMINAL_DOMAIN, ("terminal-v3", "terminal-v4")),
+    NonsuccessOutputPrepare: (4, NONSUCCESS_DOMAIN, ("terminal-v4",)),
+}
+_WIRE_VERSIONS = {_KINDS[kind][0]: shape for kind, shape in _FRAME_VERSIONS.items()}
 
 
 def decode_entry(frame: bytes, *, profile: Profile = "h1") -> Entry:
@@ -427,27 +495,24 @@ def decode_entry(frame: bytes, *, profile: Profile = "h1") -> Entry:
     if not 1 <= size <= MAX_PAYLOAD or len(frame) != size + 36:
         raise HistoryError("invalid_record")
     d = _keys(parse(frame[4:-32]), "v history_id seq prev_digest record_id kind actor data")
-    terminal = type(d["v"]) is int and d["v"] == 3
-    artifact = type(d["v"]) is int and d["v"] == 2
-    if terminal:
-        if profile != "terminal-v3" or d["kind"] != "TERMINAL_OUTPUT_PREPARE":
-            raise HistoryError("invalid_record")
-    elif artifact:
-        if profile not in ("artifact-v2", "terminal-v3") or d["kind"] != "ARTIFACT_PREPARE":
-            raise HistoryError("invalid_record")
-    else:
-        _one(d["v"])
-        if d["kind"] in ("ARTIFACT_PREPARE", "TERMINAL_OUTPUT_PREPARE"):
-            raise HistoryError("invalid_record")
-    domain = TERMINAL_DOMAIN if terminal else ARTIFACT_DOMAIN if artifact else DOMAIN
+    if type(d["kind"]) is not str:
+        raise HistoryError("invalid_record")
+    version, domain, profiles = _WIRE_VERSIONS.get(d["kind"], (1, DOMAIN, None))
+    if (
+        type(d["v"]) is not int
+        or d["v"] != version
+        or (profiles is not None and profile not in profiles)
+    ):
+        raise HistoryError("invalid_record")
     if not hmac.compare_digest(hashlib.sha256(domain + frame[:-32]).digest(), frame[-32:]):
         raise HistoryError("invalid_record")
     data = _data(d["kind"], d["data"])
-    if d["actor"] != _KINDS[type(data)][1]:
+    seq = _number(d["seq"], 1)
+    if d["actor"] != _KINDS[type(data)][1] or (version == 4 and seq > MAX_RECORDS):
         raise HistoryError("invalid_record")
     return Entry(
         _uuid(d["history_id"]),
-        _number(d["seq"], 1),
+        seq,
         bytes.fromhex(_hex(d["prev_digest"])),
         Command(_uuid(d["record_id"]), data),
         frame[-32:],
@@ -478,6 +543,7 @@ def validate_chain(
     acceptance_records: dict[UUID, UUID] = {}
     artifact_intents: set[UUID] = set()
     terminal_tasks: set[UUID] = set()
+    nonsuccess_tasks: set[UUID] = set()
     keys: set[tuple[UUID, int, str]] = set()
     sent: set[tuple[UUID, UUID, UUID]] = set()
     open_restore: tuple[UUID, UUID] | None = None
@@ -511,7 +577,7 @@ def validate_chain(
             keys.add(key)
             accepted[d.task_id] = d
             acceptance_records[d.task_id] = e.command.record_id
-        elif isinstance(d, TerminalOutputPrepare):
+        elif isinstance(d, TERMINAL_KINDS):
             a = accepted.get(d.task_id)
             if (
                 a is None
@@ -525,6 +591,8 @@ def validate_chain(
             if d.task_id in terminal_tasks:
                 raise HistoryError("conflict")
             terminal_tasks.add(d.task_id)
+            if isinstance(d, NonsuccessOutputPrepare):
+                nonsuccess_tasks.add(d.task_id)
         elif isinstance(d, ArtifactPrepare):
             a = accepted.get(d.task_id)
             if (
@@ -546,6 +614,10 @@ def validate_chain(
             ):
                 raise HistoryError("ancestor_mismatch")
             if isinstance(d, StopIntent):
+                # Preserve historical v1-v3 bytes (which permitted a negative
+                # Stop after COMPLETE); a v4 publication cannot be overwritten.
+                if d.task_id in nonsuccess_tasks:
+                    raise HistoryError("effect_stopped")
                 stopped.add(d.task_id)
             if isinstance(d, SendPossible):
                 if open_restore is not None or d.task_id in stopped or d.task_id in terminal_tasks:

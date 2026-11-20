@@ -31,7 +31,7 @@ beforeEach(() => {
 });
 afterEach(() => vi.unstubAllGlobals());
 
-function register() {
+function register(now = 100) {
   registerSubmission(
     'original',
     {
@@ -40,7 +40,7 @@ function register() {
       model: 'selected',
       provider: 'selected',
     },
-    100,
+    now,
   );
 }
 const detail = (code: string) => ({
@@ -84,8 +84,8 @@ it.each(['restore_recovery_required', 'history_unavailable'] as const)(
   },
 );
 
-it('does not settle a needs-attention task or infer that it is safe to retry', () => {
-  register();
+it('settles a generic needs-attention task for bookkeeping without a false cause', () => {
+  register(Date.now());
   recordSubmissionTask('original', 'task');
   expect(
     finishedSubmissionKeys(
@@ -95,10 +95,31 @@ it('does not settle a needs-attention task or infer that it is safe to retry', (
       },
       () => true,
     ),
+  ).toEqual(['original']);
+  expect(submissionBlock('original')).toBeNull();
+  settlePendingSubmission('original');
+  expect(pendingSubmission('original')).toBeNull();
+});
+
+it('blocks only the explicit unresolved-inference terminal code', () => {
+  register();
+  recordSubmissionTask('original', 'task');
+  expect(
+    finishedSubmissionKeys(
+      {
+        id: 'conversation',
+        latestTask: {
+          id: 'task',
+          status: 'needs_attention',
+          terminalCode: 'inference_dispatch_unresolved',
+        },
+      },
+      () => true,
+    ),
   ).toEqual([]);
+  expect(submissionBlock('original')).toBe('inference_dispatch_unresolved');
   settlePendingSubmission('original');
   expect(pendingSubmission('original')).not.toBeNull();
-  expect(submissionBlock('original')).toBe('inference_dispatch_unresolved');
 });
 
 it('allows settlement only after a successful observation explicitly clears the refusal', () => {

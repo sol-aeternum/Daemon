@@ -1,7 +1,12 @@
 from __future__ import annotations
 
 from orchestrator.compute_runtime import guarded_completion
-from orchestrator.compute_runtime import ComputeUnavailable, current_scope
+from orchestrator.compute_runtime import (
+    ComputeUnavailable,
+    answer_limit_candidates,
+    current_scope,
+    provider_finish,
+)
 from orchestrator import model_routing, routing_log
 from orchestrator.entitlements.errors import EntitlementsError
 
@@ -27,6 +32,7 @@ from orchestrator.tools.context_budget import (
     synthesis_messages,
     tool_context_budget,
 )
+from orchestrator.turn_finish import LocalLimit, TurnFinish, answer_finish
 
 logger = logging.getLogger(__name__)
 
@@ -800,6 +806,15 @@ async def completion_with_tools(
             # Loop continues to next round
 
         else:
+            # EOF here follows the metered finalizer, including trailing usage.
+            # The dispatch-bound sideband, not SDK choices, is the evidence.
+            finish = answer_finish(
+                provider_finish(response_stream),
+                [
+                    LocalLimit.model_validate(item)
+                    for item in answer_limit_candidates(response_stream)
+                ],
+            )
             if full_content:
                 yield {
                     "type": "content_done",
@@ -879,11 +894,36 @@ async def completion_with_tools(
                         }
                     )
 
-                yield {"type": "done", "done": True, "id": str(uuid.uuid4())}
+                # This existing branch does work after the last provider reply,
+                # with no subsequent answer. That reply cannot certify success.
+                unresolved = TurnFinish(
+                    outcome="unknown",
+                    reason="post_answer_tool",
+                    provider=finish.provider,
+                    limits=finish.limits,
+                )
+                yield {
+                    "type": "done",
+                    "done": True,
+                    "id": str(uuid.uuid4()),
+                    "turn_finish": unresolved.model_dump(exclude_none=True),
+                    "returned_answer": bool(full_content),
+                }
                 return
 
-            # No tool calls, we are done
-            yield {"type": "done", "done": True, "id": str(uuid.uuid4())}
+            yield {
+                "type": "done",
+                "done": True,
+                "id": str(uuid.uuid4()),
+                "turn_finish": finish.model_dump(exclude_none=True),
+                "returned_answer": bool(full_content)
+                or finish.provider.reason
+                in {
+                    "stop",
+                    "length",
+                    "content_filter",
+                },
+            }
             return
 
     final_messages = synthesis_messages(current_messages)
@@ -960,41 +1000,32 @@ async def completion_with_tools(
 
     except (ComputeUnavailable, EntitlementsError):
         raise
-    except Exception as e:
-        fallback_message = (
-            "I completed the tool runs, but I hit a synthesis error while preparing "
-            f"the final summary: {str(e)}"
-        )
-        yield {
-            "type": "content_delta",
-            "content": fallback_message,
-            "id": str(uuid.uuid4()),
-        }
-        yield {
-            "type": "content_done",
-            "content": fallback_message,
-            "id": str(uuid.uuid4()),
-        }
-        yield {"type": "done", "done": True, "id": str(uuid.uuid4())}
+    except Exception:
+        yield {"type": "error", "error": "Final synthesis failed", "id": str(uuid.uuid4())}
         return
 
     synthesis_content = "".join(synthesis_content_buffer).strip()
-    if not synthesis_content:
-        synthesis_content = (
-            "I completed the tool runs and reached the tool-round limit before a "
-            "final synthesis message was generated. Ask me to summarize the most "
-            "recent tool outputs and I will provide a structured report immediately."
-        )
+    if synthesis_content:
         yield {
-            "type": "content_delta",
+            "type": "content_done",
             "content": synthesis_content,
             "id": str(uuid.uuid4()),
         }
 
+    finish = answer_finish(
+        provider_finish(synthesis_stream),
+        [LocalLimit.model_validate(item) for item in answer_limit_candidates(synthesis_stream)],
+    )
     yield {
-        "type": "content_done",
-        "content": synthesis_content,
+        "type": "done",
+        "done": True,
         "id": str(uuid.uuid4()),
+        "turn_finish": finish.model_dump(exclude_none=True),
+        "returned_answer": bool(synthesis_content)
+        or finish.provider.reason
+        in {
+            "stop",
+            "length",
+            "content_filter",
+        },
     }
-    yield {"type": "done", "done": True, "id": str(uuid.uuid4())}
-    return

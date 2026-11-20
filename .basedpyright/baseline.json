@@ -306,30 +306,6 @@
                     "endColumn": 13,
                     "lineCount": 1
                 }
-            },
-            {
-                "code": "reportUnusedVariable",
-                "range": {
-                    "startColumn": 16,
-                    "endColumn": 24,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportUnusedVariable",
-                "range": {
-                    "startColumn": 16,
-                    "endColumn": 21,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportUnusedVariable",
-                "range": {
-                    "startColumn": 16,
-                    "endColumn": 27,
-                    "lineCount": 1
-                }
             }
         ],
         "./orchestrator/memory/entities.py": [

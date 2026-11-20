@@ -1,6 +1,13 @@
 import type { UIMessage } from 'ai';
 
 import type { ChatEvent } from './events';
+import {
+  parseTurnFinish,
+  readTerminalFinish,
+  TURN_FINISH_NOTICE_TEXTS,
+  turnFinishNoticeForReason,
+  type TurnFinish,
+} from './turnFinish';
 
 export type DaemonDataParts = {
   event: ChatEvent;
@@ -124,6 +131,7 @@ const TASK_TERMINAL_NOTICES: Record<string, string> = {
     'This request could not run: the capability is unavailable for this account.',
   route_unavailable:
     'This request could not run: no approved model route was available.',
+  deadline_exceeded: 'This request stopped because its time limit was reached.',
   cancelled: 'Stopped.',
 };
 
@@ -186,6 +194,12 @@ function withTaskNotice(
     metadata.regenerated_after_interruption > 0;
   const withRegeneration = (text: string) =>
     regenerated ? `${text}\n\n${REGENERATED_NOTICE}` : text;
+  // Finish evidence is rendered as its own status line (#759), never baked
+  // into saved content. Keep the legacy code-in-content path below only for
+  // rows that carry no versioned envelope.
+  if (parseTurnFinish(metadata.turn_finish) !== undefined) {
+    return content ? withRegeneration(content) : content;
+  }
   // A cancel that won the completion race leaves no reason code, only the
   // cancelled status; it must read as stopped, like any other cancel.
   const code =
@@ -230,6 +244,9 @@ export function getDaemonMessageText(message: DaemonMessage): string {
     liveRegenerationCount(message) > 0 && text
       ? `${text}\n\n${REGENERATED_NOTICE}`
       : text;
+  // Versioned finish evidence is rendered outside the reply text (#759), so
+  // its prose must not be duplicated here.
+  if (getTurnFinish(message) !== undefined) return liveText;
   // A task cancelled elsewhere (another device) ends this live view: say so,
   // as the persisted copy will.
   if (getDaemonTaskStatus(message) !== 'cancelled') return liveText;
@@ -268,6 +285,123 @@ export function splitDaemonMessageNotice(
     }
   }
   return { source: displayText, notice: '' };
+}
+
+/**
+ * Versioned finish evidence for this message (#759).
+ *
+ * Saved ``metadata.turn_finish`` is authoritative and is what a reopened
+ * conversation reads. Only when no envelope was saved does the latest live
+ * durable-task frame supply it; a terminal frame without evidence (a legacy
+ * snapshot) clears earlier provisional evidence rather than guessing a stop.
+ * An envelope present but invalid fails closed: it never falls back.
+ */
+export function getTurnFinish(
+  message: DaemonMessage | undefined,
+): TurnFinish | undefined {
+  if (!message) return undefined;
+  const metadata = message.metadata;
+  if (
+    metadata &&
+    Object.prototype.hasOwnProperty.call(metadata, 'turn_finish')
+  ) {
+    return readTerminalFinish(
+      metadata.turn_finish,
+      message.status ?? metadata.terminal_status,
+      metadata.terminal_reason,
+    );
+  }
+  let latest: TurnFinish | undefined;
+  for (const part of currentParts(message)) {
+    if (part.type !== 'data-event' || part.data.type !== 'task') continue;
+    const data = part.data;
+    if (
+      typeof data.status !== 'string' ||
+      !TERMINAL_TASK_STATUSES.has(data.status)
+    ) {
+      // Only a terminal snapshot is authoritative evidence.
+      continue;
+    }
+    if (Object.prototype.hasOwnProperty.call(data, 'turn_finish')) {
+      latest = readTerminalFinish(
+        data.turn_finish,
+        data.status,
+        data.terminal_code,
+      );
+    } else {
+      // Legacy terminal snapshot: bookkeeping is reliable, the reason is not.
+      latest = undefined;
+    }
+  }
+  return latest;
+}
+
+function genericCodeNotice(code: string): string {
+  return `This request could not be completed (${code.replace(/_/g, ' ')}).`;
+}
+
+/**
+ * The status line for a turn that did not complete normally, or
+ * ``undefined`` when there is nothing honest to add. It is rendered beside
+ * the reply, never inside its prose, copy or audio, and existing local
+ * control codes keep their specific wording.
+ */
+export function getTurnFinishNotice(
+  message: DaemonMessage | undefined,
+): string | undefined {
+  if (!message || message.role !== 'assistant') return undefined;
+  const finish = getTurnFinish(message);
+  const metadata = message.metadata ?? {};
+  if (finish === undefined) {
+    // An explicit server code still describes the disposition. Legacy saved
+    // rows already include their notice in the old display text, but a
+    // contradictory versioned envelope must not hide the valid server code.
+    if (
+      typeof message.content === 'string' &&
+      !parseTurnFinish(metadata.turn_finish)
+    )
+      return undefined;
+    const liveReason = metadata.terminal_reason;
+    if (typeof liveReason !== 'string' || !TASK_CODE.test(liveReason))
+      return undefined;
+    if (liveReason === 'cancelled') {
+      return getDaemonMessageText(message).trim()
+        ? CANCELLED_PARTIAL_NOTICE
+        : TASK_TERMINAL_NOTICES.cancelled;
+    }
+    return TASK_TERMINAL_NOTICES[liveReason] ?? genericCodeNotice(liveReason);
+  }
+  if (finish.outcome === 'complete') return undefined;
+  const rawReason = metadata.terminal_reason;
+  const recorded =
+    typeof rawReason === 'string' && TASK_CODE.test(rawReason)
+      ? rawReason
+      : undefined;
+  const finishReason = TASK_CODE.test(finish.reason)
+    ? finish.reason
+    : undefined;
+  const code =
+    recorded === 'capacity_unavailable' && finishReason === 'deadline_exceeded'
+      ? finishReason
+      : (recorded ?? finishReason);
+  if (code === 'cancelled') {
+    if (metadata.inference_dispatch_possible === true) {
+      return `${INFERENCE_STOP_NOTICE} Any saved partial answer is incomplete.`;
+    }
+    return getDaemonMessageText(message).trim()
+      ? CANCELLED_PARTIAL_NOTICE
+      : TASK_TERMINAL_NOTICES.cancelled;
+  }
+  if (code && TASK_TERMINAL_NOTICES[code]) return TASK_TERMINAL_NOTICES[code];
+  const specific = turnFinishNoticeForReason(finish.reason);
+  if (specific) return specific;
+  if (code) return genericCodeNotice(code);
+  if (finish.outcome === 'unknown') {
+    return finish.provider.state === 'conflicting'
+      ? TURN_FINISH_NOTICE_TEXTS.finish_evidence_conflict
+      : TURN_FINISH_NOTICE_TEXTS.finish_evidence_missing;
+  }
+  return genericCodeNotice(finish.reason);
 }
 
 /** Parts after the last durable-task reset (the current attempt's). */

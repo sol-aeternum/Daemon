@@ -1,3 +1,5 @@
+import type { TurnFinish } from './turnFinish';
+
 type BaseEvent = { id?: string; request_id?: string };
 type TraceMeta = {
   tool_call_id?: string;
@@ -171,6 +173,13 @@ export type ChatEvent = BaseEvent &
         lifecycle_epoch?: number;
         operation_id?: string;
         regenerated_after_interruption?: number;
+        /**
+         * Versioned terminal evidence from the authoritative task snapshot
+         * (#759). Optional on legacy frames; absent means "not confirmed".
+         */
+        turn_finish?: TurnFinish;
+        /** The durable task's terminal code (snake_case) when it ended. */
+        terminal_code?: string;
       }
     | {
         type: 'task_reset';

@@ -1,4 +1,4 @@
-"""Actual authenticated host -> original runner/stream/compute; fake ONLY LiteLLM."""
+"""Actual authenticated host -> original runner/stream/compute; synthetic transport."""
 
 import asyncio
 import traceback
@@ -26,15 +26,24 @@ from orchestrator.services.deletion_journal.store import initialize
 from orchestrator.services.restore_history.acceptance_host import (
     IsolatedAcceptanceHost,
     create_isolated_acceptance_app,
+    create_isolated_ui_app,
 )
 from orchestrator.services.restore_history.composition import HistoryAcceptance
 from orchestrator.services.restore_history.coordination import HistoryCoordinator
-from orchestrator.services.restore_history.model import SendPossible, TerminalOutputPrepare
+from orchestrator.services.restore_history.model import (
+    NonsuccessOutputPrepare,
+    SendPossible,
+    TerminalOutputPrepare,
+)
 from orchestrator.services.restore_history.observation import HistoryObservation
-from orchestrator.services.restore_history.terminal_projection import TerminalHistoryProjection
+from orchestrator.services.restore_history.terminal_projection import (
+    TerminalHistoryProjection,
+    TerminalV4HistoryProjection,
+)
 from orchestrator.services.restore_history.text_execution import HistoryTextExecution
 from orchestrator.tasks.store import TaskStore
 from orchestrator.tasks import runner
+from orchestrator.turn_finish import TurnFinish
 from orchestrator.auth_tokens import hash_token
 from orchestrator.entitlements.service import EntitlementService
 from tests.restore_history_support import KEY
@@ -56,6 +65,12 @@ async def text_host(projection_db, tmp_path, monkeypatch, request):
     database = projection_db
     install(database)
     install_terminal(database)
+    v4 = getattr(request, "param", None) == "terminal-v4"
+    if v4:
+        from tests.test_terminal_v4_postgres import SQL
+
+        database.sql("BEGIN;" + SQL.read_text() + "COMMIT;")
+    profile = "terminal-v4" if v4 else "terminal-v3"
     # The shared inference fixture installs memory revisions and grants W's exact
     # map before this composition; do not reapply migration 066 or add grants.
     journal = tmp_path / "j1"
@@ -112,6 +127,7 @@ async def text_host(projection_db, tmp_path, monkeypatch, request):
         journal=journal,
         journal_id=journal_id,
         settings=settings,
+        finish_reason="stop",
     )
     from orchestrator import daemon
 
@@ -120,6 +136,12 @@ async def text_host(projection_db, tmp_path, monkeypatch, request):
         "error",
         lambda *a, **kw: state.errors.append("".join(traceback.format_exception(sys.exception()))),
     )
+
+    # Raw OpenRouter provenance is qualified in the transport fixture. In this
+    # runner fixture provide only the eventual result of that parser; the stub
+    # SDK chunk's normalized finish_reason is deliberately not used as proof.
+    observations = {}
+    monkeypatch.setattr(runtime.inference_transport, "observe_stream_finish", observations.get)
 
     async def provider(**kwargs):
         scope = runtime.current_scope()
@@ -156,6 +178,8 @@ async def text_host(projection_db, tmp_path, monkeypatch, request):
             await hook(scope)
         state.entered.set()
 
+        raw_finish = SimpleNamespace(result={"state": "missing"})
+
         async def stream():
             try:
                 if state.unsolicited:
@@ -183,10 +207,18 @@ async def text_host(projection_db, tmp_path, monkeypatch, request):
                     "choices": [{"delta": {}, "finish_reason": "stop"}],
                     "usage": {"prompt_tokens": 1, "completion_tokens": 1},
                 }
+                if state.finish_reason is not None:
+                    raw_finish.result = {
+                        "state": "confirmed",
+                        "reason": state.finish_reason,
+                        "provenance": "provider_wire",
+                    }
             finally:
                 state.closed.set()
 
-        return stream()
+        response = stream()
+        observations[response] = raw_finish
+        return response
 
     monkeypatch.setattr(runtime.litellm, "acompletion", provider)
 
@@ -202,12 +234,13 @@ async def text_host(projection_db, tmp_path, monkeypatch, request):
                 min_size=0,
                 max_size=2,
             )
-            projection = TerminalHistoryProjection(
+            projection_type = TerminalV4HistoryProjection if v4 else TerminalHistoryProjection
+            projection = projection_type(
                 identity, acceptor="md_acceptor", worker="md_app", publisher="reserved_p"
             )
-            history = HistoryCoordinator(path, identity, ownership, profile="terminal-v3")
-            reader_history = HistoryCoordinator(path, identity, ownership, profile="terminal-v3")
-            worker_history = HistoryCoordinator(path, identity, ownership, profile="terminal-v3")
+            history = HistoryCoordinator(path, identity, ownership, profile=profile)
+            reader_history = HistoryCoordinator(path, identity, ownership, profile=profile)
+            worker_history = HistoryCoordinator(path, identity, ownership, profile=profile)
             tasks = TaskStore(a, enc, MemoryStore(a, enc), cover_new_inference=True)
             reader = HistoryObservation(
                 TaskStore(w, enc, MemoryStore(w, enc)), reader_history, projection, KEY
@@ -270,6 +303,98 @@ async def jobs(s):
     results = await asyncio.wait_for(asyncio.gather(*s.execution._jobs), 10)
     assert results, "no original runner was scheduled"
     return results
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("text_host", ["terminal-v4"], indirect=True)
+@pytest.mark.parametrize(
+    "reason,status,finish_outcome",
+    [
+        ("stop", "completed", "complete"),
+        ("length", "failed", "incomplete"),
+        (None, "needs_attention", "unknown"),
+    ],
+)
+async def test_v4_actual_runner_by_key_and_isolated_ui_agree(
+    text_host, reason, status, finish_outcome
+):
+    s = text_host
+    s.finish_reason = reason
+    _, headers = await device(s, s.account)
+    async with s.make():
+        accepted = await submitted(s, headers, model="auto")
+        await asyncio.wait_for(s.entered.wait(), 5)
+        s.release.set()
+        if await jobs(s) != [status]:
+            pytest.fail("\n".join(s.errors))
+        task_id, conversation = accepted.task.task_id, accepted.task.conversation_id
+        async with AsyncClient(
+            transport=ASGITransport(create_isolated_ui_app(s.host)), base_url="http://fixture.test"
+        ) as http:
+            by_key = await http.get("/tasks/by-key/stable", headers=headers)
+            assert by_key.status_code == 200, by_key.text
+            task = by_key.json()
+            assert (task["status"], task["content"]) == (status, "original partial and final")
+            assert task["turn_finish"]["outcome"] == finish_outcome
+            response = await http.get(f"/conversations/{conversation}", headers=headers)
+            assert response.status_code == 200, response.text
+            assistant = response.json()["messages"][-1]
+            assert assistant["content"] == task["content"]
+            assert assistant["metadata"]["turn_finish"] == TurnFinish.model_validate(
+                task["turn_finish"]
+            ).model_dump(exclude_none=True)
+            if status == "needs_attention":
+                assert assistant["metadata"]["uncertain_tools"] == []
+            if status == "completed":
+                s.db.sql("UPDATE tasks SET lease_epoch=lease_epoch+1;")
+            else:
+                s.db.sql("UPDATE tasks SET terminal_code='other';")
+            for url in (
+                "/tasks/by-key/stable",
+                f"/tasks/{task_id}",
+                f"/conversations/{conversation}",
+            ):
+                refused = await http.get(url, headers=headers)
+                assert refused.status_code == 409, refused.text
+                assert refused.json()["detail"]["retry_safe"] is False
+        assert len(s.calls) == 1
+        assert s.db.sql("SELECT count(*) FROM entitlement_reservations WHERE status='open'") == "0"
+        async with s.execution.history.operation(deadline=deadline()) as op:
+            data = (await op.verify()).entries[-1].command.data
+        assert type(data) is (
+            TerminalOutputPrepare if status == "completed" else NonsuccessOutputPrepare
+        )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("text_host", ["terminal-v4"], indirect=True)
+async def test_v4_append_without_sql_never_looks_running_or_unknown(text_host, monkeypatch):
+    s = text_host
+    s.finish_reason = "length"
+    _, headers = await device(s, s.account)
+    async with s.make():
+        stages = 0
+
+        async def refuse_after_append(*args, **kwargs):
+            nonlocal stages
+            stages += 1
+            raise OSError("synthetic missing projection")
+
+        monkeypatch.setattr(s.execution.projection, "stage_terminal", refuse_after_append)
+        accepted = await submitted(s, headers, model="auto")
+        await asyncio.wait_for(s.entered.wait(), 5)
+        s.release.set()
+        await jobs(s)
+        assert stages == 1 and len(s.calls) == 1
+        assert s.execution.effects is not None and s.execution.effects._blocked
+        assert s.db.sql("SELECT status FROM tasks") == "running"
+        async with AsyncClient(
+            transport=ASGITransport(create_isolated_ui_app(s.host)), base_url="http://fixture.test"
+        ) as http:
+            for url in ("/tasks/by-key/stable", f"/tasks/{accepted.task.task_id}"):
+                refused = await http.get(url, headers=headers)
+                assert refused.status_code == 409, refused.text
+                assert refused.json()["detail"]["retry_safe"] is False
 
 
 @pytest.mark.asyncio

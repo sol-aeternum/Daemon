@@ -32,6 +32,7 @@ from orchestrator.services.restore_history.observation import (
 )
 from orchestrator.services.restore_history.read_supervisor import HistoryReadSupervisor
 from orchestrator.services.restore_history.runtime import history_unselected_compatible
+from orchestrator.turn_finish import TurnFinish
 
 router = APIRouter(prefix="/tasks", tags=["tasks"])
 
@@ -65,6 +66,7 @@ class TaskOut(BaseModel):
     content: str
     event_seq: int
     cancel_requested: bool
+    turn_finish: TurnFinish | None = None
     # Filled on GET /tasks/{id}; empty where tasks are embedded elsewhere.
     operations: list[OperationOut] = []
 
@@ -189,6 +191,7 @@ def task_out(snapshot: TaskSnapshot) -> TaskOut:
         terminal_code=snapshot.terminal_code,
         attempt_count=snapshot.attempt_count,
         content_generation=snapshot.content_generation,
+        turn_finish=snapshot.turn_finish,
         content_delta_seq=snapshot.content_delta_seq,
         content=snapshot.content,
         event_seq=snapshot.event_seq,

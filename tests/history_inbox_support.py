@@ -348,14 +348,16 @@ class InboxFixture:
                             and e.command.data.account_id == auth.user_id
                         ]
                         jobs = await self._scoped_jobs(
-                            operation, conn, xid, auth, capture, inbox, accepted, limit
+                            operation, conn, xid, auth, capture, inbox, accepted, state, limit
                         )
                         if await host._auth(conn, token, limit) != auth:
                             return refuse("invalid_authority", 401)
                         await reader._check_owned(operation, conn, xid, limit)
                         return jobs
 
-    async def _scoped_jobs(self, operation, conn, xid, auth, capture, inbox, accepted, limit):
+    async def _scoped_jobs(
+        self, operation, conn, xid, auth, capture, inbox, accepted, state, limit
+    ):
         # A limit+1 probe diagnoses overflow; no truncated projection is returned.
         if len(accepted) > LIMIT or any(
             e.account_generation != capture.generation for e in accepted
@@ -393,7 +395,7 @@ class InboxFixture:
         reader = self.host._reader
         jobs = []
         for fact in accepted:
-            row = await reader._task_owned(operation, conn, xid, auth, fact, None, limit)
+            row = await reader._task_owned(operation, conn, xid, auth, fact, None, state, limit)
             if row is None or not await self._queued(conn, row):
                 return refuse()
             sealed = reader._tasks._open(row["input_ciphertext"])

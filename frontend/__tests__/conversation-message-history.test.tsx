@@ -272,6 +272,62 @@ describe('selected history provider integration', () => {
       await waitFor(() => expect(latest.taskRecoveryProblem).toBeNull());
     },
   );
+  it('returns the by-key terminal code and blocks only the explicit unresolved cause', async () => {
+    registerSubmission('held', {
+      scope: A,
+      requestConversationId: A,
+      model: 'auto',
+      provider: null,
+    });
+    let task: Record<string, unknown> = {
+      id: id(99),
+      conversation_id: A,
+      status: 'needs_attention',
+      terminal_code: 'inference_dispatch_unresolved',
+    };
+    const fetcher = vi.fn(async (input: RequestInfo | URL) => {
+      const url = new URL(String(input), 'http://test');
+      if (url.pathname === '/conversations') return list();
+      if (url.pathname.startsWith('/tasks/by-key/')) return json(task);
+      return json(detail(A, [1, 2]));
+    });
+    vi.stubGlobal('fetch', fetcher);
+    render(<Probe />);
+    await screen.findByText('display:2');
+    let found: unknown;
+    await act(async () => {
+      found = await latest.taskForKey('held');
+    });
+    expect(found).toEqual({
+      id: id(99),
+      conversationId: A,
+      status: 'needs_attention',
+      terminalCode: 'inference_dispatch_unresolved',
+    });
+    expect(pendingSubmission('held')?.historyBlocked).toBe(
+      'inference_dispatch_unresolved',
+    );
+    expect(latest.taskRecoveryProblem).toMatch(/retained/);
+
+    task = {
+      id: id(99),
+      conversation_id: A,
+      status: 'needs_attention',
+      terminal_code: 'uncertain_effect',
+    };
+    await act(async () => {
+      found = await latest.taskForKey('held');
+    });
+    expect(found).toEqual({
+      id: id(99),
+      conversationId: A,
+      status: 'needs_attention',
+      terminalCode: 'uncertain_effect',
+    });
+    expect(pendingSubmission('held')?.historyBlocked).toBeUndefined();
+    expect(latest.taskRecoveryProblem).toBeNull();
+  });
+
   it('keeps older display rows separate from follower/SDK tail reads', async () => {
     const requests: URL[] = [];
     const responses = [

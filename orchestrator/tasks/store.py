@@ -55,6 +55,7 @@ from orchestrator.tasks.states import (
     decide_after_attempt,
     retry_backoff_s,
 )
+from orchestrator.turn_finish import ProviderFinish, TurnFinish, parse_turn_finish, refused_finish
 
 if TYPE_CHECKING:
     from orchestrator.resource_inputs import ResourceInputs
@@ -285,6 +286,7 @@ class TaskSnapshot:
     event_seq: int
     cancel_requested: bool
     regenerated_after_interruption: int = 0
+    turn_finish: TurnFinish | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -1240,7 +1242,7 @@ class TaskStore:
         """The task this account's key created, if any (no payload comparison)."""
         row = await self._pool.fetchrow(
             """
-            SELECT t.*, m.content AS result_content,
+            SELECT t.*, m.content AS result_content, m.metadata AS result_metadata,
                    (SELECT count(*) FROM task_attempts a WHERE a.task_id = t.id
                     AND a.epoch < t.lease_epoch AND a.execution_started_at IS NOT NULL
                     AND a.outcome IN ('lost', 'failed_retryable')) AS regeneration_count
@@ -2109,6 +2111,100 @@ class TaskStore:
             return True
         return False
 
+    async def publish_non_success(
+        self,
+        task_id: uuid.UUID,
+        epoch: int,
+        *,
+        content: str,
+        message_fields: dict[str, Any],
+        binding: Claim,
+    ) -> TaskStatus:
+        """Publish a returned but unsuccessful answer, never retry the answer."""
+        try:
+            async with self._worker(task_id, epoch, binding, allow_interrupted=True) as (conn, row):
+                if await self._completion_control(conn, row):
+                    return TaskStatus.NEEDS_ATTENTION
+                finish = self._non_success_finish(message_fields)
+                status, code = await self._non_success_status(conn, row, finish)
+                return await self._stage_non_success_body(
+                    conn, row, epoch, content, message_fields, finish, status, code
+                )
+        except TaskControlled as controlled:
+            return controlled.status
+
+    @staticmethod
+    def _non_success_finish(message_fields: dict[str, Any]) -> TurnFinish:
+        metadata = message_fields.get("metadata")
+        finish = (
+            parse_turn_finish(metadata.get("turn_finish")) if isinstance(metadata, dict) else None
+        )
+        if finish is None or finish.outcome not in ("incomplete", "failed", "unknown"):
+            raise ObservationBlocked("terminal_finish_invalid")
+        return finish
+
+    async def _non_success_status(
+        self, conn: Any, row: Any, finish: TurnFinish
+    ) -> tuple[TaskStatus, str]:
+        decision = decide_after_attempt(
+            cause=RetryCause.TERMINAL_ERROR,
+            attempt_count=int(row["attempt_count"]),
+            max_attempts=int(row["max_attempts"]),
+            material_started=await self._material_started(conn, row["id"]),
+            error_code=finish.reason,
+        )
+        if decision.status is TaskStatus.NEEDS_ATTENTION:
+            return decision.status, "uncertain_effect"
+        if finish.outcome == "unknown":
+            return TaskStatus.NEEDS_ATTENTION, finish.reason
+        return TaskStatus.FAILED, finish.reason
+
+    async def _stage_non_success_body(
+        self,
+        conn: Any,
+        row: Any,
+        epoch: int,
+        content: str,
+        message_fields: dict[str, Any],
+        finish: TurnFinish,
+        status: TaskStatus,
+        code: str,
+    ) -> TaskStatus:
+        if not conn.is_in_transaction() or status not in (
+            TaskStatus.FAILED,
+            TaskStatus.NEEDS_ATTENTION,
+        ):
+            raise ObservationBlocked("terminal_transaction_required")
+        fields = dict(message_fields)
+        incoming = fields.pop("metadata", None)
+        metadata: dict[str, Any] = {
+            "terminal_status": "error",
+            "terminal_reason": code,
+            "turn_finish": finish.model_dump(exclude_none=True),
+        }
+        if isinstance(incoming, dict) and isinstance(incoming.get("usage"), dict):
+            metadata["usage"] = incoming["usage"]
+        await _disclose_regeneration(conn, metadata, row)
+        started = await self._started_tools(conn, row["id"])
+        if started or status is TaskStatus.NEEDS_ATTENTION:
+            metadata["uncertain_tools"] = started
+        saved = await self._memory.update_message(
+            row["result_message_id"],
+            content=content,
+            status="error",
+            metadata=metadata,
+            conn=conn,
+            **fields,
+        )
+        if saved is None:
+            raise ObservationBlocked("terminal_message_unavailable")
+        # Archive the newly committed candidate text, not the older checkpoint.
+        await self._end_attempt(
+            conn, row["id"], epoch, _ATTEMPT_OUTCOME[status], code, row["result_message_id"]
+        )
+        await self._stage_terminal_task(conn, row["id"], status, code)
+        return status
+
     async def _stage_completed_body(
         self,
         conn: Any,
@@ -2140,10 +2236,15 @@ class TaskStore:
             conn=conn,
             **fields,
         )
-        code = "cancelled" if status is TaskStatus.CANCELLED else None
         await self._end_attempt(
-            conn, task_id, epoch, _ATTEMPT_OUTCOME[status], code, row["result_message_id"]
+            conn, task_id, epoch, _ATTEMPT_OUTCOME[status], None, row["result_message_id"]
         )
+        await self._stage_terminal_task(conn, task_id, status, None)
+        return status
+
+    async def _stage_terminal_task(
+        self, conn: Any, task_id: uuid.UUID, status: TaskStatus, code: str | None
+    ) -> None:
         await conn.execute(
             """
             UPDATE tasks
@@ -2156,7 +2257,6 @@ class TaskStore:
             code,
         )
         await self._append_event(conn, task_id, "finished", {"status": status.value, "code": code})
-        return status
 
     async def fail_attempt(
         self,
@@ -2476,7 +2576,7 @@ class TaskStore:
     async def snapshot(self, user_id: uuid.UUID, task_id: uuid.UUID) -> TaskSnapshot | None:
         row = await self._pool.fetchrow(
             """
-            SELECT t.*, m.content AS result_content,
+            SELECT t.*, m.content AS result_content, m.metadata AS result_metadata,
                    (SELECT count(*) FROM task_attempts a WHERE a.task_id = t.id
                     AND a.epoch < t.lease_epoch AND a.execution_started_at IS NOT NULL
                     AND a.outcome IN ('lost', 'failed_retryable')) AS regeneration_count
@@ -2493,7 +2593,7 @@ class TaskStore:
     ) -> TaskSnapshot | None:
         row = await self._pool.fetchrow(
             """
-            SELECT t.*, m.content AS result_content,
+            SELECT t.*, m.content AS result_content, m.metadata AS result_metadata,
                    (SELECT count(*) FROM task_attempts a WHERE a.task_id = t.id
                     AND a.epoch < t.lease_epoch AND a.execution_started_at IS NOT NULL
                     AND a.outcome IN ('lost', 'failed_retryable')) AS regeneration_count
@@ -2507,11 +2607,56 @@ class TaskStore:
         return self._snapshot_from(row) if row is not None else None
 
     def _snapshot_from(self, row: Any) -> TaskSnapshot:
+        status = TaskStatus(row["status"])
+        finish: TurnFinish | None = None
+        if status not in ACTIVE_STATUSES:
+            metadata = row.get("result_metadata")
+            if isinstance(metadata, str):
+                try:
+                    metadata = json.loads(metadata)
+                except ValueError:
+                    metadata = None
+            if isinstance(metadata, dict):
+                candidate = parse_turn_finish(metadata.get("turn_finish"))
+                if candidate is not None and (
+                    (
+                        status is TaskStatus.COMPLETED
+                        and row["terminal_code"] is None
+                        and candidate.outcome == "complete"
+                    )
+                    or (status is TaskStatus.CANCELLED and candidate.outcome == "cancelled")
+                    or (
+                        status is TaskStatus.FAILED
+                        and candidate.outcome in ("failed", "incomplete")
+                        and row["terminal_code"] == candidate.reason
+                    )
+                    or (
+                        status is TaskStatus.NEEDS_ATTENTION
+                        and candidate.outcome in ("unknown", "failed", "incomplete")
+                        and row["terminal_code"] in (candidate.reason, "uncertain_effect")
+                    )
+                ):
+                    finish = candidate
+            if finish is None and status is TaskStatus.CANCELLED:
+                finish = TurnFinish(
+                    outcome="cancelled",
+                    reason="cancelled",
+                    provider=ProviderFinish(state="missing"),
+                )
+            elif (
+                finish is None
+                and status is TaskStatus.FAILED
+                and row["terminal_code"]
+                and row["terminal_code"] not in ("provider_length", "provider_content_filter")
+            ):
+                # The terminal task records its failure even when the provider
+                # attempt did not return an answer. It does not certify a stop.
+                finish = refused_finish(row["terminal_code"])
         return TaskSnapshot(
             task_id=row["id"],
             conversation_id=row["conversation_id"],
             result_message_id=row["result_message_id"],
-            status=TaskStatus(row["status"]),
+            status=status,
             terminal_code=row["terminal_code"],
             attempt_count=int(row["attempt_count"]),
             content_generation=int(row["content_generation"]),
@@ -2519,8 +2664,8 @@ class TaskStore:
             content=self._enc.decrypt(row["result_content"]),
             event_seq=int(row["event_seq"]),
             regenerated_after_interruption=int(row["regeneration_count"]),
-            cancel_requested=row["cancel_requested_at"] is not None
-            and TaskStatus(row["status"]) in ACTIVE_STATUSES,
+            cancel_requested=row["cancel_requested_at"] is not None and status in ACTIVE_STATUSES,
+            turn_finish=finish,
         )
 
     async def latest_for_conversation(
@@ -2529,7 +2674,7 @@ class TaskStore:
         """The conversation's most recent task, active or finished."""
         row = await self._pool.fetchrow(
             """
-            SELECT t.*, m.content AS result_content,
+            SELECT t.*, m.content AS result_content, m.metadata AS result_metadata,
                    (SELECT count(*) FROM task_attempts a WHERE a.task_id = t.id
                     AND a.epoch < t.lease_epoch AND a.execution_started_at IS NOT NULL
                     AND a.outcome IN ('lost', 'failed_retryable')) AS regeneration_count

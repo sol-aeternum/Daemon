@@ -40,7 +40,10 @@ async def test_partial_section_persists_before_research_and_reconnects_once(sour
     assert (
         "".join(data["data"]["text"] for kind, data in final if kind == "token") == result["final"]
     )
-    assert final[-1][1]["data"] == {"status": "completed"}
+    terminal = final[-1][1]["data"]
+    assert terminal["status"] == "completed"
+    assert terminal["turn_finish"]["reason"] == "provider_stop"
+    assert terminal["turn_finish"]["provider"]["dispatch_id"] == "synthetic-research-final"
 
 
 @pytest.mark.asyncio
@@ -287,12 +290,13 @@ async def test_later_provider_error_stops_honestly_without_a_continuation_promis
         delivery.read.release.set()
         await asyncio.wait_for(task, 5)
         assert delivery.calls == 3
-        assert delivery.store.current.content.startswith(PREFIX)
-        assert "Further work stopped" in delivery.store.current.content
-        assert "may be incomplete" in delivery.store.current.content
-        assert "will continue" not in delivery.store.current.content
-        # Preserve the existing limited-answer commit semantics, not a new state.
-        assert delivery.state.result is TaskStatus.COMPLETED
+        assert delivery.store.current.content == PREFIX
+        assert delivery.state.result is None and delivery.state.requested_terminal == "error"
+        # No final answer was returned: the owner still applies the ordinary
+        # retry policy (this fixture is already on its last attempt).
+        assert await runner._resolve(cast(TaskStore, delivery.store), delivery.state) == "failed"
+        assert delivery.store.current.content == PREFIX
+        assert delivery.store.current.terminal_code == "interrupted"
     finally:
         delivery.read.release.set()
         if not task.done():

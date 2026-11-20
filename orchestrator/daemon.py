@@ -31,6 +31,13 @@ from orchestrator.services.fetch.url_extract import extract_urls
 from orchestrator.timezones import resolve_runtime_timezone
 from orchestrator.tools.builtin import create_default_registry
 from orchestrator.tools.completion import completion_with_tools
+from orchestrator.turn_finish import (
+    ProviderFinish,
+    TurnFinish,
+    parse_turn_finish,
+    refused_finish,
+    unknown_finish,
+)
 
 
 # Import trust functions for signal application
@@ -384,7 +391,8 @@ async def stream_sse_chat(
     persisted_tool_calls: list[dict[str, Any]] = []
     persisted_tool_results: list[dict[str, Any]] = []
     advisor_traces: dict[str, dict[str, Any]] = {}
-    finish_reason: str | None = None
+    finish = unknown_finish()
+    returned_answer = False
     usage: dict[str, int] | None = None
     first_token_time: float | None = None
     last_token_time: float | None = None
@@ -394,7 +402,7 @@ async def stream_sse_chat(
 
     assistant_message_id: uuid.UUID | None = None
     assistant_message_terminalized = False
-    turn_finished_normally = False
+    terminal_write_started = False
     _last_persist_s: float | None = None
     _persist_interval_s = 1.0
     _persisted_text_chunks = 0
@@ -424,13 +432,19 @@ async def stream_sse_chat(
     async def terminalize_incomplete_assistant() -> None:
         """Best-effort transition for a pre-inserted row on every exit path."""
         nonlocal assistant_message_terminalized
-        if assistant_message_terminalized or not memory_store or assistant_message_id is None:
+        if (
+            assistant_message_terminalized
+            or terminal_write_started
+            or not memory_store
+            or assistant_message_id is None
+        ):
             return
 
-        status = forced_terminal_status or ("complete" if turn_finished_normally else "cancelled")
-        metadata: dict[str, Any] = {"terminal_status": status}
-        if finish_reason is not None:
-            metadata["finish_reason"] = finish_reason
+        status = forced_terminal_status or "cancelled"
+        metadata: dict[str, Any] = {
+            "terminal_status": status,
+            "turn_finish": finish.model_dump(exclude_none=True),
+        }
         if terminal_reason:
             metadata["terminal_reason"] = terminal_reason
         reasoning_text = "\n".join(reasoning_parts).strip() or None
@@ -465,6 +479,71 @@ async def stream_sse_chat(
 
     # Track if memory_write (correction) occurred during this response
     memory_write_occurred = False
+
+    async def persist_terminal_answer(content: str, status: str) -> str:
+        nonlocal \
+            assistant_message_id, \
+            assistant_message_terminalized, \
+            finish, \
+            terminal_write_started
+        model_name = active_compute_model() or actual_model or model
+        duration = None
+        if (
+            first_reasoning_time is not None
+            and last_reasoning_time is not None
+            and last_reasoning_time >= first_reasoning_time
+        ):
+            duration = max(1, int(last_reasoning_time - first_reasoning_time))
+        metadata: dict[str, Any] = {
+            "turn_finish": finish.model_dump(exclude_none=True),
+            "terminal_status": status,
+        }
+        if finish.finish_reason is not None:
+            metadata["finish_reason"] = finish.finish_reason
+        if usage is not None:
+            metadata["usage"] = usage
+        if terminal_reason:
+            metadata["terminal_reason"] = terminal_reason
+        fields: dict[str, Any] = {
+            "content": content,
+            "tool_calls": persisted_tool_calls,
+            "tool_results": persisted_tool_results,
+            "advisor_traces": advisor_traces or None,
+            "reasoning_text": "\n".join(reasoning_parts).strip() or None,
+            "reasoning_duration_secs": duration,
+            "reasoning_model": model_name,
+            "model": model_name,
+            "status": status,
+            "metadata": metadata,
+        }
+        # Never repeat a terminal write whose acknowledgement was lost.
+        terminal_write_started = True
+        if not assistant_message_id:
+            inserted = await message_writer.insert_message(
+                conversation_id=conversation_uuid, user_id=user_id, role="assistant", **fields
+            )
+            assistant_message_id = inserted["id"]
+            assistant_message_terminalized = True
+            return status
+
+        if message_sink is not None:
+            fields["terminal_answer"] = returned_answer
+        updated = await message_writer.update_message(message_id=assistant_message_id, **fields)
+        if updated is None:
+            finish = unknown_finish("terminal_publication_unconfirmed", observed=finish)
+            return "error"
+        assistant_message_terminalized = True
+        committed = updated.get("status")
+        # A cancel or suspension can win at the durable fence. Never allow
+        # provider stop to override that disposition.
+        if isinstance(committed, str) and committed != status:
+            finish = (
+                TurnFinish(outcome="cancelled", reason="cancelled", provider=finish.provider)
+                if committed == "cancelled"
+                else unknown_finish("terminal_publication_refused", observed=finish)
+            )
+            return committed
+        return status
 
     def make_envelope(
         event_type: str, data: dict[str, Any], *, evt_id: str | None = None
@@ -544,7 +623,7 @@ async def stream_sse_chat(
                 for token in mock_response:
                     if await is_disconnected():
                         forced_terminal_status = "cancelled"
-                        terminal_reason = "Client disconnected during streaming"
+                        terminal_reason = "cancelled"
                         break
                     yield sse(
                         "token",
@@ -556,7 +635,12 @@ async def stream_sse_chat(
                     )
                     await asyncio.sleep(0.05)
 
-                finish_reason = "stop"
+                    final_text_parts.append(token)
+                finish = TurnFinish(
+                    outcome="unknown",
+                    reason="mock_response",
+                    provider=ProviderFinish(state="not_attempted"),
+                )
                 usage = {
                     "prompt_tokens": 10,
                     "completion_tokens": 5,
@@ -597,7 +681,9 @@ async def stream_sse_chat(
                 ):
                     if await is_disconnected():
                         forced_terminal_status = "cancelled"
-                        terminal_reason = "Client disconnected during streaming"
+                        terminal_reason = "cancelled"
+                        if event.get("type") == "done":
+                            finish = parse_turn_finish(event.get("turn_finish")) or finish
                         break
 
                     now = asyncio.get_event_loop().time()
@@ -844,6 +930,9 @@ async def stream_sse_chat(
                                     evt_id=f"evt_advisor_error_{uuid.uuid4().hex}",
                                 ),
                             )
+                            # An advisor's failure is scoped to that optional
+                            # tool. Its parent may still return a valid answer.
+                            continue
                         logger.warning("Tool pipeline reported recoverable error")
 
                         unresolved_tools = list(pending_tool_calls)
@@ -918,46 +1007,19 @@ async def stream_sse_chat(
                                 }
                             )
 
-                        graceful_notice = (
-                            "\n\nFurther work stopped after an execution error; "
-                            f"available findings may be incomplete. ({error_message})"
-                        )
-
-                        if first_token_time is None:
-                            first_token_time = now
-                        last_token_time = now
-                        final_text_parts.append(graceful_notice)
-
-                        yield sse(
-                            "token",
-                            make_envelope(
-                                "token",
-                                {"text": graceful_notice},
-                                evt_id=f"evt_token_{uuid.uuid4().hex}",
-                            ),
-                        )
+                        finish = refused_finish("pipeline_error")
                         break
                     elif event_type == "done":
+                        finish = parse_turn_finish(event.get("turn_finish")) or unknown_finish()
+                        returned_answer = event.get("returned_answer") is True
                         if pending_tool_calls:
                             unresolved_tools = list(pending_tool_calls)
                             pending_tool_calls.clear()
-
-                            done_notice = (
-                                "\n\nSome tool calls did not finish before the turn ended. "
-                                "Further checking stopped; available findings may be incomplete."
-                            )
-                            if first_token_time is None:
-                                first_token_time = now
-                            last_token_time = now
-                            final_text_parts.append(done_notice)
-
-                            yield sse(
-                                "token",
-                                make_envelope(
-                                    "token",
-                                    {"text": done_notice},
-                                    evt_id=f"evt_token_{uuid.uuid4().hex}",
-                                ),
+                            finish = TurnFinish(
+                                outcome="failed",
+                                reason="stream_done_with_pending",
+                                provider=finish.provider,
+                                limits=finish.limits,
                             )
 
                             for unresolved_name in unresolved_tools:
@@ -998,7 +1060,8 @@ async def stream_sse_chat(
 
         except asyncio.CancelledError:
             forced_terminal_status = "cancelled"
-            terminal_reason = "Request was cancelled"
+            terminal_reason = "cancelled"
+            finish = TurnFinish(outcome="cancelled", reason="cancelled", provider=finish.provider)
             raise
         except Exception as e:
             capacity = compute_error(e)
@@ -1007,6 +1070,7 @@ async def stream_sse_chat(
                 # maps onto its own protocol (SSE error, HTTP 503).
                 forced_terminal_status = "error"
                 terminal_reason = capacity.code
+                finish = refused_finish(capacity.code, category=capacity.category)
                 raise capacity from None
             forced_terminal_status = "error"
 
@@ -1015,43 +1079,33 @@ async def stream_sse_chat(
             # failure marker; the SSE error envelope
             # carries the stable token plus the correlation handle.
             terminal_reason = _SSE_INTERNAL_ERROR_TOKEN
+            finish = refused_finish("internal_error")
             logger.error("Streaming error")
 
             yield sse(
                 "error",
                 make_envelope(
                     "error",
-                    {"message": f"{_SSE_INTERNAL_ERROR_TOKEN} (request_id={request_id})"},
+                    {
+                        "message": f"{_SSE_INTERNAL_ERROR_TOKEN} (request_id={request_id})",
+                        "turn_finish": finish.model_dump(exclude_none=True),
+                    },
                     evt_id="evt_error",
                 ),
             )
             return
 
-        turn_finished_normally = True
-
-        # Ensure assistant always provides visible response even when tool failures occur
-        # without explicit error events (e.g., tool_result with failure status then done)
-        if forced_terminal_status is None and not final_text_parts:
-            fallback_message = (
-                "I encountered issues while executing tools and couldn't complete the request as intended. "
-                "Please try rephrasing your request, or ask me to explain what went wrong."
-            )
-            final_text_parts.append(fallback_message)
-            yield sse(
-                "token",
-                make_envelope(
-                    "token",
-                    {"text": fallback_message},
-                    evt_id=f"evt_token_{uuid.uuid4().hex}",
-                ),
-            )
-
-        # Final event with complete message and metadata
+        if forced_terminal_status == "cancelled":
+            finish = TurnFinish(outcome="cancelled", reason="cancelled", provider=finish.provider)
+            returned_answer = False
+        persisted_status = forced_terminal_status or (
+            "complete" if finish.outcome == "complete" else "error"
+        )
+        terminal_reason = None if finish.outcome == "complete" else finish.reason
         final_text = "".join(final_text_parts)
         final_data: dict[str, Any] = {
             "text": final_text,
             "model": model_for_events,
-            "finish_reason": finish_reason or "unknown",
         }
         if usage:
             final_data["usage"] = usage
@@ -1061,87 +1115,18 @@ async def stream_sse_chat(
                 "last_token_s": last_token_time,
             }
 
-        if forced_terminal_status is None:
-            yield sse(
-                "final",
-                make_envelope("final", final_data, evt_id="evt_final"),
-            )
-
         # Persist final message to memory store
         if memory_store and conversation_uuid and user_id:
             try:
-                content = final_text
-                model_name = active_compute_model() or actual_model or model
-                reasoning_text = "\n".join(reasoning_parts).strip() or None
-                reasoning_duration_secs: int | None = None
-                if (
-                    first_reasoning_time is not None
-                    and last_reasoning_time is not None
-                    and last_reasoning_time >= first_reasoning_time
-                ):
-                    reasoning_duration_secs = max(
-                        1, int(last_reasoning_time - first_reasoning_time)
-                    )
-                final_metadata: dict[str, Any] = {}
-                if finish_reason is not None:
-                    final_metadata["finish_reason"] = finish_reason
-                if usage is not None:
-                    final_metadata["usage"] = usage
-                persisted_status = forced_terminal_status or "complete"
-                final_metadata["terminal_status"] = persisted_status
-                if terminal_reason:
-                    final_metadata["terminal_reason"] = terminal_reason
-
-                if assistant_message_id:
-                    # Update existing message
-                    updated = await message_writer.update_message(
-                        message_id=assistant_message_id,
-                        content=content,
-                        tool_calls=persisted_tool_calls,
-                        tool_results=persisted_tool_results,
-                        advisor_traces=advisor_traces or None,
-                        reasoning_text=reasoning_text,
-                        reasoning_duration_secs=reasoning_duration_secs,
-                        reasoning_model=model_name,
-                        model=model_name,
-                        status=persisted_status,
-                        metadata=final_metadata or None,
-                    )
-                    assistant_message_terminalized = updated is not None
-                    # A durable task's commit can end differently than asked
-                    # (a cancel or suspension won the race); success-only
-                    # follow-ups below must see the committed status.
-                    committed_status = updated.get("status") if isinstance(updated, dict) else None
-                    if isinstance(committed_status, str):
-                        persisted_status = committed_status
-                else:
-                    # Insert new message
-                    inserted = await message_writer.insert_message(
-                        conversation_id=conversation_uuid,
-                        user_id=user_id,
-                        role="assistant",
-                        content=content,
-                        model=model_name,
-                        tool_calls=persisted_tool_calls,
-                        tool_results=persisted_tool_results,
-                        advisor_traces=advisor_traces or None,
-                        reasoning_text=reasoning_text,
-                        reasoning_duration_secs=reasoning_duration_secs,
-                        reasoning_model=model_name,
-                        status=persisted_status,
-                        metadata=final_metadata or None,
-                    )
-                    assistant_message_id = inserted["id"]
-                    assistant_message_terminalized = True
+                persisted_status = await persist_terminal_answer(final_text, persisted_status)
+                success = finish.outcome == "complete" and _success_followups_allowed(
+                    persisted_status
+                )
 
                 # Apply implicit positive trust signal (boost previous turn's memories if no correction)
                 try:
                     ts_module = _lazy_import_trust_signals()
-                    if (
-                        _success_followups_allowed(persisted_status)
-                        and ts_module
-                        and conversation_uuid
-                    ):
+                    if success and ts_module:
                         await ts_module.apply_implicit_positive_signal(
                             conversation_id=conversation_uuid,
                             store=memory_store,
@@ -1151,7 +1136,7 @@ async def stream_sse_chat(
                 except Exception:
                     logger.debug("Trust signal application skipped")
 
-                if _success_followups_allowed(persisted_status) and queue is not None:
+                if success and queue is not None:
                     # Never capture here: a paused stream must keep its original
                     # upstream generation. All queued extraction persistence
                     # refuses absent/foreign capture rather than refreshing it.
@@ -1209,7 +1194,7 @@ async def stream_sse_chat(
 
                 tool_call_count = len(persisted_tool_calls)
                 if (
-                    _success_followups_allowed(persisted_status)
+                    success
                     and queue is not None
                     and assistant_message_id is not None
                     and tool_call_count >= 5
@@ -1232,12 +1217,23 @@ async def stream_sse_chat(
                         logger.warning("Failed to enqueue skill evaluation")
             except Exception:
                 logger.warning("Failed to persist final message")
+                finish = unknown_finish("terminal_publication_unconfirmed", observed=finish)
+                persisted_status = "error"
 
-        # Terminal status event
-        terminal_status = forced_terminal_status or "completed"
-        terminal_data = {"status": terminal_status}
-        if terminal_reason:
-            terminal_data["reason"] = terminal_reason
+        terminal_status = "completed" if persisted_status == "complete" else persisted_status
+        envelope = finish.model_dump(exclude_none=True)
+        if persisted_status != "cancelled":
+            yield sse(
+                "final",
+                make_envelope(
+                    "final",
+                    {**final_data, "finish_reason": finish.finish_reason, "turn_finish": envelope},
+                    evt_id="evt_final",
+                ),
+            )
+        terminal_data = {"status": terminal_status, "turn_finish": envelope}
+        if finish.outcome != "complete":
+            terminal_data["reason"] = finish.reason
 
         yield sse(
             "done",
@@ -1249,12 +1245,21 @@ async def stream_sse_chat(
         capacity = compute_error(e)
         if capacity is not None:
             terminal_reason = capacity.code
+            finish = refused_finish(capacity.code, category=capacity.category)
             raise capacity from None
         terminal_reason = _SSE_INTERNAL_ERROR_TOKEN
+        finish = refused_finish("internal_error")
         logger.error("Unexpected error in stream_sse_chat")
         yield sse(
             "error",
-            make_envelope("error", {"message": "Internal server error"}, evt_id="evt_error"),
+            make_envelope(
+                "error",
+                {
+                    "message": "Internal server error",
+                    "turn_finish": finish.model_dump(exclude_none=True),
+                },
+                evt_id="evt_error",
+            ),
         )
     finally:
         await terminalize_incomplete_assistant()

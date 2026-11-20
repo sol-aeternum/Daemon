@@ -17,6 +17,7 @@ from orchestrator.config import get_settings
 from orchestrator.db import AppState, get_app_state
 import orchestrator.daemon as daemon_module
 from orchestrator.main import app
+from orchestrator.turn_finish import answer_finish
 from tests.qualified_compute import install_qualified_compute
 
 # These tests exercise the streaming plumbing, not admission, so the stand-in
@@ -85,6 +86,95 @@ async def test_health_endpoint(client):
     response = await client.get("/health")
     assert response.status_code == 200
     assert response.json()["status"] == "ok"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("evidence", "expected"),
+    [
+        ({"state": "confirmed", "reason": "stop", "provenance": "provider_wire"}, "stop"),
+        ({"state": "confirmed", "reason": "length", "provenance": "provider_wire"}, "length"),
+        (
+            {"state": "confirmed", "reason": "content_filter", "provenance": "provider_wire"},
+            "content_filter",
+        ),
+        ({"state": "conflicting"}, None),
+        ({"state": "missing"}, None),
+    ],
+)
+async def test_finish_parity_on_native_and_compat_replies(client, monkeypatch, evidence, expected):
+    monkeypatch.setenv("MOCK_LLM", "false")
+    get_settings.cache_clear()
+    finish = answer_finish(evidence).model_dump(exclude_none=True)
+
+    async def completion(*args, **kwargs):
+        yield {"type": "content_delta", "content": "identical partial text"}
+        yield {"type": "done", "returned_answer": True, "turn_finish": finish}
+
+    monkeypatch.setattr(daemon_module, "create_default_registry", lambda **kwargs: object())
+    monkeypatch.setattr(daemon_module, "completion_with_tools", completion)
+    native = await client.post("/chat", json={"message": "hello"})
+    native_data = [
+        json.loads(line[6:])["data"]
+        for line in native.text.splitlines()
+        if line.startswith("data:") and json.loads(line[6:]).get("type") in ("final", "done")
+    ]
+    assert native_data[0]["finish_reason"] == expected
+    assert native_data[0]["turn_finish"] == native_data[1]["turn_finish"] == finish
+    for stream in (False, True):
+        response = await client.post(
+            "/v1/chat/completions",
+            json={
+                "model": "auto",
+                "messages": [{"role": "user", "content": "hello"}],
+                "stream": stream,
+            },
+        )
+        assert response.status_code == 200
+        if stream:
+            data = [
+                json.loads(line[6:])
+                for line in response.text.splitlines()
+                if line.startswith("data: {")
+            ]
+            assert data[0]["choices"][0]["delta"]["content"] == "identical partial text"
+            assert "daemon_turn_finish" not in data[0]
+            result = data[-1]
+        else:
+            result = response.json()
+            assert result["choices"][0]["message"]["content"] == "identical partial text"
+        assert result["choices"][0]["finish_reason"] == expected
+        assert result["daemon_turn_finish"] == finish
+
+
+@pytest.mark.asyncio
+async def test_native_limit_refusal_reports_runtime_reason_without_success(client, monkeypatch):
+    from orchestrator.compute_runtime import ComputeUnavailable
+
+    monkeypatch.setenv("MOCK_LLM", "false")
+    get_settings.cache_clear()
+
+    async def completion(*args, **kwargs):
+        yield {"type": "content_delta", "content": "checkpoint"}
+        raise ComputeUnavailable("context_limit", "Context too large")
+
+    monkeypatch.setattr(daemon_module, "create_default_registry", lambda **kwargs: object())
+    monkeypatch.setattr(daemon_module, "completion_with_tools", completion)
+    response = await client.post("/chat", json={"message": "hello"})
+    frames = [
+        json.loads(line[6:]) for line in response.text.splitlines() if line.startswith("data:")
+    ]
+    final, error, done = frames[-3:]
+    assert [frame["type"] for frame in (final, error, done)] == ["final", "error", "done"]
+    finish = done["data"]["turn_finish"]
+    assert final["data"]["finish_reason"] is None
+    assert final["data"]["turn_finish"] == error["data"]["turn_finish"] == finish
+    assert finish["outcome"] == "incomplete"
+    assert finish["reason"] == "context_limit"
+    assert finish["limits"] == [{"kind": "context", "binding": True}]
+    assert any(
+        frame["type"] == "token" and frame["data"]["text"] == "checkpoint" for frame in frames
+    )
 
 
 @pytest.mark.asyncio
@@ -278,8 +368,10 @@ async def test_chat_stream_handles_tool_pipeline_error_gracefully(client, monkey
     assert "event: tool_result" in body
     assert "http_request" in body
     assert '"synthetic":true' in body
-    assert "Further work stopped after an execution error" in body
-    assert "available findings may be incomplete" in body
+    assert '"reason":"pipeline_error"' in body
+    assert '"outcome":"failed"' in body
+    assert "Further work stopped after an execution error" not in body
+    assert "available findings may be incomplete" not in body
     assert "will continue" not in body
     assert "event: final" in body
     assert "event: done" in body
@@ -355,8 +447,10 @@ async def test_chat_stream_provides_fallback_message_when_no_content_after_tools
     assert "event: final" in body
     assert "event: done" in body
     assert "event: error" not in body
-    # Should include fallback message since no content_delta was emitted
-    assert "couldn't complete the request" in body or "I encountered issues" in body
+    # No assistant text was returned; report uncertainty without inventing prose.
+    assert '"outcome":"unknown"' in body
+    assert '"finish_reason":null' in body
+    assert "I encountered issues" not in body
 
 
 @pytest.mark.asyncio

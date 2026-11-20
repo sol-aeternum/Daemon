@@ -28,7 +28,7 @@ from .model import MAX_RECORDS, HistoryError
 from .observation import HistoricalObservation, HistoryObservation
 from .projection import compare_projections
 from .store import Ownership, _check_time
-from .terminal_projection import TerminalHistoryProjection
+from .terminal_projection import TERMINAL_PROFILES
 
 T = TypeVar("T")
 
@@ -44,9 +44,8 @@ async def qualify_read_history(
     if (
         type(operation) is not HistoryOperation
         or type(pool) is not asyncpg.Pool
-        or type(projection) not in (HistoryProjection, TerminalHistoryProjection)
-        or projection.profile
-        != ("terminal-v3" if type(projection) is TerminalHistoryProjection else "h1")
+        or type(projection) not in (HistoryProjection, *TERMINAL_PROFILES)
+        or projection.profile != TERMINAL_PROFILES.get(type(projection), "h1")
         or operation._coordinator.profile != projection.profile
         or operation._coordinator._expected != projection.expected
     ):

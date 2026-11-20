@@ -20,6 +20,8 @@ from tests.restore_history_support import HISTORY, KEY
         "TerminalHistoryProjection(identity, acceptor='a', worker='w', publisher='p')",
         "from orchestrator.services.restore_history.terminal_projection import TerminalHistoryProjection as T\nT(identity, acceptor='a',worker='w',publisher='p')",
         "import orchestrator.services.restore_history.terminal_projection as t\nt.TerminalHistoryProjection(identity,acceptor='a',worker='w',publisher='p')",
+        "TerminalV4HistoryProjection(identity, acceptor='a', worker='w', publisher='p')",
+        "from orchestrator.services.restore_history.terminal_projection import TerminalV4HistoryProjection as T\nT(identity, acceptor='a',worker='w',publisher='p')",
     ],
 )
 def test_terminal_projection_is_not_a_runtime_consumer(source):
@@ -27,7 +29,16 @@ def test_terminal_projection_is_not_a_runtime_consumer(source):
     assert composition_violations({"orchestrator/unapproved.py": source})
 
 
-@pytest.mark.parametrize("method", ["_stage_completed_body", "_completion_control", "_worker"])
+@pytest.mark.parametrize(
+    "method",
+    [
+        "_stage_completed_body",
+        "_completion_control",
+        "_worker",
+        "_stage_non_success_body",
+        "_stage_terminal_task",
+    ],
+)
 def test_foreign_terminal_seams_and_aliases_refuse(method):
     for source in (
         f"s.{method}(conn,row)",
@@ -37,6 +48,15 @@ def test_foreign_terminal_seams_and_aliases_refuse(method):
             "terminal transaction seam" in x
             for x in composition_violations({"orchestrator/unapproved.py": source})
         )
+
+
+def test_v4_worker_seam_rejects_a_different_binding_in_the_owned_function():
+    path = "orchestrator/services/restore_history/effects.py"
+    source = (
+        "async def _publish_non_success(self, claim):\n"
+        "    await self._tasks._worker(claim.task_id, claim.epoch, foreign, allow_interrupted=True)\n"
+    )
+    assert any("terminal transaction seam" in x for x in composition_violations({path: source}))
 
 
 def test_terminal_projection_import_and_constructor_do_no_io(monkeypatch):

@@ -30,10 +30,20 @@ from orchestrator.tasks.inputs import canonical_json
 
 from .coordination import HistoryCoordinator, HistoryOperation
 from .effects_projection import HistoryProjection
-from .model import MAX_RECORDS, AcceptPrepare, HistoryError, HistoryState, SendPossible, commitments
+from .model import (
+    MAX_RECORDS,
+    TERMINAL_KINDS,
+    AcceptPrepare,
+    HistoryError,
+    HistoryState,
+    NonsuccessOutputPrepare,
+    SendPossible,
+    commitments,
+)
 from .projection import compare_projections
 from .store import _check_time
-from .terminal_projection import TerminalHistoryProjection
+from .terminal_finish import finish_matches, returned_finish
+from .terminal_projection import TERMINAL_PROFILES
 
 
 @dataclass(frozen=True, slots=True)
@@ -67,9 +77,8 @@ class HistoryObservation:
         if (
             type(tasks) is not TaskStore
             or type(history) is not HistoryCoordinator
-            or type(projection) not in (HistoryProjection, TerminalHistoryProjection)
-            or projection.profile
-            != ("terminal-v3" if type(projection) is TerminalHistoryProjection else "h1")
+            or type(projection) not in (HistoryProjection, *TERMINAL_PROFILES)
+            or projection.profile != TERMINAL_PROFILES.get(type(projection), "h1")
             or history.profile != projection.profile
             or type(tasks._pool) is not asyncpg.Pool
             or tasks._pool is not tasks._memory._pool
@@ -129,17 +138,28 @@ class HistoryObservation:
         auth: AuthenticatedDevice,
         accepted: AcceptPrepare,
         client_key: str | None,
+        state: HistoryState,
         deadline: float,
     ) -> dict[str, Any] | None:
         # Caller retains the original-generation guard and any conversation lock.
         await self._check_owned(operation, conn, xid, deadline)
+        terminal_profile = type(self._projection) in TERMINAL_PROFILES
+        native_columns = (
+            "m.status AS result_status,m.metadata AS observed_metadata,"
+            "m.tool_calls,m.tool_results,m.advisor_traces,m.reasoning_text,"
+            "m.reasoning_duration_secs,m.model,m.reasoning_model,m.tokens_in,m.tokens_out,"
+            if terminal_profile
+            else ""
+        )
         row = await conn.fetchrow(
             "SELECT t.*,m.content AS result_content,"
-            "(SELECT count(*) FROM public.task_attempts a WHERE a.task_id=t.id "
+            + native_columns
+            + "(SELECT count(*) FROM public.task_attempts a WHERE a.task_id=t.id "
             "AND a.epoch<t.lease_epoch AND a.execution_started_at IS NOT NULL "
             "AND a.outcome IN ('lost','failed_retryable')) AS regeneration_count "
             "FROM public.tasks t JOIN public.messages m ON m.id=t.result_message_id "
-            "WHERE t.id=$1 AND t.user_id=$2 FOR SHARE OF t,m",
+            "WHERE t.id=$1 AND t.user_id=$2 AND m.user_id=t.user_id "
+            "AND m.conversation_id=t.conversation_id AND m.role='assistant' FOR SHARE OF t,m",
             accepted.task_id,
             auth.user_id,
         )
@@ -164,8 +184,175 @@ class HistoryObservation:
             request, accepted.request_commitment
         ):
             return None
+        result = dict(row)
+        if terminal_profile:
+            try:
+                await self._terminal_owned(conn, accepted, result, state)
+            except ValueError:
+                return None
         await self._check_owned(operation, conn, xid, deadline)
-        return dict(row)
+        return result
+
+    async def _terminal_owned(
+        self, conn: Any, accepted: AcceptPrepare, row: dict[str, Any], state: HistoryState
+    ) -> None:
+        """Parity alone cannot prove native coherence or expose a finish envelope."""
+        fact = next(
+            (
+                e.command.data
+                for e in state.entries
+                if isinstance(e.command.data, TERMINAL_KINDS)
+                and e.command.data.task_id == accepted.task_id
+            ),
+            None,
+        )
+        status = row["status"]
+        v4 = self._projection.profile == "terminal-v4"
+        if fact is None:
+            if status == "completed" or (v4 and status in ("failed", "needs_attention")):
+                raise ValueError("missing terminal fact")
+            if v4 and status in ("queued", "running") and row["result_status"] != "streaming":
+                raise ValueError("inconsistent active result")
+            if (v4 or status not in ("queued", "running")) and (
+                "turn_finish" in self._object(row["observed_metadata"])
+            ):
+                raise ValueError("unsupported unprojected finish")
+            return
+        ancestor = next(e.command.record_id for e in state.entries if e.command.data is accepted)
+        failure = isinstance(fact, NonsuccessOutputPrepare)
+        expected_status, reason = (fact.status, fact.reason) if failure else ("completed", None)
+        if (
+            (
+                fact.account_id,
+                fact.account_generation,
+                fact.result_message_id,
+                fact.acceptance_record_id,
+            )
+            != (
+                accepted.account_id,
+                accepted.account_generation,
+                accepted.result_message_id,
+                ancestor,
+            )
+            or fact.epoch != row["lease_epoch"]
+            or (status, row["terminal_code"]) != (expected_status, reason)
+            or row["result_status"] != ("error" if failure else "complete")
+            or row["finished_at"] is None
+            or row["lease_owner"] is not None
+            or row["lease_expires_at"] is not None
+            or row["cancel_requested_at"] is not None
+        ):
+            raise ValueError("terminal fact mismatch")
+        metadata = self._object(row["observed_metadata"])
+        if not failure and "turn_finish" not in metadata:
+            if metadata.get("terminal_status") != "complete":
+                raise ValueError("legacy terminal mismatch")
+            return
+        if not v4:
+            raise ValueError("unsupported terminal finish profile")
+        result_metadata = self._terminal_metadata(row, metadata)
+        if row["attempt_count"] != 1 or row["regeneration_count"] != 0:
+            raise ValueError("unexpected attempt counter")
+        self._no_traces(row)
+        if any(
+            row[name] is not None
+            for name in ("advisor_traces", "reasoning_text", "reasoning_duration_secs")
+        ) or row["reasoning_model"] not in (None, row["model"]):
+            raise ValueError("unsupported terminal traces")
+        if (
+            row["model"] is not None and (type(row["model"]) is not str or not row["model"].strip())
+        ) or any(
+            type(row[name]) is not int or row[name] < 0 for name in ("tokens_in", "tokens_out")
+        ):
+            raise ValueError("unsupported terminal counters or model")
+        if await conn.fetchval(
+            "SELECT EXISTS(SELECT 1 FROM public.task_operations WHERE task_id=$1)", accepted.task_id
+        ):
+            raise ValueError("unexpected native operation")
+        attempts = await conn.fetch(
+            "SELECT epoch,outcome,terminal_code,started_at,execution_started_at,ended_at,partial_ciphertext "
+            "FROM public.task_attempts WHERE task_id=$1 ORDER BY epoch LIMIT 2",
+            accepted.task_id,
+        )
+        outcome = "failed_terminal" if status == "failed" else status
+        if (
+            len(attempts) != 1
+            or (
+                attempts[0]["epoch"],
+                attempts[0]["outcome"],
+                attempts[0]["terminal_code"],
+                attempts[0]["ended_at"],
+                attempts[0]["partial_ciphertext"],
+            )
+            != (fact.epoch, outcome, reason, row["finished_at"], row["result_content"])
+            or attempts[0]["execution_started_at"] is None
+            or not (
+                attempts[0]["started_at"]
+                <= attempts[0]["execution_started_at"]
+                <= row["finished_at"]
+            )
+        ):
+            raise ValueError("native attempt mismatch")
+        event = await conn.fetchrow(
+            "SELECT kind,created_at,payload_ciphertext FROM public.task_events WHERE task_id=$1 AND seq=$2",
+            accepted.task_id,
+            row["event_seq"],
+        )
+        if (
+            event is None
+            or (event["kind"], event["created_at"]) != ("finished", row["finished_at"])
+            or self._tasks._open(event["payload_ciphertext"]) != {"status": status, "code": reason}
+        ):
+            raise ValueError("native finished event mismatch")
+        row["result_metadata"] = result_metadata
+
+    @staticmethod
+    def _terminal_metadata(row: dict[str, Any], metadata: dict[str, Any]) -> dict[str, Any]:
+        status, reason = row["status"], row["terminal_code"]
+        finish = returned_finish(metadata.get("turn_finish"))
+        if not finish_matches(finish, status, reason):
+            raise ValueError("native finish mismatch")
+        expected = {
+            "terminal_status": "complete" if status == "completed" else "error",
+            "turn_finish": finish.model_dump(exclude_none=True),
+        }
+        if status == "completed" and "finish_reason" in metadata:
+            expected["finish_reason"] = "stop"
+        if status != "completed":
+            expected["terminal_reason"] = reason
+        if status == "needs_attention":
+            if reason == "uncertain_effect":
+                raise ValueError("material operation outside isolated observation")
+            expected["uncertain_tools"] = []
+        if "usage" in metadata:
+            usage = metadata["usage"]
+            if (
+                type(usage) is not dict
+                or set(usage) != {"prompt_tokens", "completion_tokens", "total_tokens"}
+                or any(type(n) is not int or not 0 <= n <= 2**63 - 1 for n in usage.values())
+                or usage["total_tokens"] != usage["prompt_tokens"] + usage["completion_tokens"]
+            ):
+                raise ValueError("unsupported usage counters")
+            expected["usage"] = usage
+        if metadata != expected:
+            raise ValueError("unsupported terminal metadata")
+        return expected
+
+    def _no_traces(self, message: Any) -> None:
+        for name in ("tool_calls", "tool_results"):
+            trace = json.loads(message[name]) if type(message[name]) is str else message[name]
+            if type(trace) is dict:
+                if (
+                    set(trace) != {"format", "version", "ciphertext"}
+                    or trace["format"] != "daemon.encrypted_tool_trace"
+                    or type(trace["version"]) is not int
+                    or trace["version"] != 1
+                    or type(trace["ciphertext"]) is not str
+                ):
+                    raise ValueError("unsupported tool envelope")
+                trace = json.loads(self._tasks._enc.decrypt(trace["ciphertext"]))
+            if type(trace) is not list or trace:
+                raise ValueError("unsupported tool trace")
 
     async def _cancelled_owned(
         self,
@@ -317,6 +504,8 @@ class HistoryObservation:
             "completed": "complete",
             "cancelled": "cancelled",
         }.get(status)
+        if self._projection.profile == "terminal-v4" and status in ("failed", "needs_attention"):
+            expected_status = "error"
         if (
             expected_status is None
             or row["attempt_count"] not in (0, 1)
@@ -339,20 +528,7 @@ class HistoryObservation:
             for name in ("tokens_in", "tokens_out"):
                 if type(message[name]) is not int or message[name] < 0:
                     raise ValueError("unsupported counter")
-            for name in ("tool_calls", "tool_results"):
-                trace = json.loads(message[name]) if type(message[name]) is str else message[name]
-                if type(trace) is dict:
-                    if (
-                        set(trace) != {"format", "version", "ciphertext"}
-                        or trace["format"] != "daemon.encrypted_tool_trace"
-                        or type(trace["version"]) is not int
-                        or trace["version"] != 1
-                        or type(trace["ciphertext"]) is not str
-                    ):
-                        raise ValueError("unsupported tool envelope")
-                    trace = json.loads(self._tasks._enc.decrypt(trace["ciphertext"]))
-                if type(trace) is not list or trace:
-                    raise ValueError("unsupported tool trace")
+            self._no_traces(message)
             model = message["model"]
             if model is not None and (type(model) is not str or not model.strip()):
                 raise ValueError("unsupported model")
@@ -385,6 +561,8 @@ class HistoryObservation:
                     and "material_effect_possible" not in metadata
                 ):
                     raise ValueError("inference without material warning")
+            if role == "assistant" and "result_metadata" in row:
+                expected_metadata = row["result_metadata"]
             if metadata != expected_metadata:
                 raise ValueError("unsupported metadata")
             content = self._tasks._enc.decrypt(message["content"])
@@ -560,7 +738,7 @@ class HistoryObservation:
                             if not parity:
                                 return HistoricalObservation("recovery", task_id=accepted.task_id)
                             row = await self._task_owned(
-                                operation, conn, xid, auth, accepted, client_key, deadline
+                                operation, conn, xid, auth, accepted, client_key, state, deadline
                             )
                             if row is None:
                                 return HistoricalObservation("recovery", task_id=accepted.task_id)
