@@ -1,0 +1,68 @@
+# #487 — Read-only OpenUI pilot
+
+**Status: offline evaluation and proposal, not an approved contract or a shipped feature.** Baseline: `sol-aeternum/Daemon` `main` at `29764eb759b5c3dc4fcda97d74f9296e84b79c63`. Scope: [#487](https://github.com/sol-aeternum/Daemon/issues/487), including its pinned artifact-reference addendum. Supports DEC11, V06 and D05–D06; the fixture exercises parts of AC02/03/06/09/11, not production continuity or isolation qualification. DEC12 routing is unchanged.
+
+**Recommendation: revise before adopting.** Keep Daemon's native read-only rendering as the control. This slice can show whether bounded layout composition fits; it cannot establish that shipping the Thesys runtime is worth the larger dependency surface. Do not import the published React renderer into Daemon development as-is: its web entry auto-mounts DevTools that load code from a CDN. Require a verified no-egress entry or tested isolation before a vendor comparison. A parser-only comparison with the same registry is another option if the React renderer cannot meet that condition.
+
+## What fits current main
+
+- `frontend/app/page.tsx` owns the AI SDK chat and composer. Its assistant turn renders `MarkdownMessage`, native `TaskResources` for known task IDs, and existing copy/read-aloud and file affordances. A future presentation is **inside that turn**, alongside ordinary text, not a replacement chat shell.
+- `frontend/app/api/chat/route.ts` adapts Python's SSE into AI SDK text deltas and `data-event` records (`frontend/lib/events.ts`). OpenUI's [Vercel example](https://www.openui.com/docs/build-agents/frameworks/vercel-ai-sdk) swaps the chat shell and uses a different backend and Gateway. Do not use it here. The [custom-chat renderer](https://www.openui.com/docs/build-agents/custom-chat-ui) is the relevant integration seam.
+- `frontend/hooks/useConversationHistory.ts` loads and normalizes authenticated history; `orchestrator/memory/store.py` already encrypts message content. [Artifact Continuity §6](ARTIFACT_CONTINUITY.md#6-presentation-and-executable-evidence-boundary) requires explicitly encrypted presentation storage, not arbitrary message metadata. Ordinary history, native file rendering and the current stream remain the fallback, unchanged by this evaluation.
+- `frontend/lib/resources.ts` builds paths from validated resource/version IDs, fetches with no-store and redirects denied, and fences results by auth generation. `ResourceCard` performs explicit preview/download through this client. Do **not** mount `TaskResources` inside the generated layout: it automatically fetches inputs, presentations and metadata. The fixture mirrors current main's `PinnedEnvelope` fields, with its own synthetic IDs, a test-only `task-results` component identity, and app-supplied task/conversation/message binding. It is not the live `file_results` record from `orchestrator/resource_presentations.py`, does not reuse #489's static vector IDs, and does not require the live registry.
+
+## Offline evaluation
+
+One fictional account owns an app task, exactly two pinned file results, and a labeled numerical dataset with units. A second fictional account is a denial control. The app supplies status, capture time, artifact metadata and figures. The recorded OpenUI Lang expression supplies only the order of three zero-prop display blocks. The structural root has exactly three children, one of each. No user-supplied copy, hrefs, state, values, IDs or expressions cross from the layout into the components.
+
+The test-only adapter recognizes a bounded subset of OpenUI Lang, **not the vendor parser/runtime**. It accepts at most 256 bytes of ASCII layout and 257 chunks, and does not activate an otherwise complete-looking prefix before the app marks it final. It rejects everything outside the subset rather than stripping bad nodes and rendering the remainder. Until final, on interruption, or on malformed, missing, disabled or unsupported layout, render the authorized native answer: task status, both available file references and the labeled values. The fallback uses independently app-approved native pins, never an unsupported presentation envelope. If the snapshot or an artifact is no longer authorized, the fallback may retain only what is authorized. Do not echo the rejected payload. The chart is decorative to assistive technology; its labeled table is always available. Explicit file preview/download are existing app reads, not generated actions.
+
+No Query (including loader, reactive updates and polling), Mutation, `@Run`, action callbacks, browser tool provider or MCP. No sends/retries/refreshes from layout, writes, model calls, managed Gateway, optional runtime analytics or production fixture route. Production imports none of the harness.
+
+For any later offline vendor comparison, omit tools/actions and explicitly disable `toolCalls`, `bindings`, `builtinFunctions` and edit mode in the prompt configuration. Those switches shape generation only; containment comes from the closed input grammar and the absence of tool/action handlers.
+
+The fixture does not add expand, sort or chart/table controls. The same chart and accessible table are visible in the native order, in fallback, and after a valid reorder; the recording cannot switch visualizations. Existing preview/download controls keep their local behavior. Nothing about the fixture page is user-invokable in Daemon, so there is no feature-matrix promotion.
+
+### Reproduce
+
+From the repository root, install the existing locked frontend dependencies (`npm --prefix frontend ci`) and sync the locked Python environment needed by the Vitest global setup (`UV_PROJECT_ENVIRONMENT=.uv-venv uv sync --locked`). Use the existing local Chromium installation for Playwright.
+
+```sh
+npm --prefix frontend run test:run -- __tests__/openui487.test.tsx
+npm --prefix frontend run test:browser -- --config=playwright.openui487.config.ts
+```
+
+The browser harness is an intercepted synthetic transcript, not an app route or a real device test. It exercises keyboard focus, the accessible table and responsive layout in desktop Chromium and a 320 CSS pixel Android-emulated viewport, with all unexpected requests blocked. It reuses the same locked test bundler as the cache-fixture server. The unit harness mocks account/session and the resource response boundary; it checks re-open with serialized data in a fresh mount, not live authorization or encrypted cross-client persistence. Screen-reader announcements on layout transitions remain unverified.
+
+The recording is `root = PilotLayout([Figures(), TaskStatus(), ArtifactResults()])`: **64 ASCII bytes** in four fixture chunks, excluding the existing answer, app snapshot and any protocol framing. The native answer uses no layout bytes. The test enumerates every two-chunk split; all non-final prefixes leave the native order intact and a valid final recording causes one layout activation.
+
+The browser test holds app state constant and asserts that only the three display blocks change order, with identical markup before and after. It checks draft and keyboard focus preservation and attaches native-ready, final-click and layout-ready DOM timings as JSON. Earlier timing samples also included mounting the SVG and are not comparable to this reorder-only check. These are fixture DOM observations, not model latency, actual SSE bytes, paint time or token count.
+
+Before the reorder-only repair, local backend, frontend and aggregate checks passed, including production build. Earlier fixed-port HTTP-cache collisions and a worktree bookkeeping error were separate from the port-free pilot checks. The generated static assets and service-worker output had no OpenUI fixture or package references. No release qualification is claimed.
+
+## Proposal for a separately approved integration
+
+- **Renderer.** Keep the native fixture as the control. If approved, compare it offline with the self-hosted renderer behind a strict allowlist that runs **before** vendor parsing. Register only the structural root and three Daemon-owned display components; no tool, action or state extensions. Native rendering alone has less JS and a smaller behavior surface; prefer it if layout composition offers no measured UX benefit.
+- **Versioning.** Independently version the app envelope (`schema_version: 1`) and registry (`daemon.task-results@1` / `component_library_version: 1`). Bind it to the authenticated conversation/message and task. Include an app capture timestamp, canonical validated component order and pinned resource/version pairs, using the renderer-independent shape from #489. Reject unknown versions rather than coercing them or selecting “latest.” Storing raw OpenUI text or its stored-message markers would couple replay to a permissive vendor parser; do not use it as authoritative history.
+- **Replay.** Preserve ordinary prose. Reuse Daemon's encrypted persistence machinery through an explicitly approved presentation field/record committed with the corresponding assistant result. Persist trusted snapshot data only as allowed by existing retention, plus exact immutable pins; disclose capture time. Reauthorize when building the history response and again on explicit artifact reads; clear in-memory UI on auth generation changes. Deliver replay with normal authenticated history, not renderer-initiated reads, regeneration or a browser cache. Fresh mounts start with default local display state. Without approved persistence, a second client sees only native fallback.
+- **Gate.** Use a server operator flag **off by default**, plus an explicit server-selected synthetic account cohort. Only the server/bridge may mark an eligible presentation; text, URLs and local storage cannot turn it on. Dynamically import the renderer only for an eligible, supported turn. Check PWA precache exclusions as well as the initial route bundle. Disabling the gate preserves prose and native results, including old turns. A client build flag is simpler but requires a rebuild to roll back, does not authorize payloads or reads, and can still precache the chunk. A test-only boolean is enough for this slice.
+- **Transport.** Keep prose streaming unchanged. Start with an atomically committed, app-validated layout after terminal completion, on a separately approved optional presentation channel. Deduplicate on the stable message identity. Reconnect loads the committed presentation or native fallback, never a new task. Do not infer completion from a syntactically valid prefix. Progressive vendor rendering can appear earlier but silently drops unresolved or invalid children and reruns parsing per chunk; require evidence before accepting those tradeoffs.
+
+**Approval still required** for any new storage, APIs/SSE, runtime flag/env plumbing, package or live integration. In particular, the existence of task/resource source code is not permission to enable `DURABLE_CHAT_ENABLED`, qualify #477/#484/#489, or deploy. No paid model comparison in this slice.
+
+### Dependency and bundle budget
+
+Candidate for evaluation only: `@openuidev/react-lang@1.1.1` with `@openuidev/lang-core@1.1.1` resolved exactly, and audited peer/lock resolution. Skip `@openuidev/react-ui`, MCP, Gateway and hosted Observability. React Lang declares the `devtools` and `observability` packages; it is not a parser-only dependency. Static inspection of the published browser ESM showed a side-effectful development import that auto-mounts DevTools with `version: "0"`; DevTools resolves that to a moving `cdn.jsdelivr.net/npm/@openuidev/devtools@0/...` browser script. Telemetry opt-out is not a substitute for preventing that path. Production's build-time branch elimination and default-off import/precache behavior still need verification. `devtools` wants a newer `lucide-react` range than current Daemon; resolve and measure rather than assume deduplication. Core needs Zod and brings `ci-info`; confirm the existing Zod lock resolution is reused.
+
+Published npm files inspected as data, not installed or executed (2026-11-20):
+
+| Package               | Shipped `dist/index.mjs` bytes | File gzipped bytes |
+| --------------------- | -----------------------------: | -----------------: |
+| `react-lang@1.1.1`    |                         47,201 |             13,468 |
+| `lang-core@1.1.1`     |                        186,597 |             51,228 |
+| `devtools@0.3.1`      |                          3,462 |              1,571 |
+| `observability@0.0.4` |                          2,450 |              1,057 |
+
+These are **not** emitted bundle sizes or bounds: they omit shared chunks and peers, include code that may tree-shake, and do not include any potentially loaded devtools assets. Fixture delta on the production import graph and lockfile is zero. Before adding a vendor package, compare exact-head Next build outputs for the default-off, first eligible turn and re-open cases (raw/gzip/Brotli); include service-worker precache, requests and execution time on a narrow viewport. Approval should require no extra JS requested or precached with the gate off and an agreed measured budget for the eligible chunk. Before any approved install, set `OPENUI_TELEMETRY_DISABLED=1` in all install/build environments and keep runtime telemetry disabled; verify both rather than assuming the absence of a tool provider prevents egress.
+
+References: [language spec](https://www.openui.com/docs/openui-lang/specification), [renderer](https://www.openui.com/docs/openui-lang/renderer), [Query/Mutation](https://www.openui.com/docs/openui-lang/queries-mutations), [telemetry](https://www.openui.com/docs/openui-lang/telemetry), [npm distributions](https://www.npmjs.com/package/@openuidev/react-lang).
