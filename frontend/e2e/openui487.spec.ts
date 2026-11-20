@@ -16,7 +16,8 @@ test.beforeAll(async () => {
     platform: 'browser',
     define: {
       'process.env.NODE_ENV': '"production"',
-      'process.env': '{}',
+      // Imported browser modules may reference process; never forward host env.
+      process: '{"env":{}}',
     },
   });
   bundle = result.outputFiles[0].text;
