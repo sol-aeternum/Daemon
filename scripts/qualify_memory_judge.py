@@ -5,6 +5,11 @@ unknown sends and 10% fees. No refunds, hidden retries, fallback, accounts or DB
 Fresh independent review is required BEFORE an operator uses --execute --approved.
 Prospective follow-up: --followup-parent ORIGINAL --parent-sha256 RETAINED_HASH;
 the immutable original and its fixed ORIGINAL.followup.json share the same caps.
+
+Historical record: ROUTE and its ``azure/eu`` pin stay frozen. #747 withdrew that
+route, so this screen refuses with ``route_missing`` on the shipped policy rather
+than retargeting the exhausted October approval at the re-pinned ``luna-azure``.
+A screen of a new route needs its own authorized protocol and ledger.
 """
 
 from __future__ import annotations
@@ -38,7 +43,7 @@ FOLLOWUP_FIXTURE = ROOT / "tests/fixtures/memory_judge_followup.json"
 ROUTING = ROOT / "config/model_routing.json"
 POLICY = ROOT / "config/inference_policy.production.json"
 MODEL = "openrouter/openai/gpt-6-luna"
-ROUTE = "luna-azure"
+ROUTE = "luna-azure-eu"
 BASE = "https://openrouter.ai/api/v1"
 APPROVAL = "memory-445-judge-fictional-20261004"
 MAX_REQUESTS, MAX_INPUT, MAX_OUTPUT, OUTPUT = 24, 100_000, 48_000, 2000
@@ -117,6 +122,8 @@ def reserve(ledger: dict[str, Any], batch: str, bound: int) -> dict[str, Any]:
 def configured_route():
     routing = model_routing.load_model_routing(ROUTING)
     policy = load_inference_policy(POLICY)
+    if ROUTE not in policy.routes:
+        raise ValueError("route_missing")
     if equivalence.EQUIVALENCE_PROFILE != "memory_equivalence":
         raise ValueError("Production judge profile changed")
     profile = routing.profile(equivalence.EQUIVALENCE_PROFILE)
@@ -135,8 +142,8 @@ def configured_route():
     route = eligible[0]
     provider = route.transport_payload(static_requirements)["extra_body"]["provider"]
     expected = dict(
-        only=["azure"],
-        order=["azure"],
+        only=["azure/eu"],
+        order=["azure/eu"],
         allow_fallbacks=False,
         require_parameters=True,
         data_collection="deny",
@@ -413,7 +420,7 @@ def validate_identity(data: Any, bound: int) -> None:
     if (
         not isinstance(data, dict)
         or data.get("model") != "openai/gpt-6-luna"
-        or data.get("provider") not in {"Azure", "azure"}
+        or data.get("provider") not in {"Azure", "azure/eu"}
     ):
         raise ValueError("Unexpected receipt model/provider")
     usage = data.get("usage")

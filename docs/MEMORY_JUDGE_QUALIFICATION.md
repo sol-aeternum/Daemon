@@ -8,7 +8,11 @@ judge: `openrouter/openai/gpt-6-luna`, medium effort, pinned to `azure/eu`.
 It does not qualify the older deployment checkout's low-effort preset, another
 route, the complete account-budget runtime, or arbitrary future inputs. Since
 the 19 November 2026 re-pin (#747), the live judge route is `luna-azure` on the
-untagged `azure` listing. This screen has not been rerun on that pin.
+untagged `azure` listing. This screen has not been rerun on that pin, and its
+runner stays frozen on `luna-azure-eu`: on the shipped policy it refuses with
+`route_missing` before reading credentials or opening a connection. The October
+approval is exhausted; screening the new pin needs its own authorized protocol
+and ledger.
 
 ## Method and authorization
 
