@@ -112,6 +112,73 @@ test.beforeEach(async ({ page }) => {
   await mockApi(page);
 });
 
+test('the composer stays centered in the transcript when Contents changes visibility', async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 1114, height: 800 });
+  await page.goto(`/?id=${conversation.id}`);
+
+  const transcript = page.getByRole('main', { name: 'Conversation messages' });
+  const rail = page.getByRole('complementary', { name: 'Contents' });
+  const composer = page
+    .locator('footer form')
+    .filter({ has: page.getByRole('textbox', { name: 'Message Daemon' }) });
+  const assertAligned = async () => {
+    await expect(composer).toBeVisible();
+    await expect
+      .poll(async () => {
+        const [main, form, footer] = await Promise.all([
+          transcript.boundingBox(),
+          composer.boundingBox(),
+          page.locator('footer').boundingBox(),
+        ]);
+        if (!main || !form || !footer) return Infinity;
+        return Math.max(
+          Math.abs(main.x + main.width / 2 - (form.x + form.width / 2)),
+          Math.abs(main.x - footer.x),
+          Math.abs(main.width - footer.width),
+          Math.abs(main.y + main.height - footer.y),
+        );
+      })
+      .toBeLessThanOrEqual(1);
+  };
+
+  await expect(rail).toBeVisible();
+  await assertAligned();
+
+  await page.setViewportSize({ width: 390, height: 800 });
+  await expect(rail).toBeHidden();
+  await expect(
+    page.getByRole('button', { name: 'Open conversation contents' }),
+  ).toBeVisible();
+  await assertAligned();
+
+  await page.setViewportSize({ width: 1114, height: 800 });
+  await page.route(
+    (url) => url.pathname.endsWith(`/conversations/${conversation.id}`),
+    (route) =>
+      route.fulfill({
+        json: historyFixtureDetail(
+          {
+            ...conversation,
+            messages: [
+              {
+                id: 'message-1',
+                role: 'assistant',
+                content: 'No user prompts in this fixture.',
+              },
+            ],
+          },
+          new URL(route.request().url()),
+        ),
+      }),
+  );
+  await page.reload();
+  await expect(transcript).toContainText('No user prompts in this fixture.');
+  await expect(rail).toHaveCount(0);
+  await assertAligned();
+});
+
 test('a 100-message thread collapses long older messages and can expand them', async ({
   page,
 }, testInfo) => {

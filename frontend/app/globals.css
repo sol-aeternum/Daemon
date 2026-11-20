@@ -149,6 +149,8 @@
   --height-lightbox-max: 90vh;
   --columns-skill-editor: 320px minmax(0, 1fr);
   --columns-artifact-details: 1fr 280px;
+  --columns-chat: minmax(0, 1fr) auto;
+  --rows-chat: minmax(0, 1fr) auto;
   --columns-studio: 340px 1fr;
   --aspect-artifact: 16 / 10;
   --blur-hero: 128px;

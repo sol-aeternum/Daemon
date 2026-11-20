@@ -2525,7 +2525,8 @@ function ChatContent() {
               </div>
             </header>
 
-            <div className="flex min-h-0 flex-1">
+            {/* Keep the footer in the transcript column, not under the Contents rail. */}
+            <div className="grid min-h-0 flex-1 grid-cols-chat grid-rows-chat">
               <main
                 ref={scrollContainerRef}
                 onScroll={onScroll}
@@ -2982,28 +2983,27 @@ function ChatContent() {
                 scrollContainerRef={scrollContainerRef}
                 onNavigate={scrollToMessage}
               />
+              {messages.length > 0 && (
+                <footer className="relative col-start-1 row-start-2 min-w-0 bg-[var(--color-bg-primary)] pb-safe-panel">
+                  {isScrolledUp && isLoading && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        jumpToLatest();
+                        scrollContainerRef.current?.focus({
+                          preventScroll: true,
+                        });
+                      }}
+                      className="absolute bottom-full mb-4 right-4 min-h-touch px-4 rounded-full shadow-lg border border-[var(--color-border-primary)] bg-[var(--color-bg-primary)] text-sm font-medium text-[var(--color-text-primary)]"
+                    >
+                      Jump to latest
+                    </button>
+                  )}
+                  <TtsPlaybackBar />
+                  {chatComposer}
+                </footer>
+              )}
             </div>
-
-            {messages.length > 0 && (
-              <footer className="relative shrink-0 bg-[var(--color-bg-primary)] pb-safe-panel">
-                {isScrolledUp && isLoading && (
-                  <button
-                    type="button"
-                    onClick={() => {
-                      jumpToLatest();
-                      scrollContainerRef.current?.focus({
-                        preventScroll: true,
-                      });
-                    }}
-                    className="absolute bottom-full mb-4 right-4 min-h-touch px-4 rounded-full shadow-lg border border-[var(--color-border-primary)] bg-[var(--color-bg-primary)] text-sm font-medium text-[var(--color-text-primary)]"
-                  >
-                    Jump to latest
-                  </button>
-                )}
-                <TtsPlaybackBar />
-                {chatComposer}
-              </footer>
-            )}
           </div>
         </Panel>
 
