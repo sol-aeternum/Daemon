@@ -1,19 +1,107 @@
 'use client';
 
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import {
   AlertCircle,
   ChevronDown,
   ChevronRight,
-  ExternalLink,
   RefreshCw,
 } from 'lucide-react';
 import { sanitizeHtml } from '../../lib/sanitizeHtml';
+import { useClientMounted } from '../../hooks/useClientMounted';
+import { CopyResponseButton } from '../CopyResponseButton';
 
 interface InlineArtifactProps {
   htmlContent: string;
-  title?: string;
-  artifactId?: string;
+  closed: boolean;
+  streaming: boolean;
+}
+
+type Preview =
+  | { kind: 'ready'; html: string }
+  | { kind: 'unsupported' | 'failed' };
+
+function preparePreview(htmlContent: string): Preview {
+  try {
+    const markup = htmlContent.replace(/<!--(?:-?>|[\s\S]*?--!?>)/g, '');
+    if (
+      /<(?:script|style|link|form|input|select|option|textarea|button|iframe|object|embed|canvas|img|video|audio)\b/i.test(
+        markup,
+      ) ||
+      /<[a-z][^<>]*\s(?:style|on[a-z]+)\s*=/i.test(markup)
+    ) {
+      return { kind: 'unsupported' };
+    }
+    const html = sanitizeHtml(htmlContent);
+    // Only inspect sanitized markup. An empty container (or an SVG root
+    // with no shapes) is not a usable preview, even if the iframe loads.
+    const body = new DOMParser().parseFromString(html, 'text/html').body;
+    if (
+      !body.textContent?.replace(/[\s\u200b-\u200d\u2060\ufeff]/g, '') &&
+      !Array.from(body.querySelectorAll('svg path, svg rect, svg circle')).some(
+        (shape) => {
+          const positive = (attr: string) =>
+            Number.parseFloat(shape.getAttribute(attr) ?? '') > 0;
+          if (shape.localName === 'path')
+            return Boolean(shape.getAttribute('d')?.trim());
+          if (shape.localName === 'rect')
+            return positive('width') && positive('height');
+          return positive('r');
+        },
+      )
+    ) {
+      return { kind: 'unsupported' };
+    }
+    return { kind: 'ready', html };
+  } catch {
+    return { kind: 'failed' };
+  }
+}
+
+export function InlineArtifact({
+  htmlContent,
+  closed,
+  streaming,
+}: InlineArtifactProps) {
+  const mounted = useClientMounted();
+  const preview = useMemo(
+    () =>
+      mounted && closed && !streaming ? preparePreview(htmlContent) : null,
+    [mounted, closed, streaming, htmlContent],
+  );
+  const notice = streaming
+    ? 'Receiving HTML…'
+    : !closed
+      ? 'HTML preview unavailable: the code block was not closed.'
+      : preview?.kind === 'unsupported'
+        ? 'HTML preview unavailable: chat supports only static content. This source uses unsupported features or has no visible content.'
+        : preview?.kind === 'failed'
+          ? 'HTML preview failed to render.'
+          : preview === null
+            ? 'Preparing static HTML preview…'
+            : null;
+  return (
+    <section
+      aria-label="HTML preview"
+      className="my-2 text-[var(--color-text-secondary)]"
+    >
+      {notice && (
+        <p role="status" className="my-1 text-sm">
+          {notice}
+        </p>
+      )}
+      {preview?.kind === 'ready' && (
+        <StaticArtifactFrame key={preview.html} sanitized={preview.html} />
+      )}
+      <details className="my-2">
+        <summary className="cursor-pointer text-sm">View source</summary>
+        <pre className="overflow-x-auto">
+          <code>{htmlContent}</code>
+        </pre>
+      </details>
+      <CopyResponseButton content={htmlContent} label="Copy source" />
+    </section>
+  );
 }
 
 /**
@@ -115,14 +203,7 @@ const injectIntoDocument = (html: string, injection: string): string => {
   return `${injection}${html}`;
 };
 
-const escapeSingleQuotedJsString = (value: string): string =>
-  value.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
-
-export function InlineArtifact({
-  htmlContent,
-  title,
-  artifactId,
-}: InlineArtifactProps) {
+function StaticArtifactFrame({ sanitized }: { sanitized: string }) {
   const [isExpanded, setIsExpanded] = useState(true);
   const [height, setHeight] = useState<number | null>(null);
   const [isLoading, setIsLoading] = useState(true);
@@ -149,21 +230,7 @@ export function InlineArtifact({
     return () => observer.disconnect();
   }, []);
 
-  useEffect(() => {
-    queueMicrotask(() => {
-      setIsLoading(true);
-      setShowLoader(false);
-      setIsSlowLoading(false);
-      setHasError(false);
-      setHeight(null);
-    });
-  }, [htmlContent, reloadToken]);
-
-  useEffect(() => {
-    const fallbackTimer = window.setTimeout(() => {
-      setHeight((prev) => prev ?? 560);
-    }, 500);
-
+  useLayoutEffect(() => {
     const handleMessage = (event: MessageEvent) => {
       if (event.source !== iframeRef.current?.contentWindow) {
         return;
@@ -193,20 +260,11 @@ export function InlineArtifact({
 
     window.addEventListener('message', handleMessage);
 
-    return () => {
-      window.removeEventListener('message', handleMessage);
-      window.clearTimeout(fallbackTimer);
-    };
-  }, [htmlContent, reloadToken]);
+    return () => window.removeEventListener('message', handleMessage);
+  }, []);
 
   useEffect(() => {
-    if (!isLoading) {
-      queueMicrotask(() => {
-        setShowLoader(false);
-        setIsSlowLoading(false);
-      });
-      return;
-    }
+    if (!isLoading || !isExpanded || hasError) return;
 
     const loaderTimer = window.setTimeout(() => {
       setShowLoader(true);
@@ -216,15 +274,32 @@ export function InlineArtifact({
       setIsSlowLoading(true);
     }, 1800);
 
+    // Browsers can report iframe load even when navigation failed. The
+    // existing resize message is evidence that the preview shell started.
+    // The browser can throttle the frame in a hidden tab, so only time out
+    // while the conversation is visible.
+    let failureTimer: number | undefined;
+    const watchForReady = () => {
+      window.clearTimeout(failureTimer);
+      if (document.hidden) return;
+      failureTimer = window.setTimeout(() => {
+        if (document.hidden) return;
+        setHasError(true);
+        setIsLoading(false);
+      }, 8000);
+    };
+    watchForReady();
+    document.addEventListener('visibilitychange', watchForReady);
+
     return () => {
       window.clearTimeout(loaderTimer);
       window.clearTimeout(slowTimer);
+      window.clearTimeout(failureTimer);
+      document.removeEventListener('visibilitychange', watchForReady);
     };
-  }, [isLoading]);
+  }, [hasError, isExpanded, isLoading, reloadToken]);
 
   const srcDoc = useMemo(() => {
-    const sanitized = sanitizeHtml(htmlContent);
-    const safeArtifactId = escapeSingleQuotedJsString(artifactId ?? '');
     const nonce = readCspNonce();
     const styleNonceAttr = nonce ? ` nonce="${nonce}"` : '';
     const scriptNonceAttr = nonce ? ` nonce="${nonce}"` : '';
@@ -383,8 +458,7 @@ export function InlineArtifact({
       if (window.parent !== window) {
         window.parent.postMessage({
           type: 'artifact-height',
-          height: nextHeight,
-          artifactId: '${safeArtifactId}'
+          height: nextHeight
         }, '*');
       }
     }
@@ -411,7 +485,9 @@ export function InlineArtifact({
       }
     }
 
-    window.addEventListener('load', queueHeight);
+    // Send the initial size even if the browser pauses animation frames for
+    // an offscreen iframe. Subsequent resizes still coalesce through rAF.
+    window.addEventListener('load', postHeight);
     window.addEventListener('resize', queueHeight);
     setTimeout(queueHeight, 40);
     setTimeout(queueHeight, 220);
@@ -435,51 +511,30 @@ export function InlineArtifact({
   <main class="artifact-root">${sanitized}</main>
 </body>
 </html>`;
-  }, [artifactId, htmlContent, themeVars]);
-
-  const handleIframeLoad = () => {
-    setIsLoading(false);
-    setShowLoader(false);
-    setIsSlowLoading(false);
-  };
-
-  const handleIframeError = () => {
-    setHasError(true);
-    setIsLoading(false);
-    setShowLoader(false);
-    setIsSlowLoading(false);
-  };
+  }, [sanitized, themeVars]);
 
   const handleRetry = () => {
+    setIsLoading(true);
+    setShowLoader(false);
+    setIsSlowLoading(false);
+    setHasError(false);
+    setHeight(null);
     setReloadToken((prev) => prev + 1);
   };
 
   return (
-    <div
-      className="my-2"
-      role="region"
-      aria-label={title || 'Interactive artifact'}
-    >
+    <div className="my-2">
       <div className="mb-1 flex items-center justify-between px-0.5">
         <span className="truncate text-xs text-[var(--color-text-muted)]">
-          {title || 'Interactive artifact'}
+          Static HTML preview
         </span>
 
         <div className="flex items-center gap-2">
-          {artifactId && (
-            <a
-              href={`/artifacts?artifact=${encodeURIComponent(artifactId)}`}
-              className="inline-flex items-center gap-1 text-xs text-[var(--color-text-muted)] transition-colors hover:text-[var(--color-accent-primary)]"
-              target="_blank"
-              rel="noopener noreferrer"
-            >
-              Gallery
-              <ExternalLink className="h-3 w-3" />
-            </a>
-          )}
-
           <button
-            onClick={() => setIsExpanded((prev) => !prev)}
+            onClick={() => {
+              if (!isExpanded && !hasError) handleRetry();
+              setIsExpanded(!isExpanded);
+            }}
             className="rounded p-0.5 text-[var(--color-text-muted)] transition-colors hover:text-[var(--color-text-secondary)]"
             aria-label={isExpanded ? 'Collapse artifact' : 'Expand artifact'}
           >
@@ -495,11 +550,14 @@ export function InlineArtifact({
       {isExpanded && (
         <div className="relative">
           {hasError ? (
-            <div className="rounded-xl border border-red-500/30 bg-red-500/10 p-4">
+            <div
+              role="alert"
+              className="rounded-xl border border-red-500/30 bg-red-500/10 p-4"
+            >
               <div className="mb-2 flex items-center gap-2 text-red-400">
                 <AlertCircle className="h-5 w-5" />
                 <span className="text-sm font-medium">
-                  Artifact failed to render
+                  HTML preview failed to render.
                 </span>
               </div>
 
@@ -521,21 +579,19 @@ export function InlineArtifact({
                     </div>
                     <p className="mt-2 text-center text-xs text-[var(--color-text-muted)]">
                       {isSlowLoading
-                        ? 'Preparing interactive view...'
-                        : 'Loading artifact...'}
+                        ? 'Preparing static view...'
+                        : 'Loading HTML preview...'}
                     </p>
                   </div>
                 </div>
               )}
 
               <iframe
-                key={`${artifactId ?? 'artifact'}-${reloadToken}`}
+                key={reloadToken}
                 ref={iframeRef}
                 srcDoc={srcDoc}
                 sandbox="allow-scripts"
-                title={title || 'Artifact'}
-                onLoad={handleIframeLoad}
-                onError={handleIframeError}
+                title="Static HTML preview"
                 className="min-h-60 w-full border-0 bg-transparent transition-opacity duration-200"
                 style={{
                   height: `${height ?? 560}px`,

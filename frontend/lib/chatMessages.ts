@@ -239,6 +239,37 @@ export function getDaemonMessageText(message: DaemonMessage): string {
     : TASK_TERMINAL_NOTICES.cancelled;
 }
 
+/** Keep client-added status prose outside a possibly unclosed code fence. */
+export function splitDaemonMessageNotice(
+  message: DaemonMessage,
+  displayText: string,
+): { source: string; notice: string } {
+  if (message.content) {
+    // Saved messages are normalized with this same presentation formatter.
+    const suffix = withTaskNotice(
+      message.role,
+      'x',
+      message.metadata ?? {},
+      message.status,
+    ).slice(1);
+    if (suffix && displayText.endsWith(suffix)) {
+      return {
+        source: displayText.slice(0, -suffix.length),
+        notice: suffix.trim(),
+      };
+    }
+  } else {
+    const source = currentParts(message)
+      .filter((part) => part.type === 'text')
+      .map((part) => part.text)
+      .join('');
+    if (source && displayText.startsWith(source)) {
+      return { source, notice: displayText.slice(source.length).trim() };
+    }
+  }
+  return { source: displayText, notice: '' };
+}
+
 /** Parts after the last durable-task reset (the current attempt's). */
 function currentParts(message: DaemonMessage): DaemonMessage['parts'] {
   let lastReset = -1;

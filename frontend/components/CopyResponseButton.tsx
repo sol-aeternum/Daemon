@@ -4,7 +4,13 @@ import { useEffect, useRef, useState, useId } from 'react';
 import { createPortal } from 'react-dom';
 import { Copy, Check } from 'lucide-react';
 
-export function CopyResponseButton({ content }: { content: string }) {
+export function CopyResponseButton({
+  content,
+  label = 'Copy response',
+}: {
+  content: string;
+  label?: 'Copy response' | 'Copy source';
+}) {
   const [copied, setCopied] = useState(false);
   const [fallback, setFallback] = useState<string | null>(null);
   const trigger = useRef<HTMLButtonElement>(null);
@@ -52,12 +58,12 @@ export function CopyResponseButton({ content }: { content: string }) {
         ref={trigger}
         type="button"
         onClick={() => void copy()}
-        disabled={!content.trim()}
+        disabled={!(label === 'Copy source' ? content : content.trim())}
         className="inline-flex min-h-touch items-center gap-2 rounded-lg px-2 text-xs text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-hover)]"
-        aria-label="Copy response"
+        aria-label={label}
       >
         {copied ? <Check size={16} /> : <Copy size={16} />}
-        <span role="status">{copied ? 'Copied' : 'Copy response'}</span>
+        <span role="status">{copied ? 'Copied' : label}</span>
       </button>
       {fallback !== null &&
         createPortal(
@@ -94,15 +100,17 @@ export function CopyResponseButton({ content }: { content: string }) {
             className="w-full max-w-lg rounded-xl border border-[var(--color-border-primary)] bg-[var(--color-bg-primary)] text-[var(--color-text-primary)] p-4 backdrop:bg-[var(--color-bg-overlay)]"
           >
             <h2 id={`${id}-title`} className="font-semibold">
-              Copy response manually
+              {label} manually
             </h2>
             <p className="my-3 text-sm text-[var(--color-text-secondary)]">
-              Clipboard access was unavailable. Copy the selected response with
-              your device’s copy command.
+              Clipboard access was unavailable. Use your device’s copy command
+              to copy the selected text.
             </p>
             <textarea
               ref={textarea}
-              aria-label="Response to copy"
+              aria-label={
+                label === 'Copy source' ? 'Source to copy' : 'Response to copy'
+              }
               readOnly
               value={fallback}
               rows={8}
