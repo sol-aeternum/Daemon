@@ -77,6 +77,49 @@ inconsistent evidence and unknown metadata refuse. This read restriction is not
 a new inference-control API or a cancellation restore certificate. The existing
 page warns: “Daemon stopped local work; provider activity or charges may continue.”
 
+## Separate #761 inbox acceptance proof
+
+The [#761](https://github.com/sol-aeternum/Daemon/issues/761) fixture is an
+acceptance-only experiment against `29764eb759b5c3dc4fcda97d74f9296e84b79c63`.
+It does not change this document's singleton app bridge or activate a chat
+surface. `tests/history_inbox_support.py` owns its synthetic HTTP app and SQL;
+there is no production route, migration, role grant, dependency, or flag change.
+
+- The disposable database administrator provisions one inbox per account and
+  generation. Only the fixture acceptor can insert links, and it can read roots
+  but not links. The fixture worker role reads both tables but writes neither.
+  Neither role owns, mutates, or deletes existing fixture links. Each link binds
+  the authenticated account and generation to the original task, child
+  conversation and two messages.
+- With the original H ownership, W authentication, and account-generation
+  capture, the native A transaction inserts the task and its messages, stages
+  the link, durably appends `ACCEPT_PREPARE`, and stages the existing SQL
+  projection on the same connection. The server-authored inbox marker is inside
+  the existing canonical request commitment; the allocated IDs are in
+  `ACCEPT_PREPARE`. Neither an H-only prepare nor an unverified SQL row is a
+  receipt. A fresh receipt needs acknowledged A commit, cleanup of both
+  connections and H release, then a separately guarded W read of the same bundle.
+- The reader checks full H/SQL parity before looking for a principal's jobs.
+  It verifies live bearer and generation, a bijection between protected records,
+  links and original native rows, the sealed canonical intent, and the original
+  queued state. It projects at most two accepted jobs **per account**; this is
+  a closed fixture, not a history search. An exact reply reference or unique
+  normalized name resolves; two plausible jobs prompt clarification. Foreign
+  references and unknown references are identical, and unavailable evidence is
+  not an empty inbox or a missed match. No read grants execution authority.
+- Use the owned PostgreSQL fixture:
+  `PYTHONPATH=. uv run pytest -q --compute-metadata-postgres tests/test_history_inbox_postgres.py`.
+  The ASGI tests use two persisted, separately authenticated A sessions and a
+  distinct B account, not browser or enrollment qualification. The database
+  rollback, database commit-ACK loss, and post-confirmation HTTP response loss
+  are separate faults. Later readback identifies an original; it cannot upgrade
+  database uncertainty into a successful original invocation. All paths have
+  zero scheduling, enqueue or attempts.
+
+Scripted execution, terminal proof, completion and report delivery are later
+slices. Retention is the disposable fixture lifetime. There is no restore,
+retry, rollout, or `DURABLE_CHAT_ENABLED` clearance.
+
 ## How partial text reaches the current page
 
 The isolated POST stream remains acceptance metadata only. It does not emit answer
