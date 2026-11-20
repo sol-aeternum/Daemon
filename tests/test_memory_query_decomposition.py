@@ -513,15 +513,35 @@ def test_route_validation_negative_paths(monkeypatch: pytest.MonkeyPatch) -> Non
     route.transport_payload = payload
 
 
-def test_chat_route_accepts_real_production_payload_shape(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Shape regression: the live payload from the real policy file, sans attestation."""
+def test_frozen_chat_route_was_withdrawn_from_the_production_policy(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#747: the frozen design's ``azure/eu`` route left the shipped policy.
+
+    The pre-registered design keeps its route ID as a dated record; the CLI
+    refuses rather than silently measuring the re-pinned ``luna-azure`` route.
+    """
     monkeypatch.setenv("DAEMON_INFERENCE_POLICY", "config/inference_policy.production.json")
-    real = cli.load_inference_policy().routes[generation.ROUTE_ID]
+    assert generation.ROUTE_ID not in cli.load_inference_policy().routes
+    with pytest.raises(ValueError, match="route_missing"):
+        cli.verify_chat_route()
+
+
+def test_chat_route_accepts_production_payload_shape(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Shape regression: the frozen route's payload shape, from the shipped Luna route.
+
+    Only the provider pin is restored to the frozen ``azure/eu``; every other
+    field is the real shipped payload, sans attestation.
+    """
+    monkeypatch.setenv("DAEMON_INFERENCE_POLICY", "config/inference_policy.production.json")
+    real = cli.load_inference_policy().routes["luna-azure"]
     assert real.price_ceiling is not None
     payload = real.transport.as_transport_kwargs()
     payload["extra_body"]["provider"]["max_price"] = real.price_ceiling.as_max_price()
+    payload["extra_body"]["provider"]["only"] = ["azure/eu"]
+    payload["extra_body"]["provider"]["order"] = ["azure/eu"]
     route = SimpleNamespace(
-        route_id=real.route_id,
+        route_id=generation.ROUTE_ID,
         model=real.model,
         provider=real.provider,
         endpoint=real.endpoint,

@@ -23,7 +23,7 @@ from tests.test_routing_litellm_contract import _load_config
 
 MODELS = (
     "openrouter/z-ai/glm-5.3",
-    "openrouter/openai/gpt-6.1-sol",
+    "openrouter/openai/gpt-6.2-sol",
     "openrouter/anthropic/claude-sonnet-5.5",
 )
 

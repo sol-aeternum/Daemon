@@ -43,7 +43,7 @@ def _monitored_policy(
 ) -> dict[str, Any]:
     """The production Luna route, converted to a monitored approval."""
     doc = _production()
-    route = copy.deepcopy(next(r for r in doc["routes"] if r["route_id"] == "luna-azure-eu"))
+    route = copy.deepcopy(next(r for r in doc["routes"] if r["route_id"] == "luna-azure"))
     route.pop("approval_expires_at", None)
     route["operator_review"].pop("review_expires_at", None)
     route["operator_review"]["reviewed_at"] = "2026-10-03T00:00:00Z"
@@ -59,7 +59,7 @@ def _monitored_policy(
 
 
 def _route(**kwargs: Any) -> RoutePolicy:
-    return parse_inference_policy(_monitored_policy(**kwargs)).routes["luna-azure-eu"]
+    return parse_inference_policy(_monitored_policy(**kwargs)).routes["luna-azure"]
 
 
 def _zdr(*entries: tuple[str, str]) -> dict[str, Any]:
@@ -72,7 +72,7 @@ def _providers(**policy: Any) -> dict[str, Any]:
     return {"data": [{"slug": "azure", "dataPolicy": base}, {"slug": "other", "dataPolicy": {}}]}
 
 
-LISTED = _zdr(("openai/gpt-6-luna", "azure/eu"))
+LISTED = _zdr(("openai/gpt-6-luna", "azure"))
 
 
 @pytest.fixture(autouse=True)
@@ -140,7 +140,7 @@ def test_revocation_is_sticky_for_the_approved_baseline() -> None:
                 }
             }
         )
-    ).routes["luna-azure-eu"]
+    ).routes["luna-azure"]
     assert attestation.baseline_fingerprint(reapproved) != attestation.baseline_fingerprint(route)
 
 
@@ -217,15 +217,15 @@ def test_unchanged_listing_and_policy_attest() -> None:
     "listing",
     [
         # A sibling model at the same endpoint is not the approved model.
-        _zdr(("openai/gpt-6-luna-pro", "azure/eu")),
+        _zdr(("openai/gpt-6-luna-pro", "azure")),
         # A dated revision listed without the requested id is not evidence either.
-        _zdr(("openai/gpt-6-luna-20260922", "azure/eu")),
+        _zdr(("openai/gpt-6-luna-20260922", "azure")),
     ],
 )
 def test_only_the_exact_model_id_keeps_a_route_listed(listing: dict[str, Any]) -> None:
     [check] = attestation.evaluate([_route()], listing, _providers())
     assert (check.outcome, check.reasons) == ("revoked", ("left_zdr_listing",))
-    both = _zdr(("openai/gpt-6-luna-pro", "azure/eu"), ("openai/gpt-6-luna", "azure/eu"))
+    both = _zdr(("openai/gpt-6-luna-pro", "azure"), ("openai/gpt-6-luna", "azure"))
     [check] = attestation.evaluate([_route()], both, _providers())
     assert check.outcome == "attested"
 
@@ -233,7 +233,7 @@ def test_only_the_exact_model_id_keeps_a_route_listed(listing: dict[str, Any]) -
 def test_leaving_the_zdr_listing_revokes() -> None:
     for listing in (
         _zdr(("openai/gpt-6-luna", "azure/us")),
-        _zdr(("openai/gpt-6-lunar", "azure/eu")),
+        _zdr(("openai/gpt-6-lunar", "azure")),
     ):
         [check] = attestation.evaluate([_route()], listing, _providers())
         assert (check.outcome, check.reasons) == ("revoked", ("left_zdr_listing",))
@@ -264,7 +264,7 @@ def test_a_retention_policy_recorded_at_approval_is_not_a_change() -> None:
         (LISTED, {"data": [{"slug": "other", "dataPolicy": {}}]}, "provider_policy_missing"),
         # One unreadable entry beside the approved one makes the listing unreadable.
         (
-            {"data": [{"model_id": "openai/gpt-6-luna", "tag": "azure/eu"}, {"tag": "x/y"}]},
+            {"data": [{"model_id": "openai/gpt-6-luna", "tag": "azure"}, {"tag": "x/y"}]},
             _providers(),
             "metadata_malformed",
         ),
@@ -600,16 +600,16 @@ async def test_bootstrap_reports_effective_admission_not_the_latest_counts() -> 
     requirements = parse_inference_policy(_monitored_policy()).requirements
     code, status = attestation.bootstrap_status([route], requirements, now=attestation.utcnow())
     assert code == attestation.BOOTSTRAP_NOT_ADMITTED
-    assert status == {"luna-azure-eu": ("zdr_attestation_revoked",)}
+    assert status == {"luna-azure": ("zdr_attestation_revoked",)}
     # Explicit re-approval: a new review date is a new baseline, attested afresh.
     reapproved_doc = _monitored_policy()
     reapproved_doc["routes"][0]["operator_review"]["reviewed_at"] = "2026-10-03T01:00:00Z"
-    reapproved = parse_inference_policy(reapproved_doc).routes["luna-azure-eu"]
+    reapproved = parse_inference_policy(reapproved_doc).routes["luna-azure"]
     await attestation.run_check(pool, _Client(LISTED, _providers()), [reapproved])
     code, status = attestation.bootstrap_status(
         [reapproved], requirements, now=attestation.utcnow()
     )
-    assert (code, status) == (attestation.BOOTSTRAP_ADMITTED, {"luna-azure-eu": ()})
+    assert (code, status) == (attestation.BOOTSTRAP_ADMITTED, {"luna-azure": ()})
 
 
 def test_bootstrap_distinguishes_a_policy_without_monitored_routes() -> None:
@@ -655,13 +655,13 @@ def test_evaluator_never_attests_a_non_openrouter_endpoint() -> None:
 def test_bootstrap_requires_full_admission_not_only_attestation() -> None:
     doc = _monitored_policy(extra={"approved": False})
     policy = parse_inference_policy(doc)
-    route = policy.routes["luna-azure-eu"]
+    route = policy.routes["luna-azure"]
     _attest(route, at=attestation.utcnow())
     code, status = attestation.bootstrap_status(
         [route], policy.requirements, now=attestation.utcnow()
     )
     assert code == attestation.BOOTSTRAP_NOT_ADMITTED
-    assert status == {"luna-azure-eu": ("not_approved",)}
+    assert status == {"luna-azure": ("not_approved",)}
 
 
 @pytest.mark.asyncio
@@ -771,7 +771,7 @@ def test_equivalent_review_instants_share_one_baseline() -> None:
     route = _route()
     shifted_doc = _monitored_policy()
     shifted_doc["routes"][0]["operator_review"]["reviewed_at"] = "2026-10-03T01:00:00+01:00"
-    shifted = parse_inference_policy(shifted_doc).routes["luna-azure-eu"]
+    shifted = parse_inference_policy(shifted_doc).routes["luna-azure"]
     assert attestation.baseline_fingerprint(shifted) == attestation.baseline_fingerprint(route)
 
 

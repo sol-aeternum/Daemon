@@ -85,7 +85,7 @@ def patch_bench_runtime(
         f"{target}.prepare_service_runtime", AsyncMock(return_value={"routes": 1, "attested": 1})
     )
     monkeypatch.setattr(f"{target}.attestation.stop", AsyncMock())
-    monkeypatch.setattr(f"{target}.approved_profile_routes", lambda profile: ["luna-azure-eu"])
+    monkeypatch.setattr(f"{target}.approved_profile_routes", lambda profile: ["luna-azure"])
     monkeypatch.setattr(
         f"{target}.fingerprint_benchmark_state", AsyncMock(return_value=FAKE_FINGERPRINT)
     )

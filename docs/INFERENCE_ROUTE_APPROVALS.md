@@ -35,20 +35,22 @@ policy-owned latency sort and proposal price ceilings, as `approved: false`,
 not attested. Later approval must separately convert the singleton to monitored
 with its baseline. Multi-provider entries are unapproved proposals only.
 
-Model IDs below omit the `openrouter/` prefix. Prices are maximum USD per million
+Since the [19 November 2026 re-pins](#premium-re-pins--19-november-2026), six
+pins carry an operator-accepted geographic exception: no regional ZDR endpoint
+remained upstream. Model IDs below omit the `openrouter/` prefix. Prices are maximum USD per million
 input/output tokens, covering advertised prompt-length tiers rather than only
 the short-prompt base price. Each route supports text, tools and JSON schema.
 
 | Model | Exact provider pin | Class | Context / output tokens | Input / output ceiling |
 |---|---|---|---|---|
-| `openai/gpt-6-luna` | `azure/eu` | routine | 1,050,000 / 128,000 | 0.22 / 0.825 |
+| `openai/gpt-6-luna` | `azure` | routine | 1,050,000 / 128,000 | 0.22 / 0.825 |
 | `deepseek/deepseek-v4.1-flash-1017` | `coreweave/fp8` | routine | 1,048,576 / 393,216 | 0.30 / 1.20 |
 | `z-ai/glm-5.3-flash` | `inceptron/fp8` | routine | 1,048,576 / 131,072 | 0.225 / 0.49 |
-| `openai/gpt-6.1-sol` | `azure/eu` | premium | 1,050,000 / 128,000 | 4.4 / 16.5 |
-| `anthropic/claude-sonnet-5.5` | `google-vertex/europe` | premium | 1,000,000 / 128,000 | 2.2 / 11 |
-| `anthropic/claude-opus-5.5` | `google-vertex/europe` | premium | 1,000,000 / 128,000 | 4.4 / 22 |
-| `openai/gpt-6-astra` | `azure/us` | premium | 1,050,000 / 128,000 | 22 / 82.5 |
-| `x-ai/grok-4.7` | `xai/zdr/us` | premium | 500,000 / 450,000 | 4.4 / 13.2 |
+| `openai/gpt-6.2-sol` | `azure` | premium | 1,050,000 / 128,000 | 4.4 / 16.5 |
+| `anthropic/claude-sonnet-5.5` | `google-vertex/global` | premium | 1,000,000 / 128,000 | 2.2 / 11 |
+| `anthropic/claude-opus-5.5` | `google-vertex/global` | premium | 1,000,000 / 128,000 | 4.4 / 22 |
+| `openai/gpt-6.2-astra` | `azure` | premium | 1,050,000 / 128,000 | 17.6 / 66 |
+| `x-ai/grok-4.7` | `amazon-bedrock/global` | premium | 500,000 / 450,000 | 4.4 / 13.2 |
 
 Public endpoint evidence was refreshed at **2026-09-29T12:41:27Z** using read-only
 GETs. All eight exact variants had status `0`, exact membership in the
@@ -67,14 +69,16 @@ and [GLM Flash's 128K maximum](https://docs.z.ai/guides/vlm/glm-5.3-flash) take
 precedence over their hosts' larger 943,718-token catalog values. Other limits
 are endpoint-advertised native limits, not evaluation-only 16K/4K restrictions.
 
-Azure qualification relies on the exact regional ZDR listing plus account
+Azure qualification relies on the exact ZDR listing (regional until the
+19 November 2026 re-pin, untagged since) plus account
 attestation, not independent access to Microsoft's resource logging settings;
 see [Azure data privacy](https://learn.microsoft.com/en-us/azure/foundry/responsible-ai/openai/data-privacy).
 Inceptron commits API payload processing to EU/EEA in its
 [privacy policy](https://www.inceptron.io/privacy), with default zero retention
 and no training in its [terms](https://www.inceptron.io/termsofservice).
-Grok's ordinary provider policy reports 30-day retention: approval is restricted
-to the separately ZDR-listed `xai/zdr/us` variant, never generic `xai`.
+Grok was restricted to the separately ZDR-listed `xai/zdr/us` variant because
+xAI's ordinary policy reports 30-day retention; since the 19 November 2026
+re-pin it is served only through `amazon-bedrock/global`, never generic `xai`.
 
 ## Sol 6.1 replacement — 30 September 2026
 
@@ -352,6 +356,62 @@ before it can dispatch; no paid inference or live dispatch test is part of this
 change, and no restart or deployment is authorised by it. Rollback is reverting
 the two route entries and the three `flash_fallback` groups; the undated
 DeepSeek model would need its own fresh evidence before being re-pinned.
+
+## Premium re-pins — 19 November 2026
+
+For [#747](https://github.com/sol-aeternum/Daemon/issues/747), OpenRouter withdrew
+every regional endpoint the Luna, Sol, Astra, Sonnet, Opus and Grok routes pinned
+(`azure/eu`, `azure/us`, `google-vertex/europe`, `xai/zdr/us`). The operator
+approved re-pinning all six to the remaining ZDR-listed endpoints, which state no
+region, and renaming the routes so their IDs describe the new pins:
+
+| Route (was) | Model | New pin | Ceiling (USD / 1M) |
+|---|---|---|---|
+| `luna-azure` (`luna-azure-eu`) | `openai/gpt-6-luna` | `azure` | 0.22 / 0.825 (unchanged) |
+| `sol-azure` (`sol-azure-eu`) | `openai/gpt-6.2-sol` (was 6.1) | `azure` | 4.4 / 16.5 (unchanged) |
+| `astra-azure` (`astra-azure-us`) | `openai/gpt-6.2-astra` (was 6.0) | `azure` | 17.6 / 66 (was 22 / 82.5) |
+| `sonnet-vertex-global` (`sonnet-vertex-europe`) | `anthropic/claude-sonnet-5.5` | `google-vertex/global` | 2.2 / 11 (unchanged) |
+| `opus-vertex-global` (`opus-vertex-europe`) | `anthropic/claude-opus-5.5` | `google-vertex/global` | 4.4 / 22 (unchanged) |
+| `grok-bedrock-global` (`grok-zdr-us`) | `x-ai/grok-4.7` | `amazon-bedrock/global` | 4.4 / 13.2 (unchanged) |
+
+- **Geographic exception.** Each new pin is accepted without a regional
+  guarantee. Azure's untagged listing, Vertex Global and Bedrock's global
+  cross-region inference name no serving location, and the provider catalog
+  lists no datacenters for any of the four providers (all US-headquartered,
+  `training=false`, `retainsPrompts=false`). This exception is specific to these
+  six routes; it does not extend to Gemini 3.8 Flash or full GLM 5.3, which stay
+  unapproved. As the embedding review already records, the generic `azure` pin is
+  not `azure/eu`. A provider URL that mentions East US establishes neither the
+  deployment type nor where requests are processed
+  ([MEMORY_EMBEDDING_ADAPTER.md](MEMORY_EMBEDDING_ADAPTER.md)).
+- **Model bumps.** Sol 6.2 (`gpt-6.2-sol-20261117`) and Astra 6.2
+  (`gpt-6.2-astra-20261117`) replace Sol 6.1 and Astra at the same presets and
+  placements. Both require reasoning (efforts `low` to `max`, no `none`). They
+  have not been evaluated against the models they replace, and the Sol 6.1
+  bounded comparison does not transfer.
+- **Astra ceiling.** Astra 6.2's top tier (≥272,000 prompt tokens) is 16 / 60, so
+  its ceiling is tightened to the usual 1.1× (17.6 / 66).
+- **Provider choices.**
+  - Sonnet and Opus stay on Vertex: their Bedrock listings lack structured
+    outputs.
+  - Grok moves to Bedrock global: `xai/zdr/us` is gone, `xai/zdr` was degraded
+    (status −2, 37% uptime over 30 minutes), and `xai/zdr/priority` (8 / 24 top
+    tier) exceeds the ceiling.
+- **Luna health.** Luna's `azure` endpoint was degraded at review (status −2, 91%
+  one-day uptime). The approved `flash_fallback` failover covers its failures.
+
+Read-only public metadata checked at **2026-11-19T11:20:18Z**. Each new pair is
+an exact `(model, tag)` member of the [ZDR listing](https://openrouter.ai/api/v1/endpoints/zdr),
+with tools, structured outputs and reasoning advertised. Each top pricing tier is
+within its ceiling. Context and output limits are unchanged.
+
+Every re-pinned route has a new ID and baseline fingerprint, so it needs a fresh
+`attested` row before it can dispatch. Pre-registered evaluation designs and
+frozen benchmark receipts keep the old route IDs as dated records. The
+unapproved `memory-decomposition-luna-azure-eu` proposal is unchanged. This
+change authorises no paid inference, live dispatch test or deployment. Rollback
+is reverting the six route entries; the withdrawn regional endpoints cannot be
+restored by configuration.
 
 ## CoreWeave location decision
 

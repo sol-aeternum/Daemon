@@ -5,6 +5,11 @@ unknown sends and 10% fees. No refunds, hidden retries, fallback, accounts or DB
 Fresh independent review is required BEFORE an operator uses --execute --approved.
 Prospective follow-up: --followup-parent ORIGINAL --parent-sha256 RETAINED_HASH;
 the immutable original and its fixed ORIGINAL.followup.json share the same caps.
+
+Historical record: ROUTE and its ``azure/eu`` pin stay frozen. #747 withdrew that
+route, so this screen refuses with ``route_missing`` on the shipped policy rather
+than retargeting the exhausted October approval at the re-pinned ``luna-azure``.
+A screen of a new route needs its own authorized protocol and ledger.
 """
 
 from __future__ import annotations
@@ -117,6 +122,8 @@ def reserve(ledger: dict[str, Any], batch: str, bound: int) -> dict[str, Any]:
 def configured_route():
     routing = model_routing.load_model_routing(ROUTING)
     policy = load_inference_policy(POLICY)
+    if ROUTE not in policy.routes:
+        raise ValueError("route_missing")
     if equivalence.EQUIVALENCE_PROFILE != "memory_equivalence":
         raise ValueError("Production judge profile changed")
     profile = routing.profile(equivalence.EQUIVALENCE_PROFILE)

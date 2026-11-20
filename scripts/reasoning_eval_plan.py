@@ -45,11 +45,11 @@ class Configuration:
 
 
 CONFIGURATIONS = (
-    Configuration("luna-low", "luna-azure-eu", "low"),
-    Configuration("luna-medium", "luna-azure-eu", "medium"),
-    Configuration("luna-high", "luna-azure-eu", "high"),
-    Configuration("sonnet-5-high", "sonnet-vertex-europe", "high"),
-    Configuration("sol-6.1-high", "sol-azure-eu", "high"),
+    Configuration("luna-low", "luna-azure", "low"),
+    Configuration("luna-medium", "luna-azure", "medium"),
+    Configuration("luna-high", "luna-azure", "high"),
+    Configuration("sonnet-5-high", "sonnet-vertex-global", "high"),
+    Configuration("sol-6.1-high", "sol-azure", "high"),
 )
 
 

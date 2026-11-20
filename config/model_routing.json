@@ -77,7 +77,7 @@
       "notes": "Provisional demanding tier placement in the reasoning and council profiles. It is no longer an automatic candidate for routine, background or research work: those profiles refuse the request rather than degrade to a demanding model. No generic medium effort."
     },
     {
-      "model": "openrouter/openai/gpt-6.1-sol",
+      "model": "openrouter/openai/gpt-6.2-sol",
       "sampling_parameters": ["seed"],
       "developer": "openai",
       "suitability": ["council", "reasoning", "research", "routine"],
@@ -87,7 +87,7 @@
         "reasoning": {"reasoning_effort": "high"},
         "council": {"reasoning_effort": "high", "include_reasoning": true}
       },
-      "notes": "Operator-selected Sol 6.1 replacement at high effort on 30 September 2026, including reasoning and council. The bounded comparison completed, but human semantic verdicts remain pending; this rollout is not a claim of measured quality superiority. See docs/SOL_UPGRADE_EVALUATION.md."
+      "notes": "Sol 6.2 replaces Sol 6.1 at the same high presets and placements (operator decision, 19 November 2026, #747); same reasoning ladder (reasoning mandatory, no none). Sol 6.1 itself was an operator-selected replacement on 30 September 2026 after a bounded comparison (docs/SOL_UPGRADE_EVALUATION.md) that does not transfer to 6.2; no measured quality superiority is claimed."
     },
     {
       "model": "openrouter/anthropic/claude-sonnet-5.5",
@@ -115,16 +115,16 @@
       "notes": "Provisional escalation placement: the second group of the reasoning and council profiles, never placed for routine, background or research work. Whether it spends premium allowance is an inference_policy route_class decision, not one this file makes."
     },
     {
-      "model": "openrouter/openai/gpt-6-astra",
+      "model": "openrouter/openai/gpt-6.2-astra",
       "sampling_parameters": ["seed"],
       "developer": "openai",
       "suitability": ["council", "reasoning", "research"],
-      "reasoning_efforts": ["max", "xhigh", "high", "medium", "low", "none"],
+      "reasoning_efforts": ["max", "xhigh", "high", "medium", "low"],
       "parameter_presets": {
         "default": {"reasoning_effort": "high"},
         "council": {"reasoning_effort": "high", "include_reasoning": true}
       },
-      "notes": "Provisional escalation placement, the last group of the reasoning and council profiles. Placing it last is what makes the escalation bounded: it is reached only when no earlier group is eligible. It is not an automatic candidate for routine, background or research work."
+      "notes": "Provisional escalation placement, the last group of the reasoning and council profiles; Astra 6.2 replaces Astra at the same presets and placements (operator decision, 19 November 2026, #747), and requires reasoning, so its declaration omits none. Placing it last is what makes the escalation bounded: it is reached only after the earlier groups have no qualified candidate or their attempts fail before output. It is not an automatic candidate for routine, background or research work."
     }
   ],
   "profiles": [
@@ -196,7 +196,7 @@
           "group": "demanding",
           "models": [
             "openrouter/z-ai/glm-5.3",
-            "openrouter/openai/gpt-6.1-sol",
+            "openrouter/openai/gpt-6.2-sol",
             "openrouter/anthropic/claude-sonnet-5.5"
           ]
         },
@@ -204,7 +204,7 @@
           "group": "escalation",
           "models": [
             "openrouter/anthropic/claude-opus-5.5",
-            "openrouter/openai/gpt-6-astra"
+            "openrouter/openai/gpt-6.2-astra"
           ]
         }
       ],
@@ -247,7 +247,7 @@
             "openrouter/google/gemini-3.8-flash",
             "openrouter/x-ai/grok-4.7",
             "openrouter/z-ai/glm-5.3",
-            "openrouter/openai/gpt-6.1-sol",
+            "openrouter/openai/gpt-6.2-sol",
             "openrouter/anthropic/claude-sonnet-5.5"
           ]
         },
@@ -255,7 +255,7 @@
           "group": "escalation",
           "models": [
             "openrouter/anthropic/claude-opus-5.5",
-            "openrouter/openai/gpt-6-astra"
+            "openrouter/openai/gpt-6.2-astra"
           ]
         }
       ],

@@ -17,8 +17,30 @@ import httpx
 import pytest
 
 from orchestrator import compute_runtime as runtime, model_routing
+from orchestrator.entitlements.policy import load_inference_policy, parse_inference_policy
 from orchestrator.memory import equivalence
 from scripts import qualify_memory_judge as screen
+
+
+def historical_policy_document() -> dict:
+    """The shipped policy with the frozen October Luna route restored.
+
+    #747 replaced ``luna-azure-eu`` (``azure/eu``) with ``luna-azure``. The
+    screen's own checks are exercised against the route it was approved for;
+    the shipped policy is covered by the route_missing regression below.
+    """
+    raw = json.loads(screen.POLICY.read_text())
+    route = next(r for r in raw["routes"] if r["route_id"] == "luna-azure")
+    route["route_id"] = screen.ROUTE
+    transport = route["privacy"]["transport"]
+    transport["provider_only"] = transport["provider_order"] = ["azure/eu"]
+    return raw
+
+
+@pytest.fixture(autouse=True)
+def frozen_judge_route(monkeypatch):
+    historical = parse_inference_policy(historical_policy_document())
+    monkeypatch.setattr(screen, "load_inference_policy", lambda path: historical)
 
 
 def response_for(batch, *, fail_negative=False, fail_positive=False):
@@ -1005,3 +1027,32 @@ async def test_followup_requires_paired_parent_and_pin_before_credentials(
     setattr(args, missing, None)
     with pytest.raises(ValueError, match="together"):
         await screen.run(args)
+
+
+@pytest.mark.asyncio
+async def test_shipped_policy_refuses_the_frozen_screen_before_credentials_or_network(
+    tmp_path, monkeypatch
+):
+    """#747: the exhausted October approval cannot be retargeted at the re-pin."""
+    import orchestrator.config
+
+    monkeypatch.setattr(screen, "load_inference_policy", load_inference_policy)
+    shipped = load_inference_policy(screen.POLICY)
+    assert screen.ROUTE == "luna-azure-eu" and screen.ROUTE not in shipped.routes
+    assert "luna-azure" in shipped.routes
+    monkeypatch.setattr(orchestrator.config, "Settings", lambda **kw: pytest.fail("credential"))
+    monkeypatch.setattr(orchestrator.config, "get_settings", lambda: pytest.fail("credential"))
+    monkeypatch.setattr(
+        screen.httpx, "AsyncHTTPTransport", lambda **kw: pytest.fail("network transport")
+    )
+    monkeypatch.setattr(screen.httpx, "AsyncClient", lambda **kw: pytest.fail("network client"))
+    with pytest.raises(ValueError, match="route_missing"):
+        screen.configured_route()
+    for followup in (False, True):
+        with pytest.raises(ValueError, match="route_missing"):
+            await screen.prepare(followup=followup)
+    fresh = tmp_path / "fresh-ledger.json"
+    args = Namespace(execute=True, approved=True, credential_env_file=None, ledger=fresh)
+    with pytest.raises(ValueError, match="route_missing"):
+        await screen.run(args)
+    assert not fresh.exists()
