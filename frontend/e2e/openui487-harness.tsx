@@ -19,8 +19,6 @@ function OfflineConversation() {
       <Pilot
         fixture={OPENUI487_FIXTURE}
         session={OPENUI487_SESSION_A}
-        status={final ? 'completed' : 'running'}
-        connection={final ? 'live' : 'reconnecting'}
         layoutEnabled
         layout={{
           frame: {

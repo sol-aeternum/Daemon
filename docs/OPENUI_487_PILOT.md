@@ -21,7 +21,7 @@ No Query (including loader, reactive updates and polling), Mutation, `@Run`, act
 
 For any later offline vendor comparison, omit tools/actions and explicitly disable `toolCalls`, `bindings`, `builtinFunctions` and edit mode in the prompt configuration. Those switches shape generation only; containment comes from the closed input grammar and the absence of tool/action handlers.
 
-The fixture does not add expand, sort or chart/table controls. The table remains visible; existing preview/download controls keep their local behavior. Nothing about the fixture page is user-invokable in Daemon, so there is no feature-matrix promotion.
+The fixture does not add expand, sort or chart/table controls. The same chart and accessible table are visible in the native order, in fallback, and after a valid reorder; the recording cannot switch visualizations. Existing preview/download controls keep their local behavior. Nothing about the fixture page is user-invokable in Daemon, so there is no feature-matrix promotion.
 
 ### Reproduce
 
@@ -36,9 +36,9 @@ The browser harness is an intercepted synthetic transcript, not an app route or 
 
 The recording is `root = PilotLayout([Figures(), TaskStatus(), ArtifactResults()])`: **64 ASCII bytes** in four fixture chunks, excluding the existing answer, app snapshot and any protocol framing. The native answer uses no layout bytes. The test enumerates every two-chunk split; all non-final prefixes leave the native order intact and a valid final recording causes one layout activation.
 
-The browser test attaches native-ready, final-click and layout-ready DOM timings as JSON. In one local run (desktop and mobile tests in parallel), desktop marks in milliseconds from navigation were `152.1 / 246.3 / 257.7`; the emulated narrow viewport gave `175.4 / 273.4 / 286.8`. The last transition took `11.4 ms` and `13.4 ms`, respectively. Both preserved the draft and keyboard focus and reported no unexpected requests. These are single-run fixture DOM observations, not model latency, actual SSE bytes, paint time or token count.
+The browser test holds app state constant and asserts that only the three display blocks change order, with identical markup before and after. It checks draft and keyboard focus preservation and attaches native-ready, final-click and layout-ready DOM timings as JSON. Earlier timing samples also included mounting the SVG and are not comparable to this reorder-only check. These are fixture DOM observations, not model latency, actual SSE bytes, paint time or token count.
 
-Local backend, frontend and aggregate checks passed, including production build. On the final frontend run the existing fixed-port HTTP-cache checks collided with loopback socket ownership; when the ports cleared, the unchanged checks reported 3/3 ownership and 31/31 browser cases passing, though the outer worktree helper reported a bookkeeping error afterward. The generated static assets and service-worker output had no OpenUI fixture or package references. The pilot-specific final checks passed 37 Vitest cases and two Chromium projects. No remote CI or release qualification is claimed.
+Before the reorder-only repair, local backend, frontend and aggregate checks passed, including production build. Earlier fixed-port HTTP-cache collisions and a worktree bookkeeping error were separate from the port-free pilot checks. The generated static assets and service-worker output had no OpenUI fixture or package references. No release qualification is claimed.
 
 ## Proposal for a separately approved integration
 

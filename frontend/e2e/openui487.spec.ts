@@ -88,18 +88,23 @@ test('inline results stay readable and keyboard reachable as the layout settles'
 
   await page.goto(origin);
   expect(errors).toEqual([]);
-  await expect(page.getByRole('table')).toBeVisible();
-  await expect(page.locator('figure svg')).toHaveCount(0);
+  const chart = page.locator('figure svg[aria-hidden="true"]');
+  const table = page.getByRole('table', {
+    name: 'Synthetic weekday deliveries values supplied by the app fixture.',
+  });
+  await expect(chart).toBeVisible();
+  await expect(table).toBeVisible();
   const pilot = page.getByRole('region', { name: 'Synthetic OpenUI pilot' });
+  const blocks = pilot.locator('[data-pilot-block]');
+  const blockMarkup = () =>
+    blocks.evaluateAll((nodes) => nodes.map((node) => node.outerHTML));
   await expect(pilot).toHaveAttribute('data-layout-active', 'false');
   await expect(pilot).toHaveAttribute(
     'data-layout-order',
     'TaskStatus>ArtifactResults>Figures',
   );
-  await expect(pilot.getByTestId('openui487-connection')).toHaveAttribute(
-    'data-connection',
-    'reconnecting',
-  );
+  const before = await blockMarkup();
+  expect(before).toHaveLength(3);
   await expect(page.getByRole('textbox', { name: 'Message' })).toBeEditable();
   await page.getByRole('textbox', { name: 'Message' }).fill('Offline draft');
   const preview = page
@@ -110,17 +115,14 @@ test('inline results stay readable and keyboard reachable as the layout settles'
   await page
     .getByRole('button', { name: 'Finish fixture stream' })
     .evaluate((button: HTMLButtonElement) => button.click());
-  await expect(page.locator('figure')).toBeVisible();
-  await expect(page.locator('figure svg[aria-hidden="true"]')).toBeVisible();
   await expect(pilot).toHaveAttribute('data-layout-active', 'true');
   await expect(pilot).toHaveAttribute(
     'data-layout-order',
     'Figures>TaskStatus>ArtifactResults',
   );
-  await expect(page.getByRole('table')).toBeVisible();
-  await expect(page.getByRole('table')).toHaveAccessibleName(
-    'Synthetic weekday deliveries values supplied by the app fixture.',
-  );
+  await expect(chart).toBeVisible();
+  await expect(table).toBeVisible();
+  expect(await blockMarkup()).toEqual([before[2], before[0], before[1]]);
   await expect(
     page.getByRole('button', { name: 'Preview', exact: true }),
   ).toHaveCount(2);

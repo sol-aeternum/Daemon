@@ -117,9 +117,7 @@ export function Pilot({
           />
         );
       case 'Figures':
-        return (
-          <FiguresBlock figures={view.figures} showChart={resolution.active} />
-        );
+        return <FiguresBlock figures={view.figures} />;
     }
   };
 
@@ -265,13 +263,7 @@ function ArtifactResultsBlock({
   );
 }
 
-function FiguresBlock({
-  figures,
-  showChart,
-}: {
-  figures: SyntheticFigure[];
-  showChart: boolean;
-}) {
+function FiguresBlock({ figures }: { figures: SyntheticFigure[] }) {
   return (
     <section
       aria-label="App-supplied figures"
@@ -280,9 +272,7 @@ function FiguresBlock({
     >
       <h2 className="font-semibold">Figures</h2>
       {figures.length ? (
-        figures.map((figure) => (
-          <Figure key={figure.id} figure={figure} showChart={showChart} />
-        ))
+        figures.map((figure) => <Figure key={figure.id} figure={figure} />)
       ) : (
         <p>No authorized app-supplied figures.</p>
       )}
@@ -290,13 +280,7 @@ function FiguresBlock({
   );
 }
 
-function Figure({
-  figure,
-  showChart,
-}: {
-  figure: SyntheticFigure;
-  showChart: boolean;
-}) {
+function Figure({ figure }: { figure: SyntheticFigure }) {
   const max = Math.max(1, ...figure.values.map((value) => value.value));
   const width = 320;
   const height = 120;
@@ -350,19 +334,6 @@ function Figure({
       </table>
     </div>
   );
-
-  if (!showChart) {
-    return (
-      <section
-        aria-label={`${figure.title} table`}
-        data-testid={`openui487-figure-${figure.id}`}
-        className="mt-2 min-w-0"
-      >
-        {prose}
-        {table}
-      </section>
-    );
-  }
 
   return (
     <figure

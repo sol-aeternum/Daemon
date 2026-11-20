@@ -488,6 +488,17 @@ const fallbackCases: {
     reason: 'layout_pending_final_bit',
   },
   {
+    name: 'malformed block list',
+    layout: {
+      frame: {
+        ...frame,
+        text: 'root = PilotLayout([TaskStatus(),, ArtifactResults(), Figures()])',
+      },
+      final: true,
+    },
+    reason: 'layout_invalid_syntax',
+  },
+  {
     name: 'unknown block',
     layout: {
       frame: {
@@ -551,12 +562,11 @@ describe('Pilot fallback and reveal', () => {
       expect(screen.queryByText('forged-unpinned.csv')).toBeNull();
 
       const chart = screen.getByTestId('openui487-figure-weekday-deliveries');
-      expect(chart.tagName).toBe('SECTION');
-      expect(chart.querySelector('svg')).toBeNull();
+      expect(chart.tagName).toBe('FIGURE');
+      expect(chart.querySelector('svg[aria-hidden="true"]')).toBeTruthy();
       expect(figureRows(within(chart).getByRole('table'))).toEqual(
         expectedFigureRows,
       );
-      expect(screen.queryByRole('figure')).toBeNull();
       if (reason === 'layout_unknown_block') {
         expect(screen.queryByText(/Notes\(\)/)).toBeNull();
       }
@@ -575,7 +585,7 @@ describe('Pilot fallback and reveal', () => {
       'layout_disabled',
     );
     expect(screen.getByTestId('openui487-fallback')).toBeTruthy();
-    expect(screen.queryByRole('figure')).toBeNull();
+    expect(screen.getByRole('figure')).toBeTruthy();
   });
 
   it.each([
@@ -605,9 +615,10 @@ describe('Pilot fallback and reveal', () => {
       expect(screen.getByText('2 of 2', { exact: false })).toBeTruthy();
       expect(screen.getByTestId('openui487-status')).toBeTruthy();
       const chart = screen.getByTestId('openui487-figure-weekday-deliveries');
-      expect(chart.querySelector('svg')).toBeNull();
-      expect(within(chart).getByRole('table')).toBeTruthy();
-      expect(screen.queryByRole('figure')).toBeNull();
+      expect(chart.querySelector('svg[aria-hidden="true"]')).toBeTruthy();
+      expect(figureRows(within(chart).getByRole('table'))).toEqual(
+        expectedFigureRows,
+      );
     },
   );
 
@@ -621,7 +632,10 @@ describe('Pilot fallback and reveal', () => {
     });
     expect(pilot().getAttribute('data-layout-active')).toBe('false');
     expect(pilot().getAttribute('data-layout-order')).toBe(FALLBACK_ORDER);
-    expect(screen.queryByRole('figure')).toBeNull();
+    const figure = screen.getByRole('figure');
+    const svg = figure.querySelector('svg');
+    const table = within(figure).getByRole('table');
+    expect(svg).toBeTruthy();
 
     view.rerender(
       <Pilot
@@ -636,7 +650,9 @@ describe('Pilot fallback and reveal', () => {
     expect(pilot().getAttribute('data-layout-rejection')).toBe('none');
     expect(pilot().getAttribute('data-layout-order')).toBe(ACTIVE_ORDER);
     expect(screen.queryByTestId('openui487-fallback')).toBeNull();
-    expect(screen.getByRole('figure')).toBeTruthy();
+    expect(screen.getByRole('figure')).toBe(figure);
+    expect(figure.querySelector('svg')).toBe(svg);
+    expect(within(figure).getByRole('table')).toBe(table);
     expect(vi.mocked(fetch)).not.toHaveBeenCalled();
   });
 
