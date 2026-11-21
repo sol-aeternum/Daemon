@@ -278,7 +278,7 @@ def test_proxy_csp_permits_inline_style_attributes() -> None:
     authorize whole ``<style>`` tags or external stylesheets, not inline
     attribute values. The repository relies on inline style attributes
     for behavior-critical positioning (conversation menu offsets, video /
-    council progress widths, preview colors, input sizing). Without
+    preview colors and input sizing). Without
     ``style-src-attr 'unsafe-inline'`` browsers enforcing strict CSP
     silently strip those values.
     """

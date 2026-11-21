@@ -291,7 +291,7 @@ replays provider work. This intent is in-process: killed-process reconciliation
 retains the existing conservative policy rather than a new durable refund promise.
 
 Concurrency counts operations, not provider calls: reservations made inside one
-account compute scope (a chat turn's tool loop, a council's parallel roles) share
+account compute scope (such as a chat turn's tool loop) share
 one slot while any of them is open. Rate admission likewise counts each
 server-owned foreground scope once, including model continuations and metered
 search calls after earlier reservations settle or release. That admission

@@ -37,7 +37,6 @@ Daemon provides a comprehensive suite of features for advanced AI assistance.
 - **Chat & Routing**: Real-time token streaming with typed SSE events, supporting both native and OpenAI-compatible endpoints. The Free / Pro / Power migration separates commercial plans from model selection; see `SUBSCRIPTION_ARCHITECTURE.md` for deployment requirements.
 - **Persistent Memory**: Automated fact extraction, hybrid semantic/lexical retrieval, and bitemporal memory management. Detailed in [../MEMORY_LAYER.md](../MEMORY_LAYER.md).
 - **Subagent Framework**: Research is subject to qualified provider/service routes; deterministic CSV/DOCX generation exists. Image/video/audio execution is retired pending qualified bounded adapters.
-- **Council Deliberation**: Multi-perspective advisory debate with a read-only tool subset; council models can gather context but cannot send notifications, create reminders, spawn agents, write memory, or generate files.
 - **Multimodal Studio**: Retained interfaces and video-credit history; generation remains denied pending bounded integration.
 - **Voice Interaction**: Settings/UI remain; speech execution and direct vendor tokens are denied pending bounded server-side adapters.
 

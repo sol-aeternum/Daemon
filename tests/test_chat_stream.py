@@ -22,7 +22,7 @@ from tests.qualified_compute import install_qualified_compute
 
 # These tests exercise the streaming plumbing, not admission, so the stand-in
 # deployment must actually qualify the profiles the fixtures dispatch under:
-# Luna serves routine/research/background/council and GLM-5.3 serves reasoning.
+# Luna serves routine/research/background and GLM-5.3 serves reasoning.
 STREAM_FIXTURE_MODELS = (
     "openrouter/openai/gpt-6-luna",
     "openrouter/z-ai/glm-5.3",

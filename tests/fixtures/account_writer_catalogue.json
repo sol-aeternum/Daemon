@@ -2073,61 +2073,6 @@
       "rationale": "Unresolved candidate; no runtime guard."
     },
     {
-      "owner_source": "orchestrator.council.config",
-      "qualname": "load_roster_with_metadata",
-      "kind": "filesystem_write",
-      "fingerprint": "493aa4bfa95041f2",
-      "tables": [],
-      "unknown": true,
-      "uncovered": true,
-      "category": "deferred",
-      "rationale": "Unresolved candidate; no runtime guard."
-    },
-    {
-      "owner_source": "orchestrator.council.sse",
-      "qualname": "_build_interview_roster",
-      "kind": "filesystem_write",
-      "fingerprint": "cc4115cbac128090",
-      "tables": [],
-      "unknown": true,
-      "uncovered": true,
-      "category": "deferred",
-      "rationale": "Unresolved candidate; no runtime guard."
-    },
-    {
-      "owner_source": "orchestrator.council.sse",
-      "qualname": "make_envelope",
-      "kind": "filesystem_write",
-      "fingerprint": "37840610d39498bb",
-      "tables": [],
-      "unknown": true,
-      "uncovered": true,
-      "category": "deferred",
-      "rationale": "Unresolved candidate; no runtime guard."
-    },
-    {
-      "owner_source": "orchestrator.council.sse",
-      "qualname": "stream_council",
-      "kind": "filesystem_write",
-      "fingerprint": "ffd65b4ae7fa5a6e",
-      "tables": [],
-      "unknown": true,
-      "uncovered": true,
-      "category": "deferred",
-      "rationale": "Unresolved candidate; no runtime guard."
-    },
-    {
-      "owner_source": "orchestrator.council.tools",
-      "qualname": "_run_tool_executor",
-      "kind": "sql_unresolvable",
-      "fingerprint": "67b4b026f83b48d0",
-      "tables": [],
-      "unknown": true,
-      "uncovered": true,
-      "category": "deferred",
-      "rationale": "Unresolved candidate; no runtime guard."
-    },
-    {
       "owner_source": "orchestrator.daemon",
       "qualname": "now_rfc3339",
       "kind": "filesystem_write",

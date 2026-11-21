@@ -33,6 +33,7 @@ from orchestrator.auth_tokens import hash_token
 from orchestrator.daemon import new_request_id, stream_with_keepalives
 from orchestrator.models import ChatRequest
 from orchestrator.request_body_limit import RequestBodyLimitMiddleware
+from orchestrator.router import COUNCIL_RETIRED_MESSAGE, is_retired_council_command
 from orchestrator.routes.tasks import (
     IDEMPOTENCY_KEY_PATTERN,
     CancelOut,
@@ -411,17 +412,21 @@ class IsolatedAcceptanceHost:
                             detail="Invalid or expired access token",
                             headers=HEADERS,
                         )
+                    latest = next(
+                        (m for m in reversed(payload.messages or []) if m.get("role") == "user"),
+                        None,
+                    )
+                    message = ((latest["content"] if latest else "") or payload.message).strip()
+                    if is_retired_council_command(message):
+                        return HTTPException(
+                            410, {"message": COUNCIL_RETIRED_MESSAGE}, headers=HEADERS
+                        )
                     try:
                         captured = await capture_generation(conn, auth.user_id)
                     except WriteGuardRefusal:
                         return _unavailable()
                     # No W account SHARE is held. The original native A guard
                     # must reject any subsequent generation/lifecycle change.
-                    latest = next(
-                        (m for m in reversed(payload.messages or []) if m.get("role") == "user"),
-                        None,
-                    )
-                    message = ((latest["content"] if latest else "") or payload.message).strip()
                     if not message:
                         return HTTPException(422, "Message must not be empty", headers=HEADERS)
                     try:

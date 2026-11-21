@@ -1,13 +1,13 @@
 import { readFileSync } from 'node:fs';
 import { expect } from '@playwright/test';
 import { conversation, mockApi, test } from './discoverability-fixture';
+import { historyFixtureDetail, historyFixtureId } from './history-fixtures';
 
 test.beforeEach(async ({ page }) => {
   await mockApi(page);
 });
 
-// Compatibility only: this does not prescribe Council's future agent-tool UX.
-test('the /council compatibility command opens the existing interview', async ({
+test('the retired /council command reports retirement without offering an interview', async ({
   page,
 }) => {
   const submitted: unknown[] = [];
@@ -18,16 +18,11 @@ test('the /council compatibility command opens the existing interview', async ({
       {
         type: 'data-event',
         data: {
-          type: 'council_interview',
-          id: 'interview-1',
-          request_id: 'request-1',
-          roster: {},
-          presets: ['Default'],
-          rounds_options: [1, 2],
-          audit_default: false,
+          type: 'request_rejected',
+          status: 410,
         },
       },
-      { type: 'finish' },
+      { type: 'error', errorText: 'Council has been retired.' },
     ];
     await route.fulfill({
       contentType: 'text/event-stream',
@@ -42,8 +37,11 @@ test('the /council compatibility command opens the existing interview', async ({
   await composer.fill('/council');
   await page.getByRole('button', { name: 'Send message' }).click();
   await expect(
-    page.getByText('Council Configuration', { exact: true }),
+    page.getByText('Council has been retired.', { exact: true }),
   ).toBeVisible();
+  await expect(
+    page.getByText('Council Configuration', { exact: true }),
+  ).toHaveCount(0);
   expect(submitted).toHaveLength(1);
   const payload = submitted[0] as {
     messages: { role: string; parts: { type: string; text?: string }[] }[];
@@ -51,7 +49,127 @@ test('the /council compatibility command opens the existing interview', async ({
   expect(payload.messages.at(-1)?.parts).toEqual([
     { type: 'text', text: '/council' },
   ]);
-  await expect(composer).toHaveValue('');
+});
+
+test('reopens and copies saved Council prose without reviving Council controls', async ({
+  page,
+}) => {
+  const good =
+    'Use the documented option.\n\n### Skeptic\nCheck the assumptions.';
+  const partial = 'Partial finding: document the risk.';
+  const rows = [
+    {
+      id: 'message-1',
+      role: 'assistant',
+      model: 'council',
+      status: 'complete',
+      content: good,
+      tool_calls: [{ name: 'calculate', arguments: { expression: '2+2' } }],
+      tool_results: [
+        {
+          name: 'council_events',
+          result: { events: [{ type: 'council_output', content: good }] },
+        },
+        { name: 'calculate', result: { value: 4 } },
+      ],
+    },
+    {
+      id: 'message-2',
+      role: 'assistant',
+      model: 'council',
+      status: 'error',
+      content: partial,
+      metadata: {
+        council_events: [{ type: 'council_output', content: partial }],
+      },
+    },
+    {
+      id: 'message-3',
+      role: 'assistant',
+      model: 'council',
+      status: 'error',
+      content: 'Council run completed.',
+      metadata: {
+        council_events: [{ type: 'council_progress', stage: 'round_1' }],
+      },
+    },
+    {
+      id: 'message-4',
+      role: 'assistant',
+      model: 'council',
+      status: 'complete',
+      content: 'Council configuration requested.',
+      metadata: { council_events: [{ type: 'council_interview' }] },
+    },
+    {
+      id: 'message-5',
+      role: 'assistant',
+      model: 'council',
+      status: 'complete',
+      content: 'Council error: Historical failure.',
+      metadata: {
+        council_events: [
+          { type: 'council_error', error: 'Historical failure.' },
+        ],
+      },
+    },
+  ];
+  await page.route(
+    (url) => url.pathname.endsWith(`/conversations/${conversation.id}`),
+    (route) =>
+      route.fulfill({
+        json: historyFixtureDetail(
+          { ...conversation, messages: rows },
+          new URL(route.request().url()),
+        ),
+      }),
+  );
+  let submits = 0;
+  await page.route('**/api/chat', (route) => {
+    submits++;
+    return route.abort();
+  });
+  await page.addInitScript(() => {
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: undefined,
+    });
+  });
+  await page.goto(`/?id=${conversation.id}`);
+  await expect(page.getByRole('heading', { name: 'Skeptic' })).toBeVisible();
+  await expect(page.getByText(partial, { exact: true })).toBeVisible();
+  await expect(
+    page.getByText('This Council run did not complete.'),
+  ).toBeVisible();
+  await expect(
+    page.getByText('This Council run ended before producing an answer.'),
+  ).toBeVisible();
+  await expect(
+    page.getByText('Council configuration requested.'),
+  ).toBeVisible();
+  await expect(
+    page.getByText('Council error: Historical failure.'),
+  ).toBeVisible();
+  await expect(
+    page.getByText('Council run completed.', { exact: true }),
+  ).toHaveCount(0);
+  await expect(
+    page.getByRole('button', { name: /run council|resume/i }),
+  ).toHaveCount(0);
+  const saved = page.locator(`[data-message-id="${historyFixtureId(1)}"]`);
+  const activity = saved.getByRole('button', { name: /^Tool activity:/ });
+  await expect(activity).toBeVisible();
+  await activity.click();
+  await expect(saved.getByText('council_events', { exact: false })).toHaveCount(
+    0,
+  );
+  await saved
+    .getByRole('button', { name: 'Copy response', exact: true })
+    .click();
+  await expect(
+    page.getByRole('textbox', { name: 'Response to copy' }),
+  ).toHaveValue(good);
+  expect(submits).toBe(0);
 });
 
 for (const answerDetail of ['balanced', 'brief', 'detailed']) {

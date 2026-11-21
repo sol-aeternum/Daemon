@@ -143,10 +143,7 @@ def test_every_production_and_declared_effort_reaches_the_wire(
         assert "extra_body" not in body
         assert "allowed_openai_params" not in body
         assert body["reasoning"] == {"effort": "xhigh" if row["effort"] == "max" else row["effort"]}
-        if row["profile"] == "council":
-            assert body["include_reasoning"] is True
-        else:
-            assert "include_reasoning" not in body
+        assert "include_reasoning" not in body
 
 
 if __name__ == "__main__":

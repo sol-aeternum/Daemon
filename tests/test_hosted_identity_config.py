@@ -315,8 +315,7 @@ def test_lifespan_startup_aborts_on_misconfigured_hosted(monkeypatch) -> None:
 
     Proves the wiring is real: the validation is invoked during the actual
     app startup path, not only on direct method calls. Uses
-    app.router.lifespan_context (the canonical repo pattern in
-    tests/council/test_sse_integration.py:21) to drive the startup code.
+    app.router.lifespan_context to drive the startup code.
 
     Uses monkeypatch (not os.environ) so the misconfig env vars do not leak
     into subsequent tests, which would see DAEMON_HOSTED_IDENTITY_ENABLED=true

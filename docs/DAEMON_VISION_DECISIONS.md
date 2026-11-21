@@ -90,6 +90,8 @@ The product owner chose a **separate cleanup pass** for remaining full frontend 
 
 When preparing the PR against `2bf65150`, the product owner explicitly chose **preserve current main's working encryption metrics and advisor-event compatibility**, including council and legacy trace support. The earlier removal instruction concerned dangling callers in the older dirty checkout; it does not authorise removing these working current-main contracts. Port only applicable fixes and regression coverage. Existing memory cleanup, worker integration, auth boundaries and terminal message-state repairs on newer main are preserved rather than replaced by older implementations.
 
+The later owner-directed [Council retirement](COUNCIL_RETIREMENT.md) supersedes preservation of Council execution only. Encryption metrics, advisor events and legacy conversation readback remain.
+
 The product owner also required the README to retain the orchestration, routing and subagent architecture alongside its vision-led introduction. Product positioning does not replace the technical explanation; current capability and retired/reserved paths must remain explicit.
 
 ## Remaining decisions

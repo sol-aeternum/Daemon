@@ -28,11 +28,13 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from orchestrator.compute_runtime import (
+    ComputeUnavailable,
     RETRYABLE_COMPUTE_CODES,
     account_compute,
     compute_error,
     current_scope,
 )
+from orchestrator.router import COUNCIL_RETIRED_MESSAGE, is_retired_council_command
 from orchestrator.tasks.fence import guard_registry, outcome_of_tool_result
 from orchestrator.tasks.states import RetryCause, TaskStatus
 from orchestrator.prompts import DAEMON_PROMPT_VERSION
@@ -692,7 +694,7 @@ async def _publish(redis: Any, state: AttemptState, message: dict[str, Any]) -> 
 async def _history(store: Any, claim: Claim, limit: int, prepared: Any) -> list[dict[str, Any]]:
     """History as of acceptance: up to and including the accepted user turn.
 
-    Request-bound paths (such as council) may still write to the same
+    Request-bound paths may still write to the same
     conversation after acceptance, so later rows are cut off rather than
     assumed absent. The task's own placeholder is a streaming row and is
     excluded.
@@ -847,11 +849,11 @@ async def _execute(ctx: dict[str, Any], store: TaskStore, state: AttemptState) -
     from orchestrator.services.account_control.guard import CapturedGeneration, WriteGuardRefusal
 
     claim = state.claim
+    task_input = claim.task_input
     settings = ctx["settings"]
     memory = ctx["store"]
     db_pool = ctx["db_pool"]
     redis = ctx.get("redis")
-    task_input = claim.task_input
     if memory is None and task_input.get("temporal_scope") is not None:
         raise TemporalRefusal("historical_memory_store_required")
     summary_generation = None
@@ -866,8 +868,6 @@ async def _execute(ctx: dict[str, Any], store: TaskStore, state: AttemptState) -
                 summary_generation = candidate
     except (ValueError, WriteGuardRefusal):
         pass
-    provider_config = settings.get_provider_config(task_input.get("provider"))
-    request_id = str(task_input.get("request_id") or f"req_{uuid.uuid4().hex}")
 
     async def is_disconnected() -> bool:
         # The chat engine's stop signal: an explicit cancel or a lost lease,
@@ -923,6 +923,16 @@ async def _execute(ctx: dict[str, Any], store: TaskStore, state: AttemptState) -
                 )
                 await store._inference.register(identity, shared)
 
+    # The isolated text host previously accepted slash commands as plain text.
+    # Keep the original claim/history binding for terminalization, but refuse
+    # before account compute, prompt preparation, or dispatch.
+    if task_input.get("profile") == "council" or is_retired_council_command(
+        task_input.get("message")
+    ):
+        raise ComputeUnavailable("council_retired", COUNCIL_RETIRED_MESSAGE)
+
+    provider_config = settings.get_provider_config(task_input.get("provider"))
+    request_id = str(task_input.get("request_id") or f"req_{uuid.uuid4().hex}")
     async with (
         account_compute(
             db_pool,

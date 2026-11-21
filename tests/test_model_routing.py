@@ -201,7 +201,7 @@ def test_approved_luna_first_placement_keeps_flash_fallback_behind_luna() -> Non
         assert model_routing.model_parameter_presets(LUNA, name) == {"reasoning_effort": "medium"}
     # Bounded escalation survives the operator-approved Qwen removal.
     assert config.profile("reasoning").group_names() == ("demanding", "escalation")
-    assert config.profile("council").group_names() == ("diverse", "escalation")
+    assert "council" not in config.profiles
     assert config.profile("reasoning").ranked_models() == (
         GLM,
         SOL,
@@ -209,15 +209,20 @@ def test_approved_luna_first_placement_keeps_flash_fallback_behind_luna() -> Non
         OPUS,
         ASTRA,
     )
-    assert config.profile("council").groups[1].models == (OPUS, ASTRA)
-    assert set(config.profile("council").groups[0].models) >= {DEEPSEEK, FLASH, LUNA, GLM, SOL}
     removed = "openrouter/qwen/qwen3.8-max-0902"
     assert removed not in config.models
     assert all(removed not in profile.ranked_models() for profile in config.profiles.values())
     # An unplaced model is unreachable automatically but still dispatchable by an
     # exact manual selection, so removing a group never removes the model.
     assert model_routing.is_model_routable("routine", SOL) is False
-    assert model_routing.is_model_routable("council", SOL) is True
+    assert model_routing.is_model_routable("reasoning", SOL) is True
+    for exact_only in (GOOGLE, "openrouter/x-ai/grok-4.7"):
+        assert all(
+            exact_only not in profile.ranked_models() for profile in config.profiles.values()
+        )
+        assert model_routing.model_parameter_presets(exact_only, "routine") == {
+            "reasoning_effort": "low"
+        }
 
 
 @pytest.mark.asyncio
@@ -300,7 +305,7 @@ async def test_manual_pin_outside_the_luna_shortlist_stays_exact(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("profile", ["routine", "reasoning", "council"])
+@pytest.mark.parametrize("profile", ["routine", "reasoning"])
 async def test_operator_sol62_replacement_dispatches_high_in_every_used_profile(
     monkeypatch: pytest.MonkeyPatch, profile: str
 ) -> None:
@@ -314,8 +319,6 @@ async def test_operator_sol62_replacement_dispatches_high_in_every_used_profile(
         assert sent["model"] == SOL
         assert sent["extra_body"]["reasoning"] == {"effort": "high"}
         assert "reasoning_effort" not in sent
-        if profile == "council":
-            assert sent["include_reasoning"] is True
         assert service.reserve.await_args.kwargs["model"] == SOL
     assert not model_routing.supports_reasoning_effort(SOL, "none")
     assert PRODUCTION_ROUTING.model("openrouter/openai/gpt-6-sol") is None
@@ -342,23 +345,23 @@ async def test_demanding_work_never_downgrades_to_cheaper_flash_with_same_protoc
 
 
 @pytest.mark.asyncio
-async def test_council_exclusion_and_soft_preference_stay_within_eligible_group(
+async def test_exclusion_and_soft_preference_stay_within_eligible_group(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    deepseek = named_route(DEEPSEEK, price=0)
-    flash = named_route(FLASH, price=1_000)
+    sol = named_route(SOL, price=0)
+    glm = named_route(GLM, price=1_000)
     opus = named_route(OPUS, price=0)
-    with dispatch_fixture(monkeypatch, [deepseek, flash, opus]) as (service, provider, _):
+    with dispatch_fixture(monkeypatch, [sol, glm, opus]) as (service, provider, _):
         with model_routing.routing_context(
-            "council",
+            "reasoning",
             preferred_model=OPUS,
-            excluded_developers=frozenset({"deepseek"}),
+            excluded_developers=frozenset({"openai"}),
         ) as state:
             await runtime.guarded_completion(messages=[{"role": "user", "content": "review"}])
-            assert state.selected_model == FLASH
-            assert state.selected_group == "diverse"
-        assert last_kwargs(provider)["model"] == FLASH
-        assert service.reserve.await_args.kwargs["model"] == FLASH
+            assert state.selected_model == GLM
+            assert state.selected_group == "demanding"
+        assert last_kwargs(provider)["model"] == GLM
+        assert service.reserve.await_args.kwargs["model"] == GLM
 
 
 @pytest.mark.asyncio
@@ -702,23 +705,22 @@ async def test_explicit_short_title_output_is_not_blocked_by_background_profile_
 async def test_fallback_applies_selected_models_own_reasoning_preset(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    cheap = named_route(DEEPSEEK, price=0)
-    fallback = named_route(LUNA, price=1_000)
+    primary = named_route(LUNA, price=1_000)
+    fallback = named_route(DEEPSEEK, price=0)
     provider = AsyncMock(side_effect=[RuntimeError("offline"), {"choices": []}])
-    with dispatch_fixture(monkeypatch, [cheap, fallback], provider=provider) as (service, _, _):
-        with model_routing.routing_context("council") as state:
+    with dispatch_fixture(monkeypatch, [primary, fallback], provider=provider) as (service, _, _):
+        with model_routing.routing_context("routine") as state:
             await runtime.guarded_completion(messages=[{"role": "user", "content": "review"}])
-            assert (state.selected_model, state.selected_route_id) == (LUNA, LUNA)
+            assert (state.selected_model, state.selected_route_id) == (DEEPSEEK, DEEPSEEK)
         assert [
             call.kwargs["extra_body"]["reasoning"]["effort"] for call in provider.await_args_list
         ] == [
-            "high",
             "medium",
+            "low",
         ]
-        assert all(call.kwargs["include_reasoning"] is True for call in provider.await_args_list)
         assert [call.kwargs["model"] for call in service.reserve.await_args_list] == [
-            DEEPSEEK,
             LUNA,
+            DEEPSEEK,
         ]
 
 
@@ -752,11 +754,11 @@ async def test_sampling_incompatibility_is_filtered_before_reserving(monkeypatch
 
 
 def test_presets_validate_each_selected_model_ladder_and_preserve_caller_intent() -> None:
-    assert model_routing.model_parameter_presets(GLM, "council")["reasoning_effort"] == "high"
+    assert model_routing.model_parameter_presets(GLM, "reasoning")["reasoning_effort"] == "high"
     assert model_routing.model_parameter_presets(DEEPSEEK, "routine")["reasoning_effort"] == "low"
-    assert model_routing.model_parameter_presets(GOOGLE, "council")["reasoning_effort"] == "high"
+    assert model_routing.model_parameter_presets(GOOGLE, "routine")["reasoning_effort"] == "low"
     assert (
-        model_routing.apply_model_parameter_presets({"reasoning_effort": "max"}, GLM, "council")[
+        model_routing.apply_model_parameter_presets({"reasoning_effort": "max"}, GLM, "reasoning")[
             "reasoning_effort"
         ]
         == "max"
@@ -764,7 +766,7 @@ def test_presets_validate_each_selected_model_ladder_and_preserve_caller_intent(
     with pytest.raises(model_routing.RoutingError) as denied:
         model_routing.apply_model_parameter_presets({"reasoning_effort": "medium"}, GLM)
     assert denied.value.code == "reasoning_effort_unsupported"
-    assert model_routing.model_parameter_presets("openrouter/test/unplaced", "council") == {}
+    assert model_routing.model_parameter_presets("openrouter/test/unplaced", "routine") == {}
 
 
 @pytest.mark.asyncio
@@ -1029,7 +1031,6 @@ async def test_parallel_contexts_and_nested_auto_helper_keep_own_model_attributi
 def test_invalid_routing_configuration_fails_closed(mutation: Any) -> None:
     doc = routing_document(["openrouter/test/valid"])
     doc["models"][0]["reasoning_efforts"] = ["low"]
-    doc["models"][0]["parameter_presets"]["council"]["reasoning_effort"] = "low"
     mutation(doc)
     with pytest.raises(PolicyError):
         model_routing.parse_model_routing(doc)

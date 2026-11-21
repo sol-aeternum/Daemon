@@ -8,11 +8,9 @@ read rather than a rescan of every group. What matters is that deriving it
 changed nothing observable: the same order, the same group and position per
 model, the same exclusions, and the same public constructor.
 
-*Identity*: one helper reads ``<developer>/<model>`` for the routing catalogue
-and for a council roster, so the two cannot drift. The one intentional
-difference is explicit and tested: the catalogue records *dispatch* ids and
-requires the ``openrouter/`` namespace, while a roster seat is an operator's
-model name and accepts the bare form. ``developer_for_model`` keeps its
+*Identity*: the catalogue records *dispatch* ids and requires the
+``openrouter/`` namespace, while the shared reader also accepts the bare form.
+``developer_for_model`` keeps its
 historical lenient reading for existing callers; the strict helper is what a
 caller uses when a vendor-less id must be rejected rather than guessed at.
 """
@@ -47,7 +45,6 @@ def multi_group_profile(models_by_group: dict[str, list[str]]) -> model_routing.
             model_routing.RoutingGroup(name=name, index=index, models=tuple(models))
             for index, (name, models) in enumerate(models_by_group.items())
         ),
-        distinct_developers=False,
     )
 
 
@@ -128,10 +125,9 @@ class TestDerivedPlacementMap:
             min_output_tokens=512,
             allow_premium=True,
             groups=groups,
-            distinct_developers=False,
             notes="fixture",
         )
-        by_position = model_routing.WorkloadProfile("reasoning", 512, True, groups, False)
+        by_position = model_routing.WorkloadProfile("reasoning", 512, True, groups)
         for profile in (by_keyword, by_position):
             assert placed_in(profile, GLM).group == "demanding"
         replaced = dataclasses.replace(by_keyword, min_output_tokens=1024)
@@ -140,12 +136,12 @@ class TestDerivedPlacementMap:
 
     def test_derived_map_does_not_affect_equality_or_hashing(self):
         groups = (model_routing.RoutingGroup(name="demanding", index=0, models=(GLM,)),)
-        left = model_routing.WorkloadProfile("reasoning", 512, True, groups, False)
-        right = model_routing.WorkloadProfile("reasoning", 512, True, groups, False)
+        left = model_routing.WorkloadProfile("reasoning", 512, True, groups)
+        right = model_routing.WorkloadProfile("reasoning", 512, True, groups)
         assert left == right
         assert hash(left) == hash(right)
         assert left != model_routing.WorkloadProfile(
-            "reasoning", 512, True, groups, False, "different notes"
+            "reasoning", 512, True, groups, "different notes"
         )
 
     def test_a_model_placed_in_two_groups_resolves_consistently(self):
@@ -165,8 +161,8 @@ class TestPlacementLookupContract:
     """What the derived map must keep returning, checked against the config."""
 
     def test_candidate_reports_the_group_index_and_position_it_sits_in(self):
-        profile = model_routing.load_model_routing().profile("council")
-        for candidate in pool("council"):
+        profile = model_routing.load_model_routing().profile("reasoning")
+        for candidate in pool("reasoning"):
             placed = placed_in(profile, candidate.model)
             assert (candidate.group, candidate.group_index, candidate.position) == (
                 placed.group,
@@ -184,11 +180,11 @@ class TestPlacementLookupContract:
         )
 
     def test_exclusions_remove_candidates_without_reordering_the_rest(self):
-        full = pool("council")
+        full = pool("reasoning")
         excluded_model = full[1].model
         excluded_developers = frozenset({full[0].developer})
         filtered = pool(
-            "council",
+            "reasoning",
             excluded_models=frozenset({excluded_model}),
             excluded_developers=excluded_developers,
         )
@@ -199,18 +195,18 @@ class TestPlacementLookupContract:
         assert remaining == [m for m in (c.model for c in full) if m in set(remaining)]
 
     def test_excluding_every_candidate_is_none_not_an_empty_tuple(self):
-        every = pool("council")
+        every = pool("reasoning")
         assert (
             model_routing.profile_candidates(
-                "council",
+                "reasoning",
                 excluded_models=frozenset(candidate.model for candidate in every),
             )
             is None
         )
 
     def test_single_model_lookup_agrees_with_the_pool(self):
-        for candidate in pool("council")[:3]:
-            single = model_routing.profile_candidate("council", candidate.model)
+        for candidate in pool("reasoning")[:3]:
+            single = model_routing.profile_candidate("reasoning", candidate.model)
             assert single == candidate
 
     def test_unplaced_model_is_not_a_candidate(self):
@@ -218,9 +214,9 @@ class TestPlacementLookupContract:
         assert model_routing.is_model_routable("routine", UNPLACED) is False
 
     def test_group_helpers_are_unchanged(self):
-        profile = model_routing.load_model_routing().profile("council")
-        assert profile.group_names() == ("diverse", "escalation")
-        assert profile.group_index("diverse") == 0
+        profile = model_routing.load_model_routing().profile("reasoning")
+        assert profile.group_names() == ("demanding", "escalation")
+        assert profile.group_index("demanding") == 0
         assert profile.group_index("escalation") == 1
         with pytest.raises(model_routing.RoutingError, match="unknown group"):
             profile.group_index("made-up")
@@ -314,9 +310,7 @@ class TestModelIdentity:
             )
 
 
-class TestCatalogueAndRosterShareTheReader:
-    """The namespace difference is intentional, and it is the only difference."""
-
+class TestCatalogueModelIdentity:
     def test_catalogue_refuses_a_bare_placement_the_dispatcher_could_never_send(self):
         document = routing_document(["z-ai/glm-5.3"])
         with pytest.raises(PolicyError, match="namespaced OpenRouter model id"):
@@ -331,46 +325,3 @@ class TestCatalogueAndRosterShareTheReader:
         document["profiles"][0]["groups"][0]["models"] = ["openrouter/z-ai/"]
         with pytest.raises(PolicyError, match="must name a vendor and a model"):
             model_routing.parse_model_routing(document)
-
-    def test_roster_keeps_accepting_the_bare_form(self):
-        from orchestrator.council.models import CouncilConfig, read_developer
-
-        config = CouncilConfig(
-            roster={
-                "analyst": "anthropic/claude-sonnet-5",
-                "strategist": "openai/gpt-6.1-sol",
-                "skeptic": "google/gemini-3.8-flash",
-            }
-        )
-        assert config.roster["analyst"] == "anthropic/claude-sonnet-5"
-        # The same developer the routing module reads out of the namespaced form.
-        assert read_developer("anthropic/claude-sonnet-5") == read_developer(SONNET)
-
-    @pytest.mark.parametrize(
-        "model_id", ["claude-sonnet-5", "openrouter/", "anthropic/claude-sonnet-5/"]
-    )
-    def test_roster_still_rejects_a_vendorless_or_malformed_seat(self, model_id: str):
-        from orchestrator.council.models import CouncilConfig
-
-        with pytest.raises(ValueError, match=r"analyst.*<developer>/<model>"):
-            CouncilConfig(
-                roster={
-                    "analyst": model_id,
-                    "strategist": SOL,
-                    "skeptic": GOOGLE,
-                }
-            )
-
-    def test_roster_and_routing_never_disagree_about_a_developer(self):
-        from orchestrator.council.models import read_developer
-
-        for model_id in (
-            LUNA,
-            SOL,
-            GLM,
-            SONNET,
-            GOOGLE,
-            "z-ai/glm-5.3",
-            "openrouter/x-ai/grok-4.7",
-        ):
-            assert read_developer(model_id) == model_routing.read_model_identity(model_id).developer

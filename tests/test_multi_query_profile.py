@@ -29,10 +29,10 @@ def legacy_routing_document():
 
 def test_deployment_owned_pre_pr_routing_loads_and_selects_existing_profile(monkeypatch, tmp_path):
     raw = legacy_routing_document()
-    # Semantic SHA-256 of the shipped config/model_routing.json, re-pinned for the
-    # #747 flash_fallback groups, judge profile, DeepSeek 1017 and Sol/Astra 6.2.
+    # Semantic SHA-256 of the shipped config minus M1's changes, re-pinned for
+    # the removal of Council. The supported override still needs no M1 profile.
     assert hashlib.sha256(json.dumps(raw, sort_keys=True).encode()).hexdigest() == (
-        "29b6a35180680694492905aa031b1d044b024cd5d6e23c302720607913dc0477"
+        "6b7690b7ad8bff6709cf4e49019aeb2c70884f89f82ba7390606907b07e46d4c"
     )
     path = tmp_path / "deployment-routing.json"
     path.write_text(json.dumps(raw))
@@ -58,6 +58,27 @@ def test_deployment_owned_pre_pr_routing_loads_and_selects_existing_profile(monk
                 pytest.fail("An absent profile must never bind or substitute another profile")
         assert caught.value.code == "profile_unknown"
         assert model_routing.current_routing() is parent
+
+
+@pytest.mark.parametrize(
+    "stale_entry,error",
+    [
+        ("profile", "profiles\\[\\].profile 'council'"),
+        ("suitability", "suitability names unknown profile"),
+        ("parameter_preset", "unknown parameter preset profile: council"),
+    ],
+)
+def test_deployment_owned_routing_rejects_retired_council_entries(stale_entry, error):
+    raw = legacy_routing_document()
+    if stale_entry == "profile":
+        raw["profiles"].append({**raw["profiles"][0], "profile": "council"})
+    elif stale_entry == "suitability":
+        raw["models"][0]["suitability"].append("council")
+    else:
+        raw["models"][0]["parameter_presets"]["council"] = {"reasoning_effort": "low"}
+
+    with pytest.raises(PolicyError, match=error):
+        model_routing.parse_model_routing(raw)
 
 
 @pytest.mark.parametrize("name", sorted(model_routing.REQUIRED_ROUTING_PROFILES))

@@ -5,8 +5,7 @@ so a deployment whose approved routes cannot serve the request's own profile
 still answered 200 and only failed later — after persistence, inside the stream.
 These tests pin the contract:
 
-* automatic admission is decided by the exact profile the classifier selects,
-  and by the council profile for a council run;
+* automatic admission is decided by the exact profile the classifier selects;
 * an unrelated approved route buys nothing;
 * an exact manual selection is still admitted on its own route;
 * admission stays cheap: it reserves no account budget and calls no provider,
@@ -36,8 +35,8 @@ pytestmark = pytest.mark.usefixtures("unpaced_mock_stream")
 
 # Placements taken from the real workload routing metadata, so these tests
 # exercise the shipped profiles rather than a parallel fiction:
-#   Luna    -> routine, research, background, council (not reasoning)
-#   GLM-5.3 -> routine, research, reasoning, council
+#   Luna    -> routine, research, background (not reasoning)
+#   GLM-5.3 -> reasoning
 #   kimi    -> approved, but in no profile group at all
 LUNA = "openrouter/openai/gpt-6-luna"
 GLM = "openrouter/z-ai/glm-5.3"
@@ -91,7 +90,6 @@ class _Harness:
         self.dispatched: list[dict[str, Any]] = []
         self.account_scopes: list[str | None] = []
         self.llm_calls: list[dict[str, Any]] = []
-        self.council_streams: list[str] = []
 
     async def post(self, endpoint: str, payload: dict[str, Any]) -> Any:
         return await self.client.post(endpoint, json=payload)
@@ -186,18 +184,9 @@ async def harness_factory(monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[Any]
             async for frame in real_chat(**kwargs):
                 yield frame
 
-        async def capture_council(**kwargs: Any) -> AsyncIterator[str]:
-            harness.council_streams.append(str(kwargs.get("user_message", "")))
-            yield main_module.sse(
-                "council_done",
-                {"type": "council_done", "data": {"status": "completed"}},
-            )
-
         monkeypatch.setattr(main_module, "_account_chat_frames", capture_frames)
         monkeypatch.setattr(main_module, "account_compute", capture_scope)
         monkeypatch.setattr(main_module, "stream_sse_chat", capture_chat)
-        monkeypatch.setattr(main_module, "stream_council", capture_council)
-        monkeypatch.setattr(main_module, "stream_council_interview_response", capture_council)
         return harness
 
     try:
@@ -280,51 +269,72 @@ async def test_qualified_profile_is_admitted_without_preselecting_a_route(
 
 
 # --------------------------------------------------------------------------- #
-# Council runs on the council profile, not on the classified one
+# Retired commands are terminal without reaching admission or dispatch.
 # --------------------------------------------------------------------------- #
 
 
 @pytest.mark.asyncio
-async def test_council_admission_uses_the_council_profile(harness_factory: Any) -> None:
-    """ "/council --default Compare options" classifies as reasoning, but streams as council."""
-    harness = await harness_factory(models=(LUNA,))
-
-    response = await harness.post(
-        NATIVE, {"message": "/council --default Compare options", "model": "auto"}
-    )
-
-    assert response.status_code == 200, response.text
-    assert harness.council_streams == ["/council --default Compare options"]
-    assert harness.account_scopes == ["council"]
-
-
-@pytest.mark.asyncio
-async def test_council_config_interview_admission_uses_the_council_profile(
-    harness_factory: Any,
+@pytest.mark.parametrize("endpoint", [NATIVE, COMPAT, "/chat/completions"])
+@pytest.mark.parametrize(
+    "text",
+    [
+        "/council",
+        "/council --default Compare options",
+        " /CoUnCiL config: preset=deep",
+        "/council:retry",
+    ],
+)
+async def test_council_command_is_refused_without_compute(
+    harness_factory: Any, endpoint: str, text: str
 ) -> None:
-    harness = await harness_factory(models=(LUNA,))
-
-    response = await harness.post(
-        NATIVE, {"message": "/council config: preset=deep", "model": "auto"}
-    )
-
-    assert response.status_code == 200, response.text
-    assert harness.account_scopes == ["council"]
+    harness = await harness_factory(models=(LUNA, GLM))
+    response = await harness.post(endpoint, _auto_payload(endpoint, text))
+    assert response.status_code == 410
+    assert response.json() == {"detail": {"message": "Council has been retired."}}
+    assert harness.store.inserts == []
+    harness.assert_no_servable_work_started()
 
 
 @pytest.mark.asyncio
-async def test_council_is_refused_when_only_routine_is_qualified(harness_factory: Any) -> None:
-    """A deployment with no council-qualified route cannot run a council round."""
-    harness = await harness_factory(models=(UNROUTED,))
-
+async def test_latest_structured_user_command_is_refused(harness_factory: Any) -> None:
+    harness = await harness_factory(models=(LUNA, GLM))
     response = await harness.post(
-        NATIVE, {"message": "/council --default Compare options", "model": "auto"}
+        NATIVE,
+        {
+            "message": "Unused fallback text",
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [{"type": "text", "text": "/council config: rounds=2"}],
+                },
+            ],
+        },
     )
-
-    assert response.status_code == 503
-    assert response.json()["detail"]["code"] == "route_unavailable"
-    assert harness.council_streams == []
+    assert response.status_code == 410
+    assert harness.store.inserts == []
     harness.assert_no_servable_work_started()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "text", ["Tell me about the Council", "What did /council do?", "/councillor"]
+)
+async def test_council_mentions_are_ordinary_chat(harness_factory: Any, text: str) -> None:
+    harness = await harness_factory(models=(LUNA, GLM))
+    response = await harness.post(
+        NATIVE,
+        {
+            "message": text,
+            "messages": [
+                {"role": "user", "content": "/council"},
+                {"role": "assistant", "content": "Old prose"},
+                {"role": "user", "content": text},
+            ],
+        },
+    )
+    assert response.status_code == 200
+    assert "event: token" in response.text and "event: done" in response.text
+    assert len(harness.llm_calls) == 1
 
 
 # --------------------------------------------------------------------------- #
