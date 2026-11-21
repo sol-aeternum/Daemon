@@ -112,3 +112,22 @@ terminal outcomes, controlled reconciliation, production-qualified authenticated
 original ACL/key/account/file continuity and live restore qualification remain
 open. No real grant, migration, provisioning, deployment, recovery action or
 activation follows from source tests or matching metadata.
+
+## Source-only returned non-success extension
+
+The explicit `terminal-v4` profile reads unchanged v1–v3 records and adds
+`NONSUCCESS_OUTPUT_PREPARE` under `daemon.restore-history.frame.v4\n`. The
+record names the original account, generation, task, result, acceptance
+and epoch, `native-nonsuccess-body-v1`, and a closed non-success state and
+reason. It does not carry text or provider payload. One terminal prepare,
+of either kind, is allowed per task. An earlier Stop wins; a committed
+terminal result cannot be overwritten by a late Stop.
+
+`migrations/opt_in/074_terminal_v4.sql` is outside the default migration
+glob. It adds no production provisioning and does not change migration 065
+on disk. Explicit qualification requires the matching profile and exact
+projection privileges. The guarded SQL write stages the message, attempt,
+task, finished event and projection together; the separate append remains
+fail-closed if those SQL rows cannot be confirmed. Neither fact parity nor
+snapshot readback grants writer authority. See [chat turn finish](CHAT_TURN_FINISH.md)
+for `turn_finish` and the non-success mapping.

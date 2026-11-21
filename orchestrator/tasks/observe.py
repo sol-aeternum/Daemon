@@ -26,6 +26,7 @@ from orchestrator.tasks.runner import live_channel
 from orchestrator.tasks.states import TERMINAL_STATUSES, TaskStatus
 from orchestrator.tasks.store import TaskEvent, TaskSnapshot, TaskStore
 from orchestrator.tasks.inference import CODE as INFERENCE_UNRESOLVED, NOTICE as INFERENCE_NOTICE
+from orchestrator.turn_finish import ProviderFinish, TurnFinish, unknown_finish
 
 logger = logging.getLogger(__name__)
 
@@ -55,6 +56,16 @@ _TERMINAL_MESSAGES = {
         "Check its result before retrying."
     ),
     "interrupted": "This task was interrupted and could not be completed.",
+    "provider_length": "The provider reached its output limit. This reply may be incomplete.",
+    "provider_content_filter": "The provider filtered this reply.",
+    "finish_evidence_missing": "The reply ended without a confirmed completion reason.",
+    "finish_evidence_conflict": (
+        "Conflicting completion information was received; this reply's completion is unknown."
+    ),
+    "context_limit": "This request stopped because the context limit was reached.",
+    "deadline_exceeded": "This request stopped because its time limit was reached.",
+    "tool_price_exceeded": "This request stopped at a tool price limit.",
+    "embedding_price_exceeded": "This request stopped at an embedding price limit.",
 }
 
 
@@ -96,6 +107,11 @@ class _Observation:
             "content_generation": snapshot.content_generation,
             "regenerated_after_interruption": snapshot.regenerated_after_interruption,
         }
+        if snapshot.status in TERMINAL_STATUSES:
+            if snapshot.terminal_code is not None:
+                data["terminal_code"] = snapshot.terminal_code
+            if snapshot.turn_finish is not None:
+                data["turn_finish"] = snapshot.turn_finish.model_dump(exclude_none=True)
         if reset:
             data["reset"] = True
             data["content"] = snapshot.content
@@ -185,19 +201,28 @@ class _Observation:
         frames = [self.task_frame(snapshot, reset=reset)]
         if reset:
             self.displayed = snapshot.content
-        if status is TaskStatus.COMPLETED:
+        finish = snapshot.turn_finish
+        if finish is None and status is TaskStatus.CANCELLED:
+            finish = TurnFinish(
+                outcome="cancelled", reason="cancelled", provider=ProviderFinish(state="missing")
+            )
+        finish_data = (finish or unknown_finish()).model_dump(exclude_none=True)
+        if status is TaskStatus.COMPLETED or (
+            snapshot.turn_finish is not None and status is not TaskStatus.CANCELLED
+        ):
             frames.append(
                 self.frame(
                     "final",
                     {
                         "text": snapshot.content,
-                        "finish_reason": "stop",
+                        "finish_reason": finish.finish_reason if finish is not None else None,
                         "content_generation": snapshot.content_generation,
+                        "turn_finish": finish_data,
                     },
                     evt_id="evt_final",
                 )
             )
-        elif status in (TaskStatus.FAILED, TaskStatus.NEEDS_ATTENTION):
+        if status in (TaskStatus.FAILED, TaskStatus.NEEDS_ATTENTION):
             code = snapshot.terminal_code or "failed"
             frames.append(
                 self.frame(
@@ -209,12 +234,18 @@ class _Observation:
                         ),
                         "retryable": status is TaskStatus.FAILED
                         and code in RETRYABLE_TERMINAL_CODES,
+                        "content_generation": snapshot.content_generation,
+                        "turn_finish": finish_data,
                     },
                     evt_id="evt_error",
                 )
             )
         done = {"completed": "completed", "cancelled": "cancelled"}.get(status.value, "error")
-        data: dict[str, Any] = {"status": done}
+        data: dict[str, Any] = {
+            "status": done,
+            "turn_finish": finish_data,
+            "content_generation": snapshot.content_generation,
+        }
         if snapshot.terminal_code:
             data["reason"] = snapshot.terminal_code
         frames.append(self.frame("done", data, evt_id="evt_done"))

@@ -4,6 +4,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 from orchestrator.memory.temporal import TemporalReadScope
+from orchestrator.turn_finish import TurnFinish
 
 
 # ============== OpenAI Compatible Models ==============
@@ -66,6 +67,7 @@ class OpenAIChatResponse(BaseModel):
     model: str
     choices: list[OpenAIChoice]
     usage: OpenAIUsage | None = None
+    daemon_turn_finish: TurnFinish | None = None
 
 
 class OpenAIChatStreamChunk(BaseModel):
@@ -76,6 +78,7 @@ class OpenAIChatStreamChunk(BaseModel):
     created: int
     model: str
     choices: list[OpenAIChoice]
+    daemon_turn_finish: TurnFinish | None = None
 
 
 class OpenAIModelInfo(BaseModel):

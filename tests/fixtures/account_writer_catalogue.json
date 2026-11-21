@@ -7265,7 +7265,7 @@
     },
     {
       "owner_source": "orchestrator.tasks.store",
-      "qualname": "TaskStore._stage_completed_body",
+      "qualname": "TaskStore._stage_terminal_task",
       "kind": "sql_inline",
       "fingerprint": "402c026c33b75ace",
       "tables": [
@@ -8570,6 +8570,28 @@
       "uncovered": true,
       "category": "deferred",
       "rationale": "String-only closed catalog replacement retained as a conservative unresolved scanner candidate, not filesystem mutation or account-fence qualification. Uncalled terminal-v3 source; uncovered."
+    },
+    {
+      "owner_source": "orchestrator.services.restore_history.terminal_projection",
+      "qualname": "<module>",
+      "kind": "filesystem_write",
+      "fingerprint": "9a287f569afe7e7f",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "String-only catalog replacement for opt-in terminal-v4 qualification. The conservative scanner records it without claiming filesystem mutation, activation or account-fence coverage."
+    },
+    {
+      "owner_source": "orchestrator.services.restore_history.observation",
+      "qualname": "HistoryObservation._task_owned",
+      "kind": "sql_unresolvable",
+      "fingerprint": "ec50a75dad5a1572",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "Fixed SELECT with profile-specific result columns, original-account/task predicates and share locks. Inventory retains the scanner's unresolved SQL classification without claiming mutation or account-fence coverage."
     },
     {
       "owner_source": "orchestrator.routes.skills",

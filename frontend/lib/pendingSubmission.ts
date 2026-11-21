@@ -308,7 +308,12 @@ export function recordSubmissionTask(key: string, taskId: string): void {
 type ConversationTasks = {
   id: string;
   activeTask?: { id: string } | null;
-  latestTask?: { id: string; status: string } | null;
+  latestTask?: {
+    id: string;
+    status: string;
+    /** The server's explicit terminal code, when it recorded one. */
+    terminalCode?: string;
+  } | null;
 };
 
 /**
@@ -320,7 +325,13 @@ export function finishedSubmissionKeys(
   isTerminal: (status: string) => boolean,
 ): string[] {
   const latest = conversation.latestTask;
-  if (latest?.status === 'needs_attention') {
+  if (
+    latest?.status === 'needs_attention' &&
+    latest.terminalCode === 'inference_dispatch_unresolved'
+  ) {
+    // Only the server's explicit code proves an unresolved inference
+    // dispatch. Other needs_attention outcomes (for example a material
+    // uncertain effect) settle for bookkeeping below without this cause.
     const store = storage();
     try {
       if (store)

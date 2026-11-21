@@ -281,7 +281,7 @@ NON_FIELD_CONSUMERS: dict[str, NonFieldConsumer] = {
         kind="frontend-source",
         sources=(
             "frontend/app/api/_lib/bootstrapBackend.ts:36",
-            "frontend/app/api/chat/route.ts:6",
+            "frontend/app/api/chat/route.ts:11",
         ),
         reason=(
             "optional server-only upstream override for the Next route handlers; the shared "

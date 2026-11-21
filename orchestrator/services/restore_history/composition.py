@@ -30,7 +30,7 @@ from .effects_projection import HistoryProjection
 from .model import MAX_CANONICAL, AcceptPrepare, Command, HistoryError, commitments, parse
 from .projection import compare_projections
 from .store import _check_time
-from .terminal_projection import TerminalHistoryProjection
+from .terminal_projection import TERMINAL_PROFILES
 
 
 class HistoryAcceptance:
@@ -57,10 +57,8 @@ class HistoryAcceptance:
         if (
             type(tasks) is not TaskStore
             or type(history) is not HistoryCoordinator
-            or type(projection)
-            not in (AcceptanceProjection, HistoryProjection, TerminalHistoryProjection)
-            or projection.profile
-            != ("terminal-v3" if type(projection) is TerminalHistoryProjection else "h1")
+            or type(projection) not in (AcceptanceProjection, HistoryProjection, *TERMINAL_PROFILES)
+            or projection.profile != TERMINAL_PROFILES.get(type(projection), "h1")
             or history.profile != projection.profile
             or history._expected != projection.expected
             or tasks._memory._pool is not tasks._pool

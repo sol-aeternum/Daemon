@@ -855,6 +855,21 @@ test('HTML artifacts distinguish a streaming reply from saved preview and source
                 id: 'message-104',
                 role: 'assistant',
                 content: open + unfinished,
+                metadata: {
+                  terminal_status: 'error',
+                  terminal_reason: 'provider_length',
+                  turn_finish: {
+                    version: 1,
+                    outcome: 'incomplete',
+                    reason: 'provider_length',
+                    provider: {
+                      state: 'confirmed',
+                      reason: 'length',
+                      provenance: 'provider_wire',
+                    },
+                    limits: [],
+                  },
+                },
               },
               {
                 id: 'message-105',
@@ -884,6 +899,11 @@ test('HTML artifacts distinguish a streaming reply from saved preview and source
   );
   await expect(svgFrame).toHaveCSS('opacity', '1');
   await expect(svgFrame.contentFrame().locator('circle')).toBeVisible();
+  const savedFinish = savedReply(104).getByRole('status').filter({
+    hasText:
+      'The provider reached its output limit. This reply may be incomplete.',
+  });
+  await expect(savedFinish).toBeVisible();
   for (const [id, body, notice] of [
     [103, unsupported, /uses unsupported features/],
     [104, unfinished, /code block was not closed/],

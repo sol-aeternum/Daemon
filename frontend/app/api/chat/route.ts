@@ -1,5 +1,10 @@
 import type { ChatEvent } from '@/lib/events';
 import { TERMINAL_TASK_STATUSES, type DaemonMessage } from '@/lib/chatMessages';
+import {
+  finishReasonForTurnFinish,
+  readTerminalFinish,
+  type TurnFinish,
+} from '@/lib/turnFinish';
 import { appendDaemonClientIpHeaders } from '../_lib/clientIp';
 
 const API_URLS = [
@@ -364,6 +369,59 @@ export async function POST(req: Request) {
         return meta;
       };
 
+      // Versioned terminal evidence (#759). Only authoritative frames count:
+      // a live ``final`` is provisional and never supplies finish metadata.
+      // The durable terminal snapshot and ``done`` do, within their own
+      // content generation. Legacy or malformed evidence stays absent, so it
+      // can never claim a normal completion.
+      let turnFinish: TurnFinish | null = null;
+      let terminalStatus: 'complete' | 'error' | 'cancelled' | undefined;
+      let terminalReason: string | undefined;
+      // A structured task-terminal error is followed by the authoritative
+      // ``done`` frame; defer it so that evidence is still read.
+      let deferredTerminalError: string | undefined;
+      let attachErrorMetadata = false;
+      let doneSeen = false;
+      // The latest authoritative durable snapshot with a terminal result, and
+      // the generation it belongs to. A missing/invalid ``done`` may reuse it
+      // only within that same generation.
+      let snapshotTerminal = false;
+      let snapshotFinish: TurnFinish | null = null;
+      let snapshotStatus: 'complete' | 'error' | 'cancelled' | undefined;
+      let snapshotGeneration = 0;
+      let snapshotContradictsFinish = false;
+      const TERMINAL_CODE = /^[a-z][a-z0-9_]{0,63}$/;
+      const readTerminalReason = (value: unknown): string | undefined =>
+        typeof value === 'string' && TERMINAL_CODE.test(value)
+          ? value
+          : undefined;
+      const persistedTerminalStatus = (
+        status: unknown,
+      ): 'complete' | 'error' | 'cancelled' | undefined => {
+        if (status === 'completed' || status === 'complete') return 'complete';
+        if (status === 'cancelled') return 'cancelled';
+        if (
+          status === 'failed' ||
+          status === 'needs_attention' ||
+          status === 'error'
+        )
+          return 'error';
+        return undefined;
+      };
+      const finishMetadata = (): Record<string, unknown> => {
+        const metadata: Record<string, unknown> = {};
+        if (turnFinish) metadata.turn_finish = turnFinish;
+        if (terminalStatus) metadata.terminal_status = terminalStatus;
+        if (terminalReason) metadata.terminal_reason = terminalReason;
+        return metadata;
+      };
+      const writeFinishMetadata = () => {
+        const metadata = finishMetadata();
+        if (Object.keys(metadata).length > 0) {
+          writer.write({ type: 'message-metadata', messageMetadata: metadata });
+        }
+      };
+
       const writeText = (delta: string) => {
         if (!textPartStarted) {
           textPartStarted = true;
@@ -526,11 +584,46 @@ export async function POST(req: Request) {
                 // status, another reset or terminal state (#477).
                 if (!acceptGeneration(payload)) continue;
                 const task = payload?.data ?? {};
-                if (
+                const taskTerminal =
                   typeof task.status === 'string' &&
-                  TERMINAL_TASK_STATUSES.has(task.status)
-                ) {
+                  TERMINAL_TASK_STATUSES.has(task.status);
+                const taskReason = readTerminalReason(task.terminal_code);
+                const taskFinish = readTerminalFinish(
+                  task.turn_finish,
+                  task.status,
+                  task.terminal_code,
+                );
+                if (task.reset === true) {
+                  // A new generation invalidates the replaced attempt's
+                  // evidence, including any provisional result.
+                  turnFinish = null;
+                  terminalStatus = undefined;
+                  terminalReason = undefined;
+                  deferredTerminalError = undefined;
+                  attachErrorMetadata = false;
+                  doneSeen = false;
+                  snapshotTerminal = false;
+                  snapshotFinish = null;
+                  snapshotStatus = undefined;
+                  snapshotGeneration = 0;
+                  snapshotContradictsFinish = false;
+                }
+                if (taskTerminal) {
+                  // Authoritative terminal snapshot: it outranks a later
+                  // provisional final and any generation-replaced done/error.
                   sawTerminalTask = true;
+                  snapshotTerminal = true;
+                  snapshotGeneration =
+                    readFrameGeneration(payload) ?? contentGeneration;
+                  snapshotStatus = persistedTerminalStatus(task.status);
+                  snapshotFinish = taskFinish ?? null;
+                  snapshotContradictsFinish =
+                    !taskFinish &&
+                    (task.turn_finish != null ||
+                      (snapshotStatus === 'complete' && Boolean(taskReason)));
+                  turnFinish = snapshotFinish;
+                  if (snapshotStatus) terminalStatus = snapshotStatus;
+                  if (taskReason) terminalReason = taskReason;
                 }
                 if (task.reset === true) {
                   if (textPartStarted) {
@@ -568,6 +661,8 @@ export async function POST(req: Request) {
                         typeof task.status === 'string'
                           ? task.status
                           : undefined,
+                      ...(taskFinish ? { turn_finish: taskFinish } : {}),
+                      ...(taskReason ? { terminal_code: taskReason } : {}),
                     } as ChatEvent,
                   ]);
                 }
@@ -694,11 +789,53 @@ export async function POST(req: Request) {
                   } as ChatEvent,
                 ]);
               } else if (eventType === 'error') {
-                const detail = readCapacityDetail(payload?.data ?? payload);
-                errorText = formatCapacityMessage(
+                // An error from a replaced generation is not this attempt's
+                // outcome (#477).
+                if (!acceptGeneration(payload)) continue;
+                const data = toRecord(payload?.data) ?? payload;
+                const detail = readCapacityDetail(data);
+                const message = formatCapacityMessage(
                   detail,
                   'Chat request failed.',
                 );
+                const terminalCode = readTerminalReason(detail.code);
+                const errorFinish = readTerminalFinish(
+                  data?.turn_finish,
+                  'error',
+                  terminalCode,
+                );
+                // The native observer's terminal error precedes its
+                // authoritative ``done`` frame. For a durable task, keep
+                // reading so the terminal evidence is not lost and the turn
+                // can finish as a known non-success instead of a transport
+                // error. Generic request errors keep the original immediate
+                // behaviour.
+                if (
+                  taskId !== null &&
+                  (terminalCode !== undefined || errorFinish !== undefined)
+                ) {
+                  deferredTerminalError = message;
+                  if (errorFinish) {
+                    turnFinish = errorFinish;
+                    attachErrorMetadata = true;
+                  }
+                  if (terminalCode) {
+                    terminalReason = terminalCode;
+                    attachErrorMetadata = true;
+                  }
+                  if (!terminalStatus) terminalStatus = 'error';
+                  sawTerminalTask = true;
+                  continue;
+                }
+                errorText = message;
+                if (errorFinish) {
+                  // Structured non-success on a generic stream: attach the
+                  // evidence, but the SDK error remains (never a stop).
+                  turnFinish = errorFinish;
+                  if (!terminalStatus) terminalStatus = 'error';
+                  if (terminalCode) terminalReason = terminalCode;
+                  attachErrorMetadata = true;
+                }
                 streamFailed = true;
                 return;
               } else if (eventType === 'video_generating') {
@@ -803,22 +940,93 @@ export async function POST(req: Request) {
                       payload?.request_id ?? payload?.data?.request_id,
                   },
                 ]);
-              } else if (eventType === 'final' && !sawToken) {
+              } else if (eventType === 'final') {
+                // Provisional text only. A final never supplies finish
+                // metadata: EOF without an authoritative ``done``/terminal
+                // snapshot cannot become a confirmed stop.
                 const content =
                   payload?.data?.text ??
                   payload?.data?.message?.content ??
                   payload?.text ??
                   payload?.message?.content;
-                if (typeof content === 'string' && content.length > 0) {
+                if (
+                  !sawToken &&
+                  typeof content === 'string' &&
+                  content.length > 0
+                ) {
                   writeText(content);
                 }
+              } else if (eventType === 'done') {
+                // Authoritative terminal frame for its generation: it
+                // overtakes a provisional final. A same-generation terminal
+                // snapshot supplies evidence only when ``done`` itself lacks
+                // a valid envelope; a status mismatch can never report stop.
+                if (!acceptGeneration(payload)) continue;
+                const done = toRecord(payload?.data) ?? {};
+                const doneGeneration =
+                  readFrameGeneration(payload) ?? contentGeneration;
+                const doneStatus = persistedTerminalStatus(done.status);
+                const doneReason = readTerminalReason(done.reason);
+                const snapshotApplies =
+                  snapshotTerminal && snapshotGeneration === doneGeneration;
+                const doneFinish = readTerminalFinish(
+                  done.turn_finish,
+                  doneStatus ?? (snapshotApplies ? snapshotStatus : undefined),
+                  doneReason,
+                );
+                const snapshotEvidence = snapshotApplies
+                  ? snapshotFinish
+                  : null;
+                const mismatch =
+                  snapshotApplies &&
+                  doneStatus !== undefined &&
+                  snapshotStatus !== undefined &&
+                  doneStatus !== snapshotStatus;
+                doneSeen = true;
+                if (
+                  mismatch ||
+                  (snapshotApplies && snapshotContradictsFinish) ||
+                  (!snapshotEvidence &&
+                    deferredTerminalError !== undefined &&
+                    doneFinish?.outcome === 'complete')
+                ) {
+                  // Contradictory evidence is never a success.
+                  turnFinish = null;
+                  terminalStatus = 'error';
+                  terminalReason = doneReason ?? terminalReason;
+                } else {
+                  // A same-generation terminal task snapshot is the durable
+                  // authority; done only supplies evidence when the snapshot
+                  // committed none.
+                  turnFinish = snapshotApplies
+                    ? (snapshotEvidence ?? doneFinish ?? null)
+                    : (doneFinish ?? null);
+                  if (doneStatus) {
+                    terminalStatus = doneStatus;
+                  } else if (snapshotApplies && snapshotStatus) {
+                    terminalStatus = snapshotStatus;
+                  }
+                  if (terminalStatus === 'complete') {
+                    terminalReason = undefined;
+                  } else {
+                    terminalReason =
+                      doneReason ??
+                      (snapshotApplies ? terminalReason : undefined);
+                  }
+                }
+                sawTerminalTask = true;
               }
             }
           }
         } finally {
           req.signal.removeEventListener('abort', onAbort);
         }
-        if (!sawTerminalTask && !streamFailed && !req.signal.aborted) {
+        if (
+          !sawTerminalTask &&
+          !streamFailed &&
+          !req.signal.aborted &&
+          deferredTerminalError === undefined
+        ) {
           // The observer ended early (e.g. a transient database error). Keep
           // the submission unresolved so the client reconciles with the task.
           errorText =
@@ -836,12 +1044,40 @@ export async function POST(req: Request) {
         if (req.signal.aborted) {
           writer.write({ type: 'abort', reason: 'request-aborted' });
         } else if (streamFailed) {
+          // Connection/ingress failures stay SDK errors. Evidence that
+          // arrived with the error is attached without claiming a stop.
+          if (attachErrorMetadata) writeFinishMetadata();
           writer.write({
             type: 'error',
             errorText,
           });
+        } else if (deferredTerminalError !== undefined) {
+          if (doneSeen) {
+            // A structured, known non-success that reached its terminal
+            // ``done``: render the notice and keep the connection healthy.
+            // Its finish reason is never ``stop`` and no resend is implied.
+            const metadata = finishMetadata();
+            writer.write({
+              type: 'finish',
+              finishReason: finishReasonForTurnFinish(turnFinish ?? undefined),
+              ...(Object.keys(metadata).length > 0
+                ? { messageMetadata: metadata }
+                : {}),
+            });
+          } else {
+            // No terminal ``done``: this remains a connection-level error.
+            if (attachErrorMetadata) writeFinishMetadata();
+            writer.write({ type: 'error', errorText: deferredTerminalError });
+          }
         } else {
-          writer.write({ type: 'finish', finishReason: 'stop' });
+          const metadata = finishMetadata();
+          writer.write({
+            type: 'finish',
+            finishReason: finishReasonForTurnFinish(turnFinish ?? undefined),
+            ...(Object.keys(metadata).length > 0
+              ? { messageMetadata: metadata }
+              : {}),
+          });
         }
       }
     },

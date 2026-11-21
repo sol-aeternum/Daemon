@@ -12,10 +12,13 @@ import pytest
 
 from orchestrator.services.restore_history.model import (
     TERMINAL_DOMAIN,
+    NONSUCCESS_DOMAIN,
     AcceptPrepare,
     ArtifactPrepare,
     Command,
     HistoryError,
+    NonsuccessOutputPrepare,
+    Profile,
     TerminalOutputPrepare,
     canonical,
     decode_entry,
@@ -52,13 +55,32 @@ def terminal():
     )
 
 
-def chain(*commands):
+def nonsuccess():
+    a = terminal().data
+    assert isinstance(a, TerminalOutputPrepare)
+    return Command(
+        UUID(int=109),
+        NonsuccessOutputPrepare(
+            a.account_id,
+            a.account_generation,
+            a.task_id,
+            a.result_message_id,
+            a.acceptance_record_id,
+            a.epoch,
+            "native-nonsuccess-body-v1",
+            "failed",
+            "provider_length",
+        ),
+    )
+
+
+def chain(*commands: Command, profile: Profile = "terminal-v3"):
     entries = []
     previous = ZERO
     for seq, command in enumerate(commands, 1):
         entry = decode_entry(
-            encode_entry(HISTORY, seq, previous, command, profile="terminal-v3"),
-            profile="terminal-v3",
+            encode_entry(HISTORY, seq, previous, command, profile=profile),
+            profile=profile,
         )
         entries.append(entry)
         previous = entry.digest
@@ -185,3 +207,99 @@ def test_real_store_terminal_roundtrip_and_strict_default(tmp_path):
     with pytest.raises(HistoryError):
         with HistoryStore(tmp_path / "h", identity, owner, deadline=time.monotonic() + 2) as store:
             store.verify(deadline=time.monotonic() + 2)
+
+
+def test_v4_closed_domain_old_refusal_and_unchanged_older_frames():
+    for item in (accept(), artifact(), terminal()):
+        assert encode_entry(HISTORY, 1, ZERO, item, profile="terminal-v4") == encode_entry(
+            HISTORY, 1, ZERO, item, profile="terminal-v3"
+        )
+    command = nonsuccess()
+    frame = encode_entry(HISTORY, 1, ZERO, command, profile="terminal-v4")
+    assert frame[-32:] == hashlib.sha256(NONSUCCESS_DOMAIN + frame[:-32]).digest()
+    assert decode_entry(frame, profile="terminal-v4").command == command
+    value = json.loads(frame[4:-32])
+    assert (value["v"], value["actor"], value["kind"]) == (4, "worker", "NONSUCCESS_OUTPUT_PREPARE")
+    assert set(value["data"]) == {
+        "account_id",
+        "account_generation",
+        "task_id",
+        "result_message_id",
+        "acceptance_record_id",
+        "epoch",
+        "terminal_schema",
+        "status",
+        "reason",
+    }
+    for profile in ("h1", "artifact-v2", "terminal-v3"):
+        with pytest.raises(HistoryError):
+            decode_entry(frame, profile=profile)
+        with pytest.raises(HistoryError):
+            encode_entry(HISTORY, 1, ZERO, command, profile=profile)
+    for fields in (
+        {"provider_payload": "not history"},
+        {"status": "cancelled"},
+        {"reason": "failed_terminal"},
+        {"epoch": 0},
+        {"status": "needs_attention", "reason": "provider_length"},
+    ):
+        mutated = {**value, "data": {**value["data"], **fields}}
+        payload = canonical(mutated)
+        body = struct.pack(">I", len(payload)) + payload
+        with pytest.raises(HistoryError):
+            decode_entry(
+                body + hashlib.sha256(NONSUCCESS_DOMAIN + body).digest(), profile="terminal-v4"
+            )
+
+
+def test_v4_mixed_chain_keeps_distinct_original_terminal_facts():
+    a = accept()
+    assert isinstance(a.data, AcceptPrepare)
+    other = replace(
+        a,
+        record_id=UUID(int=110),
+        data=replace(
+            a.data,
+            task_id=UUID(int=111),
+            result_message_id=UUID(int=112),
+            key_commitment="c" * 64,
+        ),
+    )
+    assert isinstance(other.data, AcceptPrepare)
+    last = nonsuccess()
+    last = replace(
+        last,
+        data=replace(
+            last.data,
+            task_id=other.data.task_id,
+            result_message_id=other.data.result_message_id,
+            acceptance_record_id=other.record_id,
+        ),
+    )
+    entries = chain(a, artifact(), terminal(), other, last, profile="terminal-v4")
+    assert validate_chain(HISTORY, entries, profile="terminal-v4").entries == tuple(entries)
+
+
+@pytest.mark.parametrize(
+    "commands",
+    [
+        lambda: (nonsuccess(),),
+        lambda: (accept(), stop(), nonsuccess()),
+        lambda: (accept(), begin(1, chain(accept())[0].digest), nonsuccess()),
+        lambda: (accept(), terminal(), nonsuccess()),
+        lambda: (accept(), nonsuccess(), terminal()),
+        lambda: (
+            accept(),
+            nonsuccess(),
+            replace(
+                nonsuccess(), record_id=UUID(int=999), data=replace(nonsuccess().data, epoch=2)
+            ),
+        ),
+        lambda: (accept(), nonsuccess(), send()),
+        lambda: (accept(), nonsuccess(), artifact()),
+        lambda: (accept(), nonsuccess(), stop()),
+    ],
+)
+def test_v4_terminal_negative_fences(commands):
+    with pytest.raises(HistoryError):
+        validate_chain(HISTORY, chain(*commands(), profile="terminal-v4"), profile="terminal-v4")

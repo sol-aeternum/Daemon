@@ -262,11 +262,13 @@ class AttemptSink:
         content: str | None = None,
         status: str | None = None,
         metadata: dict[str, Any] | None = None,
+        terminal_answer: bool = False,
         **fields: Any,
     ) -> dict[str, Any] | None:
-        async with _mutation(self._state, final=status == "complete"):
+        final = status == "complete" or (terminal_answer and status == "error")
+        async with _mutation(self._state, final=final):
             return await self._update_message(
-                message_id, content=content, status=status, metadata=metadata, **fields
+                message_id, content=content, status=status, metadata=metadata, final=final, **fields
             )
 
     async def _update_message(
@@ -276,6 +278,7 @@ class AttemptSink:
         content: str | None = None,
         status: str | None = None,
         metadata: dict[str, Any] | None = None,
+        final: bool = False,
         **fields: Any,
     ) -> dict[str, Any] | None:
         claim = self._state.claim
@@ -288,7 +291,7 @@ class AttemptSink:
             # A known Stop is resolved separately by the uncancelled owner runner.
             return None
         try:
-            if status == "complete":
+            if final:
                 message_fields = {key: value for key, value in fields.items() if value is not None}
                 tool_results = message_fields.get("tool_results")
                 if isinstance(tool_results, list):
@@ -306,7 +309,9 @@ class AttemptSink:
                     message_fields["tool_results"] = saved
                 if metadata:
                     message_fields["metadata"] = metadata
-                self._state.result = await self._complete(content or "", message_fields)
+                self._state.result = await self._complete(
+                    content or "", message_fields, non_success=status == "error"
+                )
                 # The status actually committed: a cancel or suspension may
                 # have won, and the engine then skips success-only work.
                 return {**self._row(), "status": _COMMITTED_MESSAGE_STATUS[self._state.result]}
@@ -359,7 +364,9 @@ class AttemptSink:
             _halt_writes(self._state, "task_observation_indeterminate")
             raise ObservationBlocked() from error
 
-    async def _complete(self, content: str, message_fields: dict[str, Any]) -> TaskStatus:
+    async def _complete(
+        self, content: str, message_fields: dict[str, Any], *, non_success: bool = False
+    ) -> TaskStatus:
         """Commit the result; the attempt's own stops wait until it settles.
 
         A heartbeat can find the lease ended by this very commit before its
@@ -371,7 +378,14 @@ class AttemptSink:
         state.completing = True
         try:
             effects = _effects(state)
-            if effects is not None:
+            if effects is not None and non_success:
+                status = await effects.publish_non_success(
+                    state.claim,
+                    content=content,
+                    message_fields=message_fields,
+                    deadline=_h_deadline(state),
+                )
+            elif effects is not None:
                 status = await effects.complete(
                     state.claim.task_id,
                     state.claim.epoch,
@@ -379,6 +393,14 @@ class AttemptSink:
                     message_fields=message_fields,
                     binding=state.claim,
                     deadline=_h_deadline(state),
+                )
+            elif non_success:
+                status = await self._store.publish_non_success(
+                    state.claim.task_id,
+                    state.claim.epoch,
+                    content=content,
+                    message_fields=message_fields,
+                    binding=state.claim,
                 )
             else:
                 status = await self._store.complete(

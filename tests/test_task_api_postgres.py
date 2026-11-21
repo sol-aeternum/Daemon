@@ -134,7 +134,9 @@ async def api(env: Env, monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[Api]:
         for chunk in CHUNKS:
             await asyncio.sleep(0.05)
             yield {"type": "content_delta", "content": chunk}
-        yield {"type": "done", "finish_reason": "stop"}
+        from tests.turn_finish_support import confirmed_stop
+
+        yield confirmed_stop()
 
     monkeypatch.setattr("orchestrator.daemon.completion_with_tools", scripted_completion)
 
@@ -593,7 +595,10 @@ async def test_needs_attention_is_reported_honestly(env: Env, monkeypatch: pytes
     assert events["error"]["data"]["code"] == "uncertain_effect"
     assert events["error"]["data"]["retryable"] is False
     assert "may already have happened" in events["error"]["data"]["message"]
-    assert events["done"]["data"] == {"status": "error", "reason": "uncertain_effect"}
+    done = events["done"]["data"]
+    assert (done["status"], done["reason"]) == ("error", "uncertain_effect")
+    assert done["turn_finish"]["outcome"] == "unknown"
+    assert done["turn_finish"]["provider"] == {"state": "missing"}
 
 
 @pytest.mark.asyncio

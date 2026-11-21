@@ -29,6 +29,7 @@ from orchestrator.worker.jobs import (
 from orchestrator.redis_jobs import account_job_id
 from tests.redis_jobs_support import install_fake_enqueue
 from tests.memory_capture_support import install_capture_pool
+from tests.turn_finish_support import confirmed_stop
 
 
 @pytest.fixture(autouse=True)
@@ -77,7 +78,7 @@ class TestPipelineHookIntegration:
                     "result": {"success": True},
                 }
             yield {"type": "content_delta", "content": "done"}
-            yield {"type": "done"}
+            yield confirmed_stop()
 
         from orchestrator.daemon import stream_sse_chat
         from orchestrator.config import ProviderConfig, Settings

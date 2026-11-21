@@ -26,7 +26,12 @@ describe('attachmentsForRetry', () => {
 });
 
 function deps(
-  task: { id: string; conversationId: string; status: string } | null,
+  task: {
+    id: string;
+    conversationId: string;
+    status: string;
+    terminalCode?: string;
+  } | null,
   ids: Array<string | null>,
 ) {
   // ids[0]: the open conversation when reconciliation starts; ids[1]: after
@@ -36,6 +41,7 @@ function deps(
     currentId: vi.fn(() => ids[Math.min(call++, ids.length - 1)]),
     taskForKey: vi.fn(async () => task),
     settle: vi.fn(),
+    block: vi.fn(),
     record: vi.fn(),
     promote: vi.fn(),
     open: vi.fn(),
@@ -88,17 +94,39 @@ describe('reconcileSubmission', () => {
     }
   });
 
-  it('shows a needs-attention result without settling or replacing its original submission', async () => {
+  it('settles a generic needs-attention result for bookkeeping without resending', async () => {
     const d = deps(
       { id: 'task', conversationId: 'conv-a', status: 'needs_attention' },
       ['conv-a'],
     );
     const notFound = vi.fn();
     await reconcileSubmission('original', { ...d, notFound });
-    expect(d.settle).not.toHaveBeenCalled();
+    expect(d.settle).toHaveBeenCalledWith('original');
+    expect(d.block).not.toHaveBeenCalled();
     expect(d.record).not.toHaveBeenCalled();
     expect(d.promote).not.toHaveBeenCalled();
     expect(notFound).not.toHaveBeenCalled();
+    expect(d.showSaved).toHaveBeenCalledWith('task');
+  });
+
+  it('retains the key only for the explicit unresolved-inference code', async () => {
+    const d = deps(
+      {
+        id: 'task',
+        conversationId: 'conv-a',
+        status: 'needs_attention',
+        terminalCode: 'inference_dispatch_unresolved',
+      },
+      ['conv-a'],
+    );
+    await reconcileSubmission('original', d);
+    expect(d.block).toHaveBeenCalledWith(
+      'original',
+      'inference_dispatch_unresolved',
+    );
+    expect(d.settle).not.toHaveBeenCalled();
+    expect(d.record).not.toHaveBeenCalled();
+    expect(d.promote).not.toHaveBeenCalled();
     expect(d.showSaved).toHaveBeenCalledWith('task');
   });
 

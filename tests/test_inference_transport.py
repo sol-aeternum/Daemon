@@ -42,10 +42,12 @@ from __future__ import annotations
 
 import asyncio
 import contextvars
+import gzip
 import json
 import socket
 import struct
 import time
+import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
@@ -129,6 +131,10 @@ async def test_socket_outcomes(mode: str, stream: bool) -> None:
 @dataclass
 class Capture:
     mode: str = "ok"
+    sse_body: bytes | None = None
+    sse_tail: bytes = b"data: [DONE]\n\n"
+    sse_encoding: str = "identity"
+    sse_type: str = "text/event-stream"
     accepts: int = 0
     bodies: list[bytes] = field(default_factory=list)
     headers: list[list[bytes]] = field(default_factory=list)
@@ -154,7 +160,7 @@ class Capture:
                     if line.lower().startswith(b"content-length:")
                 )
                 if self.mode in {"reset", "crux"} or (
-                    self.mode == "sent_then_503" and not self.bodies
+                    self.mode in {"sent_then_503", "reset_once"} and not self.bodies
                 ):
                     self.bodies.append(await reader.readexactly(min(length, 16)))
                     self.received.set()
@@ -198,6 +204,10 @@ class Capture:
                             else "data: [DONE]\n\n"
                         )
                     ).encode()
+                    if self.sse_body is not None:
+                        output = self.sse_body
+                    if self.sse_encoding == "gzip":
+                        output = gzip.compress(output)
                 else:
                     chunk["object"] = "chat.completion"
                     chunk["choices"] = [
@@ -208,21 +218,23 @@ class Capture:
                         }
                     ]
                     output = json.dumps(chunk).encode()
-                content_type = (
-                    "text/event-stream" if streaming and status == 200 else "application/json"
-                )
-                if self.mode == "active" and streaming:
+                content_type = self.sse_type if streaming and status == 200 else "application/json"
+                encoding = self.sse_encoding if streaming and status == 200 else "identity"
+                if self.mode in {"active", "truncated"} and streaming:
                     writer.write(
                         b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\n\r\n"
                     )
                     writer.write(f"{len(output):x}\r\n".encode() + output + b"\r\n")
                     await writer.drain()
                     await self.release.wait()
-                    done = b"data: [DONE]\n\n"
-                    writer.write(f"{len(done):x}\r\n".encode() + done + b"\r\n0\r\n\r\n")
+                    if self.mode == "truncated":
+                        return
+                    tail = self.sse_tail
+                    writer.write(f"{len(tail):x}\r\n".encode() + tail + b"\r\n0\r\n\r\n")
                 else:
                     writer.write(
                         f"HTTP/1.1 {status} Offline\r\nContent-Type: {content_type}\r\n"
+                        f"Content-Encoding: {encoding}\r\n"
                         f"Content-Length: {len(output)}\r\nSet-Cookie: proof=no\r\n\r\n".encode()
                         + output
                     )
@@ -239,8 +251,8 @@ class Capture:
 
 
 @asynccontextmanager
-async def capture(mode: str = "ok") -> AsyncIterator[tuple[Capture, str]]:
-    state = Capture(mode)
+async def capture(mode: str = "ok", **sse: Any) -> AsyncIterator[tuple[Capture, str]]:
+    state = Capture(mode, **sse)
     state.server = await asyncio.start_server(state.handle, "127.0.0.1", 0)
     try:
         yield state, f"http://127.0.0.1:{state.server.sockets[0].getsockname()[1]}/v1"
@@ -869,3 +881,313 @@ async def test_guarded_sent_then_retry_503_is_unknown(monkeypatch, stream):
                 assert ledger.actions[0][0] == "settle"
     finally:
         await inference_transport.shutdown()
+
+
+_DONE = b"data: [DONE]\n\n"
+_MISSING = {"state": "missing"}
+_USAGE = {"prompt_tokens": 7, "completion_tokens": 31, "total_tokens": 38}
+
+
+def _sse_chunk(choices, **fields):
+    chunk = {
+        "id": "offline",
+        "object": "chat.completion.chunk",
+        "created": 1,
+        "model": "openai/gpt-4.1-mini",
+        "choices": choices,
+        **fields,
+    }
+    return b"data: " + json.dumps(chunk, ensure_ascii=False).encode() + b"\n\n"
+
+
+def _sse_choice(reason, delta=None):
+    return _sse_chunk(
+        [{"index": 0, "delta": delta if delta is not None else {}, "finish_reason": reason}]
+    )
+
+
+_TEXT = _sse_choice(None, {"content": "ok [not a sentinel] ☀"})
+_USAGE_TAIL = _sse_chunk([], usage=_USAGE)
+
+
+def _confirmed(reason):
+    return {"state": "confirmed", "reason": reason, "provenance": "provider_wire"}
+
+
+async def _guarded_stream(model):
+    return await runtime.guarded_completion(
+        model=model, messages=[{"role": "user", "content": "hi"}], stream=True
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("terminal", "expected"),
+    [
+        (b"", _MISSING),
+        (_sse_choice("stop"), _confirmed("stop")),
+        (_sse_choice("length"), _confirmed("length")),
+        (_sse_choice("content_filter"), _confirmed("content_filter")),
+        (_sse_choice("tool_calls"), _confirmed("tool_calls")),
+        (_sse_choice("stop") + _sse_choice("length"), {"state": "conflicting"}),
+        (_sse_choice("stop") + _sse_choice("fictional"), _MISSING),
+    ],
+    ids=["synthetic-stop", "stop", "length", "content-filter", "tool-calls", "conflict", "unknown"],
+)
+async def test_guarded_wire_finish_and_usage(monkeypatch, terminal, expected):
+    # Stop and length have identical message text and token counts; only wire
+    # evidence distinguishes them. All cases use the unchanged usage-only tail.
+    try:
+        async with capture(sse_body=_TEXT + terminal + _USAGE_TAIL + _DONE) as (server, base):
+            route, ledger, service = guarded_fixture(monkeypatch, base)
+            # Tie the route ceiling to the account's 128-token sizing limit
+            # rather than mistaking the sent value for the default route cap.
+            route.max_output_tokens = 128
+            async with _account_scope(service) as scope:
+                stream = await _guarded_stream(route.model)
+                assert runtime.provider_finish(stream) == _MISSING
+                sdk_reasons = []
+                async for chunk in stream:
+                    assert runtime.provider_finish(stream) == _MISSING
+                    sdk_reasons.extend(choice.finish_reason for choice in chunk.choices)
+                if not terminal:
+                    assert "stop" in sdk_reasons  # LiteLLM supplies it, not the wire.
+                evidence = runtime.provider_finish(stream)
+                assert evidence.pop("dispatch_id")
+                assert evidence == expected
+                limits = runtime.answer_limit_candidates(stream)
+                equal_candidates = {limit["kind"] for limit in limits if limit["value"] == 128}
+                assert {"sent_output", "route_output", "account_output"} <= equal_candidates
+                assert not any(limit["binding"] for limit in limits)
+                await stream.aclose()
+                assert runtime.provider_finish(stream)["dispatch_id"]
+                assert len(server.bodies) == len(ledger.actions) == 1
+                (decision,) = scope.terminal_decisions.values()
+                assert (decision.path, decision.amount) == ("stream_end", 38)
+                assert decision.usage == {"input_tokens": 7, "output_tokens": 31}
+                assert not scope.outstanding
+    finally:
+        await inference_transport.shutdown()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "case",
+    [
+        "eof_without_done",
+        "unterminated_done",
+        "after_done",
+        "gzip",
+        "wrong_media_type",
+        "duplicate_reason",
+        "mixed_id",
+    ],
+)
+async def test_guarded_wire_finish_unsupported_or_ambiguous(monkeypatch, case):
+    stop = _sse_choice("stop")
+    body = _TEXT + stop + _DONE
+    headers = {}
+    if case == "eof_without_done":
+        body = _TEXT + stop
+    elif case == "unterminated_done":
+        body = _TEXT + stop + _DONE.rstrip()
+    elif case == "after_done":
+        body += _sse_choice("length")
+    elif case == "gzip":
+        headers["sse_encoding"] = "gzip"
+    elif case == "wrong_media_type":
+        headers["sse_type"] = "application/json"
+    elif case == "duplicate_reason":
+        body = _TEXT + stop.replace(b'"stop"', b'"length", "finish_reason": "stop"') + _DONE
+    elif case == "mixed_id":
+        body = _TEXT + stop.replace(b'"id": "offline"', b'"id": "unrelated"') + _DONE
+    try:
+        async with capture(sse_body=body, **headers) as (server, base):
+            route, ledger, service = guarded_fixture(monkeypatch, base)
+            async with _account_scope(service):
+                stream = await _guarded_stream(route.model)
+                assert [chunk async for chunk in stream]  # Same SDK behavior.
+                evidence = runtime.provider_finish(stream)
+                assert evidence.pop("dispatch_id")
+                assert evidence == _MISSING
+                assert len(server.bodies) == len(ledger.actions) == 1
+    finally:
+        await inference_transport.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_guarded_wire_finish_requires_raw_eof_after_done(monkeypatch):
+    try:
+        async with capture("truncated", sse_body=_TEXT + _sse_choice("stop") + _DONE) as (
+            server,
+            base,
+        ):
+            route, ledger, service = guarded_fixture(monkeypatch, base)
+            async with _account_scope(service):
+                stream = await _guarded_stream(route.model)
+                await anext(stream)
+                server.release.set()  # Close socket without the zero HTTP chunk.
+                assert "stop" in [
+                    choice.finish_reason async for chunk in stream for choice in chunk.choices
+                ]  # LiteLLM swallows the ReadError once it has a finish reason.
+                evidence = runtime.provider_finish(stream)
+                assert evidence.pop("dispatch_id")
+                assert evidence == _MISSING
+                assert len(ledger.actions) == 1
+    finally:
+        await inference_transport.shutdown()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("managed", [False, True])
+@pytest.mark.parametrize("fail_settlement", [False, True])
+async def test_guarded_wire_finish_publishes_only_after_finalizer(
+    monkeypatch, managed, fail_settlement
+):
+    entered, release = asyncio.Event(), asyncio.Event()
+    try:
+        async with capture(
+            "active", sse_body=_TEXT + _sse_choice("stop"), sse_tail=_USAGE_TAIL + _DONE
+        ) as (server, base):
+            route, ledger, service = guarded_fixture(monkeypatch, base)
+
+            async def settle(*args, **kwargs):
+                entered.set()
+                await release.wait()
+                return await ledger.settle(*args, **kwargs)
+
+            service.settle = settle
+            if fail_settlement:
+                ledger.error = RuntimeError("fictional settlement failure")
+            async with _account_scope(service) as scope:
+                if managed:
+                    scope.inference_invocation = runtime.InferenceInvocation()
+                    scope.inference_identity = runtime.AttemptIdentity(
+                        uuid.uuid4(),
+                        scope.user_id,
+                        0,
+                        uuid.uuid4(),
+                        1,
+                        scope.scope_id,
+                        uuid.uuid4(),
+                        uuid.uuid4(),
+                    )
+                    scope.inference_recovery = cast(Any, SimpleNamespace(mark=AsyncMock()))
+
+                    async def reserve(identity, amount, **kwargs):
+                        assert identity is scope.inference_identity
+                        return await ledger.reserve(identity.account_id, amount, **kwargs)
+
+                    service.reserve_for_attempt = reserve
+
+                    def no_client_replacement():
+                        pytest.fail("managed inference must keep LiteLLM's own client")
+
+                    monkeypatch.setattr(inference_transport, "get_handler", no_client_replacement)
+                stream = await _guarded_stream(route.model)
+                await anext(stream)
+                assert runtime.provider_finish(stream) == _MISSING
+
+                async def drain():
+                    async for _ in stream:
+                        assert runtime.provider_finish(stream) == _MISSING
+
+                task = asyncio.create_task(drain())
+                try:
+                    server.release.set()
+                    await asyncio.wait_for(entered.wait(), 1)
+                    assert runtime.provider_finish(stream) == _MISSING
+                finally:
+                    release.set()
+                    if fail_settlement:
+                        with pytest.raises(RuntimeError if managed else runtime.ComputeUnavailable):
+                            await task
+                    else:
+                        await task
+                evidence = runtime.provider_finish(stream)
+                if not fail_settlement:
+                    assert evidence.pop("dispatch_id")
+                assert evidence == (_MISSING if fail_settlement else _confirmed("stop"))
+                assert len(server.bodies) == len(ledger.actions) == 1
+                (decision,) = scope.terminal_decisions.values()
+                assert (decision.path, decision.amount) == ("stream_end", 38)
+                assert decision.usage == {"input_tokens": 7, "output_tokens": 31}
+    finally:
+        await inference_transport.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_guarded_wire_finish_isolated_across_physical_retry_and_route_fallback(monkeypatch):
+    rejected_stop = b'data: {"error":{"message":"offline","code":503}}\n\n' + _sse_choice("stop")
+    try:
+        async with (
+            capture("reset_once", sse_body=_TEXT + _sse_choice("length") + _DONE) as (retry, base),
+            capture(sse_body=rejected_stop + _DONE) as (rejected, first),
+            capture(sse_body=_TEXT + _DONE) as (selected, last),
+        ):
+            route, ledger, service = guarded_fixture(monkeypatch, base)
+            async with _account_scope(service, auto_route=True):
+                retried = await _guarded_stream("auto")
+                assert [chunk async for chunk in retried]
+                assert len(retry.bodies) == 2
+                first_finish = runtime.provider_finish(retried)
+                assert first_finish["reason"] == "length"
+                assert first_finish["provenance"] == "provider_wire"
+
+                fallback = _route(
+                    model=route.model, input_price=route.price_ceiling.microusd_per_1m_prompt + 1
+                )
+                fallback.route_id = "fallback"
+                fallback.endpoint = last
+                route.endpoint = first
+                _qualified_policy(monkeypatch, route=[route, fallback])
+                stream = await _guarded_stream("auto")
+                assert [chunk async for chunk in stream]
+                assert len(rejected.bodies) == len(selected.bodies) == 1
+                assert len(ledger.actions) == 3
+                selected_finish = runtime.provider_finish(stream)
+                assert selected_finish["dispatch_id"] != first_finish["dispatch_id"]
+                assert selected_finish.pop("dispatch_id")
+                assert selected_finish == _MISSING
+                assert runtime.provider_finish(retried) == first_finish
+    finally:
+        await inference_transport.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_guarded_wire_finish_close_after_sdk_stop_does_not_publish(monkeypatch):
+    try:
+        async with capture(sse_body=_TEXT + _sse_choice("stop") + _DONE) as (_, base):
+            route, ledger, service = guarded_fixture(monkeypatch, base)
+            async with _account_scope(service):
+                stream = await _guarded_stream(route.model)
+                async for chunk in stream:
+                    if any(choice.finish_reason == "stop" for choice in chunk.choices):
+                        break
+                else:
+                    pytest.fail("no SDK stop to test early close")
+                assert runtime.provider_finish(stream) == _MISSING
+                await stream.aclose()
+                assert runtime.provider_finish(stream) == _MISSING
+                assert len(ledger.actions) == 1
+    finally:
+        await inference_transport.shutdown()
+
+
+def test_finish_sse_byte_boundaries_and_observation_limits(monkeypatch):
+    valid = (b": keepalive\n\n" + _TEXT + _sse_choice("stop") + _USAGE_TAIL + _DONE).replace(
+        b"\n", b"\r\n"
+    )
+    observer = inference_transport._FinishSSE()
+    for byte in valid:
+        observer.feed(bytes([byte]))
+    assert observer.result == _MISSING
+    observer.eof()
+    assert observer.result == _confirmed("stop")
+    for bound in ("_MAX_SSE_LINE", "_MAX_SSE_BYTES"):
+        with monkeypatch.context() as constrained:
+            constrained.setattr(inference_transport, bound, 20)
+            observer = inference_transport._FinishSSE()
+            observer.feed(valid)
+            observer.eof()
+            assert observer.result == _MISSING

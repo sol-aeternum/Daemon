@@ -665,28 +665,72 @@ def composition_violations(sources: dict[str, str]) -> list[str]:
                     ]
                 ):
                     violations.append(f"{path}:{node.lineno}:unapproved compute history binding")
-            if target.endswith(("._stage_completed_body", "._completion_control")) or (
-                target.endswith("._worker") and path != "orchestrator/tasks/store.py"
-            ):
-                enclosing_functions = [
-                    f
-                    for f in nodes
-                    if isinstance(f, (ast.FunctionDef, ast.AsyncFunctionDef))
-                    and f.lineno <= node.lineno <= (f.end_lineno or f.lineno)
-                ]
-                enclosing_terminal = (
-                    max(enclosing_functions, key=lambda f: f.lineno).name
-                    if enclosing_functions
-                    else ""
+            if target.endswith(
+                (
+                    "._stage_completed_body",
+                    "._completion_control",
+                    "._stage_non_success_body",
+                    "._stage_terminal_task",
                 )
+            ) or (target.endswith("._worker") and path != "orchestrator/tasks/store.py"):
+                method = target.rsplit(".", 1)[-1]
+                store = "orchestrator/tasks/store.py"
+                effects = "orchestrator/services/restore_history/effects.py"
                 expected_terminal = {
-                    ("orchestrator/tasks/store.py", "_complete"): "self",
-                    (
-                        "orchestrator/services/restore_history/effects.py",
-                        "_complete",
-                    ): "self._tasks",
-                }.get((path, enclosing_terminal))
-                if expected_terminal is None or target.rsplit(".", 1)[0] != expected_terminal:
+                    (store, "_complete", "_completion_control"): "self",
+                    (store, "_complete", "_stage_completed_body"): "self",
+                    (effects, "_complete", "_worker"): "self._tasks",
+                    (effects, "_complete", "_completion_control"): "self._tasks",
+                    (effects, "_complete", "_stage_completed_body"): "self._tasks",
+                }.get((path, enclosing_name, method))
+                # v4 admits only the guarded original-attempt writer and its
+                # two native staging callers, not a generic terminal seam.
+                nonsuccess_args = ["conn", "row"]
+                nonsuccess_suffix = ["content", "message_fields", "finish", "status", "code"]
+                expected_v4 = {
+                    (store, "publish_non_success", "_completion_control"): (
+                        "self",
+                        nonsuccess_args,
+                        {},
+                    ),
+                    (store, "publish_non_success", "_stage_non_success_body"): (
+                        "self",
+                        [*nonsuccess_args, "epoch", *nonsuccess_suffix],
+                        {},
+                    ),
+                    (effects, "_publish_non_success", "_worker"): (
+                        "self._tasks",
+                        ["claim.task_id", "claim.epoch", "claim"],
+                        {"allow_interrupted": "True"},
+                    ),
+                    (effects, "_publish_non_success", "_completion_control"): (
+                        "self._tasks",
+                        nonsuccess_args,
+                        {},
+                    ),
+                    (effects, "_publish_non_success", "_stage_non_success_body"): (
+                        "self._tasks",
+                        [*nonsuccess_args, "claim.epoch", *nonsuccess_suffix],
+                        {},
+                    ),
+                    (store, "_stage_completed_body", "_stage_terminal_task"): (
+                        "self",
+                        ["conn", "task_id", "status", "None"],
+                        {},
+                    ),
+                    (store, "_stage_non_success_body", "_stage_terminal_task"): (
+                        "self",
+                        ["conn", "row['id']", "status", "code"],
+                        {},
+                    ),
+                }.get((path, enclosing_name, method))
+                if not (
+                    expected_terminal is not None
+                    and target.rsplit(".", 1)[0] == expected_terminal
+                    or expected_v4 is not None
+                    and (expression, arguments, call_keywords)
+                    == (f"{expected_v4[0]}.{method}", expected_v4[1], expected_v4[2])
+                ):
                     violations.append(f"{path}:{node.lineno}:unapproved terminal transaction seam")
             if target.endswith(".retain_pool_cleanup") or target == "retain_pool_cleanup":
                 functions = [
@@ -711,6 +755,10 @@ def composition_violations(sources: dict[str, str]) -> list[str]:
                         ("orchestrator/services/restore_history/effects.py", "_reserve_output"),
                         ("orchestrator/services/restore_history/effects.py", "_prepare_output"),
                         ("orchestrator/services/restore_history/effects.py", "_complete"),
+                        (
+                            "orchestrator/services/restore_history/effects.py",
+                            "_publish_non_success",
+                        ),
                         ("orchestrator/services/restore_history/effects.py", "_write_partial"),
                         ("orchestrator/services/restore_history/effects.py", "_attempt_operation"),
                         ("orchestrator/services/restore_history/effects.py", "_claim"),
@@ -896,6 +944,7 @@ def composition_violations(sources: dict[str, str]) -> list[str]:
                         ".HistoryProjection",
                         ".ArtifactHistoryProjection",
                         ".TerminalHistoryProjection",
+                        ".TerminalV4HistoryProjection",
                         ".HistoryEffects",
                         ".HistoryObservation",
                         ".HistoryReadSupervisor",
@@ -914,6 +963,7 @@ def composition_violations(sources: dict[str, str]) -> list[str]:
                     "HistoryProjection",
                     "ArtifactHistoryProjection",
                     "TerminalHistoryProjection",
+                    "TerminalV4HistoryProjection",
                     "HistoryEffects",
                     "HistoryObservation",
                     "HistoryReadSupervisor",

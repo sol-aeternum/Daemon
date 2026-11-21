@@ -39,6 +39,85 @@ class DummySpawnTool(Tool):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("rounds", [1, 2])
+async def test_only_final_attempt_finish_survives_optional_tool_refusal(monkeypatch, rounds):
+    from orchestrator.tools import completion
+
+    class OptionalTool(Tool):
+        name = "optional_lookup"
+        description = "An optional lookup"
+        parameters = {"type": "object", "properties": {}}
+
+        async def execute(self, **kwargs):
+            return '{"success":false,"error":"tool_price_exceeded"}'
+
+    registry = ToolRegistry()
+    registry.register(OptionalTool())
+    observations = {}
+    calls = []
+
+    async def fake_completion(**kwargs):
+        calls.append(kwargs)
+        final = len(calls) == 2
+
+        async def stream():
+            if final:
+                yield {"choices": [{"delta": {"content": "Valid answer."}}]}
+                yield {"choices": [{"delta": {}, "finish_reason": "stop"}]}
+            else:
+                yield {
+                    "choices": [
+                        {
+                            "delta": {
+                                "tool_calls": [
+                                    {
+                                        "index": 0,
+                                        "id": "optional_call",
+                                        "function": {"name": "optional_lookup", "arguments": "{}"},
+                                    },
+                                ],
+                            },
+                        },
+                    ],
+                }
+                yield {"choices": [{"delta": {}, "finish_reason": "tool_calls"}]}
+
+        result = stream()
+        observations[result] = {
+            "state": "confirmed",
+            "reason": "stop" if final else "tool_calls",
+            "provenance": "provider_wire",
+            "dispatch_id": f"dispatch-{len(calls)}",
+        }
+        return result
+
+    async def budget(*args):
+        return None
+
+    monkeypatch.setattr(completion, "guarded_completion", fake_completion)
+    monkeypatch.setattr(completion, "provider_finish", observations.__getitem__)
+    monkeypatch.setattr(completion, "tool_context_budget", budget)
+    events = [
+        event
+        async for event in completion_with_tools(
+            Settings(),
+            ProviderConfig(name="openrouter", model="openrouter/test", requires_auth=False),
+            [{"role": "user", "content": "Answer with a lookup if possible"}],
+            registry,
+            max_tool_rounds=rounds,
+        )
+    ]
+    assert len(calls) == 2
+    assert any(
+        event.get("result") == '{"success":false,"error":"tool_price_exceeded"}' for event in events
+    )
+    finish = events[-1]["turn_finish"]
+    assert finish["outcome"] == "complete"
+    assert finish["provider"]["dispatch_id"] == "dispatch-2"
+    assert finish["limits"] == []
+
+
+@pytest.mark.asyncio
 async def test_source_manifest_is_fenced_without_replacing_last_user_request(monkeypatch):
     from types import SimpleNamespace
     from orchestrator.tools import completion

@@ -29,6 +29,7 @@ from orchestrator.tasks._origin import (
 from orchestrator.tasks.states import RetryCause, TaskStatus, decide_after_attempt
 from orchestrator.tasks.store import Claim, LeaseLost, TaskEvent, TaskSnapshot, TaskStore
 from orchestrator.tools.registry import Tool, ToolRegistry
+from orchestrator.turn_finish import parse_turn_finish
 from tests.durable_tasks_support import FakeRedis
 
 PREFIX_PARTS = [
@@ -114,7 +115,10 @@ class DeliveryStore:
     async def complete(self, task_id, epoch, *, content, message_fields=None, binding: Claim):
         self.check_binding("complete", task_id, epoch, binding)
         self.final_fields = message_fields or {}
-        self.current = replace(self.current, status=TaskStatus.COMPLETED, content=content)
+        finish = parse_turn_finish(self.final_fields.get("metadata", {}).get("turn_finish"))
+        self.current = replace(
+            self.current, status=TaskStatus.COMPLETED, content=content, turn_finish=finish
+        )
         return TaskStatus.COMPLETED
 
     async def record_event(self, task_id, epoch, kind, payload=None, *, binding: Claim):
@@ -266,6 +270,7 @@ class Delivery:
         self.redis = FakeRedis()
         self.read = Read(source_fails)
         self.calls = 0
+        self.finish_observations: dict[object, dict[str, str]] = {}
         self.durable = durable
         self.source_fails = source_fails
         self.missing_writer = missing_writer
@@ -343,7 +348,20 @@ class Delivery:
                     "choices": [{"delta": {"content": INCOMPLETE if self.source_fails else ENDING}}]
                 }
 
-        return chunks()
+        stream = chunks()
+        if call == 3:
+            # This fixture replaces the wire transport. Supply evidence only
+            # for the scripted final dispatch, not from its text or EOF.
+            self.finish_observations[stream] = {
+                "state": "confirmed",
+                "reason": "stop",
+                "provenance": "provider_wire",
+                "dispatch_id": "synthetic-research-final",
+            }
+        return stream
+
+    def provider_finish(self, stream: object) -> dict[str, str]:
+        return self.finish_observations.get(stream, {"state": "missing"})
 
     async def run(self):
         from tests.memory_capture_support import install_capture_pool
@@ -377,6 +395,7 @@ class Delivery:
                 "orchestrator.daemon.clear_account_job_completion": AsyncMock(),
                 "orchestrator.daemon.account_job_id": lambda *args, **kwargs: "synthetic-job",
                 "orchestrator.tools.completion.guarded_completion": self.dispatch,
+                "orchestrator.tools.completion.provider_finish": self.provider_finish,
             }.items():
                 stack.enter_context(patch(target, value))
             # In this serial fixture, patch the shared legacy get_event_loop
@@ -464,7 +483,8 @@ async def transcript(source_fails: bool = False):
         assert delivery.store.current.status is TaskStatus.RUNNING
         delivery.read.release.set()
         await asyncio.wait_for(task, 5)
-        final = await delivery.observation()
+        assert delivery.store.current.status is TaskStatus.COMPLETED
+        final = await asyncio.wait_for(delivery.observation(), 5)
         return {
             "task_id": str(delivery.claim.task_id),
             "prefix": prefix,

@@ -5,6 +5,7 @@ import {
   type DaemonMessage,
 } from './chatMessages';
 import type { AnswerControls } from './answerControls';
+import type { HistoryRecoveryCode } from './historyRecovery';
 
 /** Files of the latest submitted turn and the conversation they were sent to. */
 export type LastTurn = {
@@ -36,7 +37,13 @@ export function attachmentsForRetry(
 /** Delays before each by-key lookup: acceptance can commit after a dropped connection. */
 export const RECONCILE_LOOKUP_DELAYS_MS = [0, 500, 1500];
 
-type KeyedTask = { id: string; conversationId: string; status: string };
+type KeyedTask = {
+  id: string;
+  conversationId: string;
+  status: string;
+  /** The server's explicit terminal code, when it recorded one. */
+  terminalCode?: string;
+};
 
 type ReconcileDeps = {
   /** Caller-owned auth/selection epoch, rechecked after every async boundary. */
@@ -46,6 +53,8 @@ type ReconcileDeps = {
   /** ``null``: no task for the key (yet); ``undefined``: unknown. */
   taskForKey: (key: string) => Promise<KeyedTask | null | undefined>;
   settle: (key: string) => void;
+  /** Quarantine the key for the one explicitly unresolved outcome. */
+  block?: (key: string, code: HistoryRecoveryCode) => void;
   /** Remember the submission's task, so its key is settled once it ends. */
   record: (key: string, taskId: string) => void;
   /** The submission belongs to the task's conversation (a new chat's is named). */
@@ -91,7 +100,19 @@ export async function reconcileSubmission(
   if (task === null) deps.notFound?.(key);
   if (!task || !current()) return;
   if (TERMINAL_TASK_STATUSES.has(task.status)) {
-    if (task.status !== 'needs_attention') deps.settle(key);
+    if (
+      task.status === 'needs_attention' &&
+      task.terminalCode === 'inference_dispatch_unresolved'
+    ) {
+      // Explicit evidence of an unresolved provider dispatch: retain the key
+      // and never replay it automatically.
+      deps.block?.(key, 'inference_dispatch_unresolved');
+    } else {
+      // Any other terminal outcome (including a material uncertain effect)
+      // settles for bookkeeping; it is not a provider success and does not
+      // trigger a resend.
+      deps.settle(key);
+    }
   } else {
     // Record first: that clears the composer still holding the submission,
     // which is found under the conversation it was sent from (``null`` for
