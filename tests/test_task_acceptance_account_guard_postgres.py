@@ -825,10 +825,19 @@ async def test_missing_account_request_bound_chat_refuses_before_model_and_publi
         (kind, event["data"]) for kind, event in events if kind in {"final", "error", "done"}
     ]
     assert [kind for kind, _ in terminal] == ["final", "error", "done"]
-    assert terminal[0][1]["finish_reason"] == "error"
-    assert terminal[0][1]["message"]["content"] == ""
-    assert terminal[1][1]["code"] == "internal_error" and terminal[1][1]["retryable"] is False
-    assert terminal[2][1] == {"ok": False}
+    final, error, done = (data for _, data in terminal)
+    assert final["finish_reason"] is None
+    assert final["message"]["content"] == ""
+    assert error["code"] == "internal_error" and error["retryable"] is False
+    finish = {
+        "version": 1,
+        "outcome": "failed",
+        "reason": "internal_error",
+        "provider": {"state": "missing"},
+        "limits": [],
+    }
+    assert final["turn_finish"] == error["turn_finish"] == finish
+    assert done == {"ok": False, "status": "error", "turn_finish": finish}
     assert not any(kind in {"token", "tool_call", "tool_result", "task"} for kind, _ in events)
     provider.assert_not_called()
     capture.assert_not_awaited()  # Refusal happens at live insertion, before stream capture.

@@ -349,7 +349,17 @@ async def test_native_uses_original_capture_without_admission_fallback(api, monk
     events = _events(response.text)
     done = next(e["data"] for kind, e in events if kind == "done")
     if stale:
-        assert done == {"ok": False}
+        assert done == {
+            "ok": False,
+            "status": "error",
+            "turn_finish": {
+                "version": 1,
+                "outcome": "failed",
+                "reason": "internal_error",
+                "provider": {"state": "missing"},
+                "limits": [],
+            },
+        }
     else:
         assert done["status"] == "completed" and not any(kind == "error" for kind, _ in events)
     users = await api.env.pool.fetch("SELECT * FROM messages WHERE role='user'")
