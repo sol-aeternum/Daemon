@@ -313,6 +313,30 @@ analytics platform. Cost figures derived from token prices or conservative holds
 are estimates, not payment-provider invoices. No prompts or memory contents belong
 in accounting metadata.
 
+#### Free whole-turn accounting qualification (isolated only)
+
+The opt-in accounting fixture uses the existing monthly ledger in disposable
+PostgreSQL, with synthetic calls attributed to one turn across routing, retries,
+children, tools and synthesis. It is not a live spend checkpoint. It adds no
+runtime caller, task state, chat API, plan changes or default migration.
+
+Only the unused final-answer reserve is protected: it counts in the period's
+reserved balance alongside open call holds, but takes no execution slot on its
+own. An admitted final call converts that reserve to a call hold in one
+transaction. Unused permission to spend is not money held for the turn.
+Settlement and confirmed refunds still use the call's original period. A quote
+breach is recorded truthfully and suspends new admission without preventing
+fixture cleanup of unused escrow. A separate account-control cause or pending
+deletion blocks the fixture control operation; production reconciliation of
+those states is outside this qualification.
+
+The fixture can test accounting invariants, not provider costs or answer quality.
+Existing tracked model evaluations do not establish representative ordinary
+Free or deep-dive whole-turn costs. There is no approved checkpoint amount,
+new output ceiling, or activation. Resumable approval would require a separate
+continuation contract that preserves the existing possible-dispatch evidence and
+prevents replay; settling a hold alone does not qualify that continuation.
+
 ### Source locations and operating interfaces
 
 | Concern | Authority |
