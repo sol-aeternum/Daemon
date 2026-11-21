@@ -132,7 +132,7 @@ function buildContentSecurityPolicy(nonce: string): string {
     // attributes cannot be nonce-tagged (nonces authorize whole `<style>` tags
     // or external stylesheets, not inline attribute values). The repository
     // uses these attributes for behavior-critical values such as the
-    // conversation menu's `top`/`left`, video and council progress widths,
+    // conversation menu's `top`/`left`, video progress widths,
     // preview colors, and input sizing — without this, browsers enforcing
     // strict CSP silently strip those values and leave controls misplaced.
     "style-src-attr 'unsafe-inline'",

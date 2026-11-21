@@ -27,7 +27,7 @@ import pathlib
 from dataclasses import dataclass
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
-# Every backend Python package. `config/`, `db/`, `council/`, and `backend/`
+# Every backend Python package. `config/`, `db/`, and `backend/`
 # are production modules imported by the orchestrator (e.g.
 # `orchestrator/subagents/image.py` imports `config.video_pricing` and
 # `db.video_credits`), so a direct env read added there must fail this gate
@@ -38,7 +38,6 @@ SCAN_DIRS = (
     REPO_ROOT / "scripts",
     REPO_ROOT / "config",
     REPO_ROOT / "db",
-    REPO_ROOT / "council",
     REPO_ROOT / "backend",
     REPO_ROOT / "tts",
 )
@@ -1439,12 +1438,12 @@ def test_ast_gate_does_not_flag_unrelated_names(tmp_path, monkeypatch) -> None:
 def test_ast_gate_scans_every_backend_package() -> None:
     """Regression for the round-3 P2 on PR #268:
 
-    `config/`, `db/`, `council/`, and `backend/` are production packages
+    `config/`, `db/`, and `backend/` are production packages
     imported by the orchestrator, so the gate must cover them. Guard the
     SCAN_DIRS tuple against silent narrowing.
     """
     scanned = {d.name for d in SCAN_DIRS}
-    for required in ("orchestrator", "providers", "scripts", "config", "db", "council", "backend"):
+    for required in ("orchestrator", "providers", "scripts", "config", "db", "backend"):
         assert required in scanned, f"backend package `{required}/` is not covered by the gate"
 
     # Every top-level directory that contains Python and is not test/tooling

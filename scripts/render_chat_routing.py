@@ -659,7 +659,7 @@ def render_svg(facts: Facts) -> str:
             _label(
                 center,
                 82,
-                "Chat only, no Council or background helpers · generated from configuration",
+                "Chat only, no background helpers · generated from configuration",
             ),
             *edges,
             *(_box_svg(box) for box in boxes),

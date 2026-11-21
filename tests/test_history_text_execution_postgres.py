@@ -465,6 +465,46 @@ async def test_unsupported_choices_reject_before_acceptance(text_host, options):
 
 
 @pytest.mark.asyncio
+async def test_retired_council_config_is_not_accepted_or_scheduled(text_host):
+    from fastapi import HTTPException
+
+    s = text_host
+    _, headers = await device(s, s.account)
+    async with s.make():
+        with pytest.raises(HTTPException) as refused:
+            await submitted(
+                s,
+                headers,
+                messages=[{"role": "user", "content": "/council config: preset=deep"}],
+            )
+        assert refused.value.status_code == 410
+        assert refused.value.detail == {"message": "Council has been retired."}
+        assert s.db.sql("SELECT count(*) FROM tasks") == "0"
+        assert not s.execution._jobs and not s.calls
+
+
+@pytest.mark.asyncio
+async def test_legacy_accepted_council_text_never_reaches_transport(text_host, monkeypatch):
+    s = text_host
+    _, headers = await device(s, s.account)
+    async with s.make():
+        # Simulate the old admission check only; schedule the original worker
+        # through the real acceptance/claim/terminal path.
+        monkeypatch.setattr(
+            "orchestrator.services.restore_history.acceptance_host.is_retired_council_command",
+            lambda _: False,
+        )
+        await submitted(
+            s, headers, messages=[{"role": "user", "content": "/council --default old request"}]
+        )
+        assert await jobs(s) == ["failed"], s.errors
+        assert s.db.sql("SELECT terminal_code FROM tasks") == "council_retired"
+        assert not s.calls
+        assert s.db.sql("SELECT count(*) FROM entitlement_reservations") == "0"
+        assert s.db.sql("SELECT count(*) FROM task_operations") == "0"
+
+
+@pytest.mark.asyncio
 async def test_stop_during_original_stream_closes_local_fake_not_disconnect(text_host, monkeypatch):
     s = text_host
     monkeypatch.setattr(runner, "HEARTBEAT_S", 0.03)

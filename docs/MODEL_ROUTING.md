@@ -5,7 +5,7 @@
 The routing realignment separates workload suitability, provider qualification,
 and account capacity. It implements the capability-first direction approved in
 the September 2026 routing discussion, including bounded automatic premium
-selection and council diversity. It preserves the commercial/provider contract
+selection. It preserves the commercial/provider contract
 in [SUBSCRIPTION_ARCHITECTURE.md](SUBSCRIPTION_ARCHITECTURE.md) and the vision's
 data-policy and bounded-compute requirements (AC07/AC12).
 
@@ -16,7 +16,6 @@ data-policy and bounded-compute requirements (AC07/AC12).
 | Endpoint approval, verified capabilities, effective limits and price ceilings | `config/inference_policy.json` |
 | Account capabilities, recurring capacity and premium trial | `config/commercial.json` and `orchestrator/entitlements/` |
 | Final selection, reservation, dispatch and settlement | `orchestrator/compute_runtime.py` |
-| Council role preferences | `orchestrator/council/roster.yaml` |
 
 Candidate suitability is **provisional pending workload evaluation**. A listed
 model is not an approved serving route, an availability guarantee or evidence of
@@ -24,16 +23,19 @@ measured task quality. The supplied inference policy still approves no routes.
 Public catalog checks on 27 September 2026 inform the candidate pools; they do
 not certify account privacy settings or endpoint hosting location.
 
-Routing profiles: `routine`, `reasoning`, `research`, `background`, `council`, `memory_decomposition`, `memory_equivalence`.
+Routing profiles: `routine`, `reasoning`, `research`, `background`, `memory_decomposition`, `memory_equivalence`.
 
 `memory_decomposition` is an optional, default-off M1 helper, not a chat candidate.
-Deployment-owned files with only the original five profiles remain valid; an
+Deployment-owned files with only the four core profiles remain valid; an
 absent helper profile prevents decomposition sends and retains baseline memory.
 Its profile-specific Luna preset is `reasoning_effort: none`; background/extraction
 stays medium. Its caller additionally pins `memory-decomposition-luna-azure-eu`,
 an unapproved proposal in both shipped policies, never the approved general Luna
 route. No existing profile candidates or route approvals change. See
 [the M1 design](memory/multi_query_retrieval.md).
+
+The retired `council` profile and presets are no longer accepted in custom
+routing files. See [Council retirement rollout](COUNCIL_RETIREMENT.md#rollout).
 
 ### Premium re-pins, Sol 6.2 and Astra 6.2 — 19 November 2026
 
@@ -261,7 +263,7 @@ fitted the same way. The profile's `min_output_tokens` is a suitability floor,
 not the dispatched answer cap. Explicit caller output limits remain exact and
 still require route/account admission.
 
-Reasoning/council can consider their provisional premium candidates where profile
+Reasoning can consider its provisional premium candidates where profile
 and account capabilities permit them. Research retains its premium-capable flag,
 but its sole automatic model is Luna; premium route classification remains an
 independent endpoint-policy decision, and explicit premium pins still require
@@ -282,14 +284,14 @@ is reported as `capability_unavailable`, not retryable. When several blockers ap
 capability is reported before budget, and budget before context.
 
 The native routing SSE event carries the original `model`, `tier` and `reason`
-fields plus additive ones: `profile`, `reason_codes` (`explicit`, `council`,
+fields plus additive ones: `profile`, `reason_codes` (`explicit`,
 `complexity_signal`, `research_signal`, `default`, `fallback_<cause>`), `effort`
 (the reasoning effort actually sent) and, after a fallback, `fallback`.
 
 Nested automatic helpers inherit the enclosing account scope's premium ceiling:
 entering a reasoning profile inside a routine/background account scope cannot
 enable premium routes. Explicit authorized model pins still require account
-premium eligibility. Standalone reasoning/council account scopes retain their
+premium eligibility. Standalone reasoning account scopes retain their
 own configured ceilings.
 
 The approved candidate's parameter preset is applied **after selection**,
@@ -315,7 +317,7 @@ accepted. A mismatch refuses startup; the managed log emits only the fixed
 After route selection, preset validation and approved transport construction,
 `orchestrator/litellm_runtime.py` translates OpenRouter reasoning effort to native
 `extra_body.reasoning.effort`. It converts `max` to `xhigh`, preserves all other
-declared values (including `none`), and retains council `include_reasoning`.
+declared values (including `none`), and preserves validated `include_reasoning`.
 The approved provider/privacy/price block is preserved. Non-OpenRouter calls and
 calls without an effort are unchanged. No arbitrary caller `extra_body` is admitted
 and no global SDK parameter dropping or capability-table patch is used. Attribution
@@ -410,20 +412,7 @@ message or tool content, reasoning text, credentials, endpoints, headers, email 
 raw user ids. Signal ids are words from the fixed classifier vocabulary. An
 invalid record is dropped and emitting never raises into dispatch or settlement.
 
-## Council and helper workloads
-
-Council preferences describe model developers, not the `openrouter` transport.
-The council requires at least three distinct developers and reports the model
-actually used per role. Parallel roles have separate routing state while sharing
-account accounting. A reduced or failed roster must not be presented as a
-successful diverse council.
-Collected council events are retained in conversation history when execution or
-account cleanup fails, with an error status rather than a successful completion.
-Final persistence is shielded against request cancellation on both successful and
-aborted runs. Storage failures are logged; shielding does not guarantee database
-availability or survival across process termination.
-Unknown council presets return a clear error before inference instead of silently
-substituting the default roster.
+## Helper workloads
 
 Background titles, extraction and summaries use explicit workload profiles;
 reasoning helpers use the reasoning profile. Nested routing contexts select a
@@ -459,7 +448,7 @@ Before activating a route:
    range; exclude ranges the quote cannot cover.
 3. Evaluate representative tasks under approved account scope and budgets:
    ordinary tool use, multi-turn tool loops, code reasoning, source-grounded
-   synthesis, strict-schema extraction and independent council critique.
+   synthesis and strict-schema extraction.
 4. Compare successful task completion, tool/schema correctness, retries, total
    billed tokens (including reasoning), latency and total cost per success.
    A model exposing `reasoning_effort` does not establish its reasoning quality.

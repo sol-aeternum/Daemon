@@ -688,50 +688,6 @@ async def test_native_owned_redis_lost_wakeup_reply_and_replay_never_duplicate_a
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(
-    "message",
-    ["/council Fictional question", "/council config: preset=lean, rounds=2, audit=false"],
-)
-@pytest.mark.parametrize("capture_failure", [False, True])
-async def test_durable_capable_council_stays_request_bound(
-    api, monkeypatch, message, capture_failure
-):
-    accept_spy = AsyncMock(side_effect=AssertionError("council cannot accept a durable task"))
-    monkeypatch.setattr(type(api.env.tasks), "accept", accept_spy)
-    calls = []
-
-    async def scripted_council(**kwargs):
-        calls.append(kwargs)
-        yield 'event: council_status\ndata: {"data":{"status":"fictional"}}\n\n'
-
-    # Script only the council provider boundary; retain real request persistence,
-    # account adapter and council-output finalizer. Never execute a live council.
-    monkeypatch.setattr(main, "stream_council", scripted_council)
-    monkeypatch.setattr(main, "stream_council_interview_response", scripted_council)
-    if capture_failure:
-        monkeypatch.setattr(
-            main,
-            "capture_generation",
-            AsyncMock(side_effect=RuntimeError("synthetic capture outage")),
-        )
-    response = await api.client.post("/chat", json={"message": message})
-    assert response.status_code == 200 and "X-Daemon-Task-Id" not in response.headers
-    if capture_failure:
-        assert calls == []
-        assert next(event["data"] for kind, event in _events(response.text) if kind == "done") == {
-            "ok": False
-        }
-    else:
-        assert len(calls) == 1 and calls[0]["user_message"] == message
-    accept_spy.assert_not_called()
-    assert await api.env.pool.fetchval("SELECT count(*) FROM tasks") == 0
-    assert await api.env.pool.fetchval("SELECT count(*) FROM messages WHERE role='user'") == int(
-        not capture_failure
-    )
-    assert not any(name == "run_chat_task" for name, _, _ in api.redis.enqueued)
-
-
-@pytest.mark.asyncio
 @pytest.mark.parametrize("capture_failure", [False, True])
 async def test_durable_capable_bound_home_followup_retains_request_bound_context(
     api, monkeypatch, capture_failure

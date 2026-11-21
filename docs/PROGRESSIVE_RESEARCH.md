@@ -54,7 +54,7 @@ Native request-bound prompts and durable attempt reconstruction append the same 
 control instructions. They grant no extra tools, budgets, permissions, model access
 or concurrency; routing/qualification is unchanged. Investigation is still bounded
 and instruction-following remains a model-quality limitation, not a deterministic
-guarantee. Separate Council command execution is unchanged.
+guarantee.
 
 Before attachment serialization, composer submission captures effective values and
 an immutable control-edit token. Real control edits detach the original submission
@@ -192,9 +192,6 @@ seams. Research checkpoint/resume is deferred slice 2
   preservation alongside the existing settings geometry assertions; the desktop
   header shortcut also checks draft/control retention through in-app settings
   sections. These are assertion targets, not blanket suite/release qualification.
-  Council is separate: `/council` submission and the existing synthetic interview
-  render are compatibility coverage, not a commitment to its current architecture
-  or a replacement for the future agent-spine tool direction (#490).
   Next's idle development indicator is disabled so it cannot intercept application
   navigation; the real-browser negative control injects an uncaught error, checks
   the browser error channel and opens its still-visible Next error dialog. Other

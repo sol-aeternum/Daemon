@@ -71,7 +71,6 @@ from orchestrator.services.identity import (
     record_chat_rate_limit_request,
 )
 from orchestrator.catalog import selectable_model_ids
-from orchestrator.council.sse import stream_council, stream_council_interview_response
 from orchestrator.services.restore_history.ingress import HistoryObservationOnlyMiddleware
 from orchestrator.config import (
     HostSecurityConfigError,
@@ -181,7 +180,7 @@ from orchestrator.request_body_limit import (
     REQUEST_BODY_TOO_LARGE_RESPONSES,
     RequestBodyLimitMiddleware,
 )
-from orchestrator.router import route_message
+from orchestrator.router import COUNCIL_RETIRED_MESSAGE, is_retired_council_command, route_message
 from orchestrator.security_headers import (
     SecurityHeadersMiddleware,
     _OuterSecurityHeadersMiddleware,
@@ -859,8 +858,6 @@ async def _account_frames(
     source: Callable[[], AsyncIterator[str]],
     *,
     auto_route: bool = False,
-    operation: str = "chat",
-    extended: bool = False,
     profile: str = "routine",
     request_id: str | None = None,
 ) -> AsyncIterator[str]:
@@ -876,8 +873,6 @@ async def _account_frames(
                 scope_pool,
                 scope_user_id,
                 auto_route=auto_route,
-                operation=operation,
-                extended=extended,
                 profile=profile,
                 request_id=request_id,
             ):
@@ -951,7 +946,6 @@ _LOGGABLE_MODEL_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:@+/-]{0,119}")
 ROUTING_REASON_CODES = frozenset(
     {
         "explicit",
-        "council",
         "complexity_signal",
         "research_signal",
         "default",
@@ -965,8 +959,6 @@ ROUTING_REASON_CODES = frozenset(
 def _routing_reason_codes(decision: ModelDecision, profile: str) -> list[str]:
     if decision.tier == "explicit":
         return ["explicit"]
-    if profile == "council":
-        return ["council"]
     if profile == "reasoning":
         return ["complexity_signal"]
     if profile == "research":
@@ -1082,73 +1074,6 @@ def _admit_and_log_decision(
     return admitted
 
 
-def _extract_council_config_response(message: str) -> dict[str, Any] | None:
-    raw = message.strip()
-    lowered = raw.lower()
-    if not lowered.startswith("/council config:"):
-        return None
-
-    payload = raw.split(":", 1)[1].strip()
-    if not payload:
-        return {}
-
-    if payload.startswith("{"):
-        try:
-            parsed = json.loads(payload)
-        except json.JSONDecodeError:
-            return {}
-        return parsed if isinstance(parsed, dict) else {}
-
-    result: dict[str, Any] = {}
-    for item in [part.strip() for part in payload.split(",") if part.strip()]:
-        if "=" not in item:
-            continue
-        key, value = item.split("=", 1)
-        key = key.strip().lower()
-        value = value.strip()
-
-        if key == "preset":
-            result["preset_name"] = value.lower()
-            continue
-
-        if key == "rounds":
-            try:
-                result["round_count"] = int(value)
-            except ValueError:
-                continue
-            continue
-
-        if key == "audit":
-            result["audit_enabled"] = value.lower() in {
-                "1",
-                "true",
-                "yes",
-                "on",
-            }
-
-    return result
-
-
-def _extract_latest_council_prompt(messages: list[dict[str, Any]]) -> str | None:
-    for msg in reversed(messages):
-        if msg.get("role") != "user":
-            continue
-        content = _extract_text_content(msg.get("content")).strip()
-        if not content:
-            continue
-
-        lowered = content.lower()
-        if lowered.startswith("/council config:"):
-            continue
-        if lowered.startswith("/council"):
-            prompt = content[len("/council") :].strip()
-            if prompt.startswith("--default"):
-                prompt = prompt[len("--default") :].strip()
-            return prompt or None
-
-    return None
-
-
 def _parse_sse_frame(frame: str) -> tuple[str | None, dict[str, Any] | None]:
     event_type: str | None = None
     payload_raw: str | None = None
@@ -1188,174 +1113,6 @@ def _compat_finish(event: str | None, data: dict[str, Any], prior: TurnFinish) -
     ):
         return prior if prior.outcome in ("failed", "cancelled", "incomplete") else unknown_finish()
     return evidence
-
-
-def _extract_council_event_for_persistence(frame: str) -> dict[str, Any] | None:
-    event_type, payload = _parse_sse_frame(frame)
-    if payload is None:
-        return None
-
-    supported_types = {
-        "council_interview",
-        "council_progress",
-        "council_output",
-        "council_done",
-        "council_error",
-    }
-    if event_type not in supported_types:
-        return None
-
-    data = payload.get("data")
-    if not isinstance(data, dict):
-        data = {}
-
-    event: dict[str, Any] = {"type": event_type}
-    for key in (
-        "roster",
-        "presets",
-        "rounds_options",
-        "audit_default",
-        "stage",
-        "current_round",
-        "total_rounds",
-        "models_complete",
-        "models_total",
-        "section",
-        "content",
-        "metadata",
-        "session_id",
-        "total_tokens",
-        "total_cost_usd",
-        "models_used",
-        "error",
-    ):
-        if key in data:
-            event[key] = data[key]
-
-    event_id = payload.get("id")
-    if isinstance(event_id, str) and event_id:
-        event["id"] = event_id
-
-    request_id = payload.get("request_id")
-    if isinstance(request_id, str) and request_id:
-        event["request_id"] = request_id
-
-    return event
-
-
-def _build_council_assistant_content(council_events: list[dict[str, Any]]) -> str:
-    sections: list[str] = []
-    for event in council_events:
-        if event.get("type") == "council_output":
-            content = event.get("content")
-            if isinstance(content, str) and content.strip():
-                sections.append(content.strip())
-
-    if sections:
-        return "\n\n".join(sections)
-
-    for event in reversed(council_events):
-        if event.get("type") == "council_error":
-            error = event.get("error")
-            if isinstance(error, str) and error.strip():
-                return f"Council error: {error.strip()}"
-
-    if any(event.get("type") == "council_interview" for event in council_events):
-        return "Council configuration requested."
-
-    return "Council run completed."
-
-
-async def _persist_council_output(
-    *,
-    store: Any,
-    conversation_uuid: uuid.UUID | None,
-    user_id: uuid.UUID | None,
-    request_id: str,
-    council_events: list[dict[str, Any]],
-    failed: bool,
-    log_message: str,
-) -> None:
-    """Record collected council events, retaining an error state on abort."""
-    if not (store and conversation_uuid and user_id and council_events):
-        return
-    try:
-        await store.insert_message(
-            conversation_id=conversation_uuid,
-            user_id=user_id,
-            role="assistant",
-            content=_build_council_assistant_content(council_events),
-            model="council",
-            tool_results=[
-                {
-                    "name": "council_events",
-                    "result": {"events": council_events},
-                    "request_id": request_id,
-                }
-            ],
-            metadata={"request_id": request_id, "council_events": council_events},
-            status="error" if failed else "complete",
-        )
-    except Exception:
-        logger.warning("Council event persistence failed")
-
-
-async def _stream_council_events(
-    *,
-    db_pool: Any,
-    account_user_id: uuid.UUID,
-    source: Callable[[], AsyncIterator[str]],
-    store: Any,
-    conversation_uuid: uuid.UUID | None,
-    user_id: uuid.UUID | None,
-    conversation_id: str,
-    request_id: str,
-    log_message: str,
-) -> AsyncIterator[str]:
-    """Persist council progress on success, failure, or stream interruption."""
-    council_events: list[dict[str, Any]] = []
-    council_failed = False
-    completed = False
-    try:
-        async for frame in _account_frames(
-            db_pool,
-            account_user_id,
-            source,
-            operation="agent",
-            auto_route=True,
-            extended=True,
-            profile="council",
-        ):
-            parsed_event = _extract_council_event_for_persistence(frame)
-            if parsed_event is not None:
-                council_events.append(parsed_event)
-                council_failed |= parsed_event.get("type") == "council_error"
-            yield frame
-        completed = True
-    finally:
-        await asyncio.shield(
-            _persist_council_output(
-                store=store,
-                conversation_uuid=conversation_uuid,
-                user_id=user_id,
-                request_id=request_id,
-                council_events=council_events,
-                failed=council_failed or not completed,
-                log_message=log_message,
-            )
-        )
-
-    yield sse(
-        "done",
-        {
-            "type": "done",
-            "id": "evt_done",
-            "ts": now_rfc3339(),
-            "conversation_id": conversation_id,
-            "request_id": request_id,
-            "data": {"status": "error" if council_failed else "completed"},
-        },
-    )
 
 
 # ============== Health & Info Endpoints ==============
@@ -1566,6 +1323,8 @@ async def openai_chat_completions(
 
     # Classify what the user wrote; the default below is model-facing text only.
     requested_text = _extract_text_content(user_messages[-1].content)
+    if is_retired_council_command(requested_text):
+        raise HTTPException(410, detail={"message": COUNCIL_RETIRED_MESSAGE})
     last_message = requested_text or "Please help with the attached input."
     compat_controls = _compat_request_controls(payload, last_message)
     conversation_id = new_conversation_id()
@@ -2527,6 +2286,8 @@ async def chat(
     app_state: AppState = Depends(get_app_state),
     auth: AuthenticatedDevice = Depends(require_device_auth),
 ) -> StreamingResponse:
+    if is_retired_council_command(_requested_user_message(payload)):
+        raise HTTPException(410, detail={"message": COUNCIL_RETIRED_MESSAGE})
     durable_client = settings.durable_chat_enabled and client_supports_durable_chat(request)
     # Replays come first even when durable chat is switched off or this client
     # cannot drive it: a key accepted before a rollback must reattach to its
@@ -2644,22 +2405,6 @@ async def chat(
     if not user_message and attachments:
         user_message = "Please analyze the attached files."
 
-    council_config_response = _extract_council_config_response(user_message)
-    is_council_config_response = council_config_response is not None
-    is_council_command = (
-        user_message.lstrip().startswith("/council") and not is_council_config_response
-    )
-    if temporal_scope is not None and (is_council_command or is_council_config_response):
-        raise HTTPException(status_code=422, detail="Historical council context is not qualified")
-
-    if is_council_config_response and council_config_response is not None:
-        interview_prompt = _extract_latest_council_prompt(incoming_messages)
-        if interview_prompt:
-            council_config_response = {
-                **council_config_response,
-                "_prompt": interview_prompt,
-            }
-
     prepared_user_content: str | list[dict[str, Any]] = user_message
     if suggestion_context is not None:
         prepared_user_content = render_context(user_message, suggestion_context)
@@ -2681,16 +2426,9 @@ async def chat(
         user_override=user_model_choice,
     )
 
-    # A council run streams under the council profile, not under the profile the
-    # command's wording would classify to, so admit it against the profile it
-    # will actually dispatch under.
-    admission_profile = (
-        "council" if is_council_config_response or is_council_command else model_decision.profile
-    )
-
     selected_model = _admit_and_log_decision(
         model_decision.model if model_decision.tier == "explicit" else None,
-        profile=admission_profile,
+        profile=model_decision.profile,
         decision=model_decision,
         requested_text=requested_text,
         endpoint="chat",
@@ -2710,8 +2448,8 @@ async def chat(
         "tier": model_decision.tier,
         "reason": model_decision.reason,
         # Additive, user-visible routing reasons (optional work O6).
-        "profile": admission_profile,
-        "reason_codes": _routing_reason_codes(model_decision, admission_profile),
+        "profile": model_decision.profile,
+        "reason_codes": _routing_reason_codes(model_decision, model_decision.profile),
     }
 
     has_image_input = _content_has_image(prepared_user_content)
@@ -2721,12 +2459,7 @@ async def chat(
             detail={"code": "modality_unavailable", "message": "Multimodal compute unavailable"},
         )
 
-    if (
-        durable_client
-        and payload.suggestion_id is None
-        and not is_council_command
-        and not is_council_config_response
-    ):
+    if durable_client and payload.suggestion_id is None:
         durable = await _durable_chat(
             payload=payload,
             temporal_scope=temporal_scope,
@@ -2748,7 +2481,7 @@ async def chat(
             return durable
 
     # One active task per conversation applies to every new turn (§6): a
-    # request-bound turn (a client without the durable capabilities, council,
+    # request-bound turn (a client without the durable capabilities,
     # or any turn while the flag is off) must not run beside a durable task
     # that still owns this conversation.
     await _refuse_if_task_active(payload, app_state, auth)
@@ -2963,19 +2696,6 @@ async def chat(
     if temporal_scope is not None:
         history_messages = [{"role": "user", "content": prepared_user_content}]
 
-    council_user_message = user_message
-    if bound_home_turn is not None:
-        bound_context = bound_home_turn["metadata"]["home_suggestion"]
-        council_user_message = render_context(user_message, bound_context)
-        if council_config_response is not None:
-            council_config_response = {
-                **council_config_response,
-                "_prompt": render_context(
-                    council_config_response.get("_prompt") or bound_home_turn["content"],
-                    bound_context,
-                ),
-            }
-
     assembled_system_prompt = DAEMON_SYSTEM_PROMPT
     preferences_block = ""
     user_timezone = None
@@ -3039,71 +2759,6 @@ async def chat(
         try:
             if live_user_admission_failed:
                 raise RuntimeError("live_user_admission_unavailable")
-            if is_council_config_response:
-                if conversation_uuid:
-                    yield sse(
-                        "conversation",
-                        {
-                            "type": "conversation",
-                            "id": "evt_conversation",
-                            "ts": now_rfc3339(),
-                            "conversation_id": conversation_id,
-                            "request_id": request_id,
-                            "data": {"conversation_id": str(conversation_uuid)},
-                        },
-                    )
-
-                async for frame in _stream_council_events(
-                    db_pool=app_state.db_pool,
-                    account_user_id=auth.user_id,
-                    source=lambda: stream_council_interview_response(
-                        user_message=user_message,
-                        conversation_id=conversation_id,
-                        request_id=request_id,
-                        stored_config=council_config_response,
-                    ),
-                    store=store,
-                    conversation_uuid=conversation_uuid,
-                    user_id=user_id,
-                    conversation_id=conversation_id,
-                    request_id=request_id,
-                    log_message="Failed to persist council interview response output",
-                ):
-                    yield frame
-                return
-
-            if is_council_command:
-                if conversation_uuid:
-                    yield sse(
-                        "conversation",
-                        {
-                            "type": "conversation",
-                            "id": "evt_conversation",
-                            "ts": now_rfc3339(),
-                            "conversation_id": conversation_id,
-                            "request_id": request_id,
-                            "data": {"conversation_id": str(conversation_uuid)},
-                        },
-                    )
-
-                async for frame in _stream_council_events(
-                    db_pool=app_state.db_pool,
-                    account_user_id=auth.user_id,
-                    source=lambda: stream_council(
-                        user_message=council_user_message,
-                        conversation_id=conversation_id,
-                        request_id=request_id,
-                    ),
-                    store=store,
-                    conversation_uuid=conversation_uuid,
-                    user_id=user_id,
-                    conversation_id=conversation_id,
-                    request_id=request_id,
-                    log_message="Failed to persist council command output",
-                ):
-                    yield frame
-                return
-
             trusted_spawn_context = _build_trusted_spawn_context(auth.user_id, payload.metadata)
             async for frame in _account_chat_frames(
                 app_state.db_pool,
@@ -3152,20 +2807,13 @@ async def chat(
                         logger.info("Contextual home source-change admission unavailable")
         except Exception as exc:
             capacity = compute_error(exc)
-            # Council has its own finalisation and persisted output contract.
-            # This mapping describes the chat answer path, not council work.
-            council = is_council_config_response or is_council_command
-            finish_data = (
-                {}
-                if council
-                else {
-                    "turn_finish": refused_finish(
-                        capacity.code if capacity else "internal_error",
-                        category=capacity.category if capacity else None,
-                        not_attempted=live_user_admission_failed,
-                    ).model_dump(exclude_none=True)
-                }
-            )
+            finish_data = {
+                "turn_finish": refused_finish(
+                    capacity.code if capacity else "internal_error",
+                    category=capacity.category if capacity else None,
+                    not_attempted=live_user_admission_failed,
+                ).model_dump(exclude_none=True)
+            }
             ts = now_rfc3339()
             provider, model = effective_provider_and_model(settings, provider_config)
             model_for_events = selected_model or actual_model or model
@@ -3230,9 +2878,7 @@ async def chat(
                     "ts": ts,
                     "conversation_id": conversation_id,
                     "request_id": request_id,
-                    "data": {"ok": False}
-                    if council
-                    else {"ok": False, "status": "error", **finish_data},
+                    "data": {"ok": False, "status": "error", **finish_data},
                 },
             )
 

@@ -41,6 +41,7 @@ Every markdown file in the repository is classified under this hierarchy to dete
 | `docs/HOSTED_IDENTITY.md` | T1 | Engineering/Product | gated | `docs/AUTH_ARCHITECTURE.md`, hosted identity auth routes, hosted identity migrations |
 | `docs/SUBSCRIPTION_ARCHITECTURE.md` | T1 | Engineering/Product | gated | `config/commercial.json`, `config/inference_policy.json`, `orchestrator/entitlements/`, account compute migrations |
 | `docs/MODEL_ROUTING.md` | T1 | Engineering/Product | gated | `config/model_routing.json`, `orchestrator/model_routing.py`, `orchestrator/compute_runtime.py` |
+| `docs/COUNCIL_RETIREMENT.md` | N/A | Engineering | ungated-reference | Retired command, legacy transcript behavior and rollout constraints |
 | `docs/INFERENCE_ROUTE_APPROVALS.md` | N/A | Deployment operator | raw-log | Dated account-scoped approval evidence and rollout instructions for `config/inference_policy.production.json`; not proof of live deployment |
 | `docs/SEARCH_SERVICE_APPROVALS.md` | N/A | Deployment operator | raw-log | Search-only Brave retention exception, manual review, Tavily qualification boundary and bounded search operation; not proof of live deployment |
 | `docs/CHUNKED_WEB_READING_DESIGN.md` | N/A | Engineering/Product | ungated-reference | Approved bounded conversation-scoped page-reading contract; implementation/release status requires code and gate evidence |

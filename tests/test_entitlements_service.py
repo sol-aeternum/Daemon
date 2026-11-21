@@ -430,7 +430,7 @@ async def test_scope_shares_one_concurrency_slot_and_background_takes_none(datab
     assert service.policy.plan(Plan.FREE).limits.max_concurrent_operations == 1
     scope = uuid.uuid4()
     first = await service.reserve(user, 1, operation="chat", scope_id=scope)
-    # A parallel call of the same operation (council role, tool loop) joins it.
+    # A parallel call of the same operation joins it.
     second = await service.reserve(user, 1, operation="chat", scope_id=scope)
     with pytest.raises(ConcurrencyExceeded):
         await service.reserve(user, 1, operation="chat", scope_id=uuid.uuid4())

@@ -170,24 +170,6 @@ def test_wrap_neutralizes_closing_tag_variants() -> None:
     assert "</TOOL_RESULT>" not in wrapped
 
 
-def test_council_tool_results_are_fenced() -> None:
-    # The /council path appends tool results via its own loop; it must use
-    # the same untrusted fence as the main completion path (issue #16).
-    import inspect
-
-    from orchestrator.council import tools as council_tools
-
-    source = inspect.getsource(council_tools)
-    assert "_wrap_tool_result_untrusted" in source
-
-
-def test_council_preamble_classifies_tool_results_as_data() -> None:
-    from orchestrator.council.prompts import COUNCIL_TOOL_PREAMBLE
-
-    assert "tool_result" in COUNCIL_TOOL_PREAMBLE
-    assert "untrusted" in COUNCIL_TOOL_PREAMBLE
-
-
 def test_unwrap_round_trips_wrapped_body() -> None:
     body = '{"success": true, "metadata": {"session_id": "abc-123"}}'
     wrapped = _wrap_tool_result_untrusted("spawn_agent", body)

@@ -381,37 +381,6 @@ class MemoryStore:
         conversation["last_activity_at"] = conversation.pop("effective_last_activity_at")
         return conversation
 
-    async def get_completed_council_session(
-        self,
-        conversation_id: uuid.UUID,
-    ) -> dict[str, Any] | None:
-        """Get the most recent completed council session for a conversation."""
-        async with self._pool.acquire() as conn:
-            row = await conn.fetchrow(
-                """
-                SELECT id, conversation_id, prompt, config, rounds, 
-                       audit_findings, token_costs, created_at, updated_at
-                FROM council_sessions
-                WHERE conversation_id = $1
-                ORDER BY updated_at DESC
-                LIMIT 1
-                """,
-                conversation_id,
-            )
-            if row:
-                return {
-                    "id": str(row["id"]),
-                    "conversation_id": str(row["conversation_id"]),
-                    "prompt": row["prompt"],
-                    "config": row["config"],
-                    "rounds": row["rounds"],
-                    "audit_findings": row["audit_findings"],
-                    "token_costs": row["token_costs"],
-                    "created_at": row["created_at"].isoformat(),
-                    "updated_at": row["updated_at"].isoformat(),
-                }
-            return None
-
     async def list_conversations(
         self,
         user_id: uuid.UUID,

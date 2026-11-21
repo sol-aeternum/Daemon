@@ -230,13 +230,6 @@ class TestRouteMessageLocalFlag:
         assert decision.user_message == "hello /local world"
         assert decision.local_requested is False
 
-    def test_council_command_not_local(self) -> None:
-        """/council is a separate command, not local."""
-        decision = route_message("/council help me decide", None)
-        assert decision.local_requested is False
-        assert decision.command == "council"
-        assert decision.user_message == "help me decide"
-
     def test_no_flag_cloud_pipeline(self) -> None:
         """Regular messages route to cloud pipeline without local flag."""
         decision = route_message("hello world", None)

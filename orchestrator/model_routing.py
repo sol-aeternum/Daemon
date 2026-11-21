@@ -59,9 +59,9 @@ MODEL_ROUTING_ENV: Final[str] = "DAEMON_MODEL_ROUTING"
 
 SUPPORTED_MODEL_ROUTING_VERSION: Final[int] = 1
 
-#: Existing deployment-owned files must configure these original workload profiles.
+#: Deployment-owned files must configure these core workload profiles.
 REQUIRED_ROUTING_PROFILES: Final[frozenset[str]] = frozenset(
-    {"routine", "reasoning", "research", "background", "council"}
+    {"routine", "reasoning", "research", "background"}
 )
 #: Known names are validated when present; optional helpers need not be configured.
 ROUTING_PROFILES: Final[frozenset[str]] = REQUIRED_ROUTING_PROFILES | {
@@ -171,7 +171,6 @@ class WorkloadProfile:
     min_output_tokens: int
     allow_premium: bool
     groups: tuple[RoutingGroup, ...]
-    distinct_developers: bool
     notes: str = ""
     # Derived in __post_init__ from ``groups`` alone, so it is excluded from
     # comparison and repr: two profiles with the same groups have the same
@@ -289,8 +288,8 @@ def _require_bool(value: object, *, field_name: str) -> bool:
 class ModelIdentity:
     """The one validated reading of a model id: who builds it, and what it is.
 
-    ``developer`` is the vendor that builds the model, which is the unit of council
-    independence. ``model`` is the id with the developer and any serving prefix
+    ``developer`` is the vendor that builds the model.
+    ``model`` is the id with the developer and any serving prefix
     removed, so two ids that name the same model read identically. ``namespaced``
     records whether the id carried the ``openrouter/`` serving prefix, which is the
     only difference between the two id forms Daemon accepts.
@@ -339,9 +338,8 @@ def read_model_identity(model: str, *, require_namespace: bool = False) -> Model
 
     A model id is ``<developer>/<model>``, optionally behind the ``openrouter/``
     serving prefix Daemon namespaces its own dispatch ids with, and optionally
-    carrying an OpenRouter variant suffix (``:free``). Both id forms are read here
-    once so the routing catalogue and a council roster cannot disagree about who
-    builds a model::
+    carrying an OpenRouter variant suffix (``:free``). Both forms resolve to
+    the same developer::
 
         read_model_identity("openrouter/z-ai/glm-5.3").developer == "z-ai"
         read_model_identity("z-ai/glm-5.3").developer == "z-ai"
@@ -351,11 +349,7 @@ def read_model_identity(model: str, *, require_namespace: bool = False) -> Model
     empty or whitespace-padded segment, a trailing separator, or a model segment that
     is missing.
 
-    ``require_namespace`` is the single intentional difference between callers, not
-    a second parser. The routing catalogue sets it, because it records *dispatch* ids
-    and a bare placement there could never be dispatched; a council roster leaves it
-    off, because a seat preference is an operator's model name and the bare form is
-    the one they write.
+    The routing catalogue requires the namespace because it records dispatch IDs.
     """
     if not isinstance(model, str) or not model.strip():
         raise RoutingError("model_unknown", "model must be a non-empty string")
@@ -386,9 +380,7 @@ def _normalise_model_id(raw: object, *, field_name: str) -> str:
     The strict wrapper around :func:`read_model_identity`: the routing catalogue
     records route models as ``openrouter/<vendor>/<id>`` and the dispatch layer
     refuses anything else, so a placement is written in that same form. Writing the
-    bare id here would be a placement that could never be dispatched. The shape
-    rules themselves are the shared helper's, so a catalogue id and a council roster
-    id are read the same way once both are valid.
+    bare id here would be a placement that could never be dispatched.
     """
     model = _require_str(raw, field_name=field_name)
     try:
@@ -474,8 +466,8 @@ def _parse_model(raw: object) -> RoutingModel:
             f"{', '.join(sorted(KNOWN_REASONING_EFFORTS))}"
         )
     raw_suitability = mapping.get("suitability")
-    if not isinstance(raw_suitability, list) or not raw_suitability:
-        raise PolicyError(f"{where}.suitability must be a non-empty list of profile names")
+    if not isinstance(raw_suitability, list):
+        raise PolicyError(f"{where}.suitability must be a list of profile names")
     suitability = frozenset(
         _require_str(item, field_name=f"{where}.suitability") for item in raw_suitability
     )
@@ -544,11 +536,6 @@ def _parse_profile(raw: object) -> WorkloadProfile:
         _parse_group(entry, profile_name=name, index=index, seen=seen)
         for index, entry in enumerate(raw_groups)
     )
-    diversity = _require_mapping(mapping.get("diversity", {}), field_name=f"{where}.diversity")
-    distinct = _require_bool(
-        diversity.get("distinct_developers", False),
-        field_name=f"{where}.diversity.distinct_developers",
-    )
     return WorkloadProfile(
         name=name,
         min_output_tokens=_require_positive_int(
@@ -558,7 +545,6 @@ def _parse_profile(raw: object) -> WorkloadProfile:
             mapping.get("allow_premium"), field_name=f"{where}.allow_premium"
         ),
         groups=groups,
-        distinct_developers=distinct,
         notes=str(mapping.get("notes", "")),
     )
 
@@ -598,8 +584,8 @@ def parse_model_routing(data: object, *, source_path: str = "<memory>") -> Model
         )
 
     # Cross-checks. A group may only name a model that is declared *and* placed in
-    # this profile, and a placement that no profile uses is dead configuration that
-    # would let an operator believe a model is routable when it is not.
+    # this profile. A nonempty suitability declaration without any placement
+    # is dead configuration; an empty list explicitly means exact selection only.
     referenced: set[str] = set()
     for profile_name, profile in profiles.items():
         placed_in_profile: set[str] = set()
@@ -623,7 +609,9 @@ def parse_model_routing(data: object, *, source_path: str = "<memory>") -> Model
                         f"suitability is {sorted(declared.suitability)}; a model may only be "
                         f"placed in a profile that declares it suitable"
                     )
-    unplaced = sorted(set(models) - referenced)
+    unplaced = sorted(
+        name for name, model in models.items() if model.suitability and name not in referenced
+    )
     if unplaced:
         raise PolicyError(
             f"models are declared but no profile group uses them: {', '.join(unplaced)}; "
@@ -742,14 +730,12 @@ def routing_context(
 
     * ``profile`` must be a configured workload profile. An unknown name raises
       :class:`RoutingError`; it never falls back to ``routine``, because a silent
-      fallback would quietly downgrade a reasoning or council workload.
+      fallback would quietly downgrade a reasoning workload.
     * ``preferred_model`` is a *soft* preference. It reorders candidates only inside
       the group the profile already selected, and it cannot move a request to an
       earlier or later group, bypass the shortlist, or bypass capabilities,
       entitlements or bounds.
-    * ``excluded_models`` / ``excluded_developers`` remove candidates outright. A
-      council round uses ``excluded_developers`` to keep two perspectives off the
-      same developer.
+    * ``excluded_models`` / ``excluded_developers`` remove candidates outright.
 
     Contexts nest safely: each entry creates its own state object, the enclosing
     state is restored on exit, and no state is ever shared between contexts.

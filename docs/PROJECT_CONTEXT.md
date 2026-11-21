@@ -62,6 +62,7 @@ lives in `config/inference_policy.json`. Video-credit balances remain separate.
 
 ### Hosted Orchestration Foundation
 - **SSE Streaming**: Typed events (`token`, `thinking`, `routing`, `tool_call`, `tool_result`, `final`, `error`, `done`).
+- **Council**: Execution retired. Old commands return HTTP 410; saved replies reopen through normal conversation history. See [Council retirement](COUNCIL_RETIREMENT.md).
 - **Subagents**: Research remains subject to account capabilities and qualified service/model routes. Image/video/audio execution is retired pending qualified bounded adapters; retained implementation/UI does not establish availability.
 - **Tools**: `generate_document` (deterministic CSV/DOCX generation).
 - **Tools**: `web_search` is directly available only with selected credentials and approved service policy; Brave and Tavily adapters reserve account budget per call without fallback. Deployment search exception: [SEARCH_SERVICE_APPROVALS.md](SEARCH_SERVICE_APPROVALS.md). Disabled spawn tools are omitted from the assistant registry. Other tools: `http_request`, `calculate`, `get_time`, `notifications`, `reminders`, `memory_read`, `memory_write`.

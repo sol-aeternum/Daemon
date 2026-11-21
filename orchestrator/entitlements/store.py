@@ -81,7 +81,7 @@ _PERIOD_STATE_SQL: Final[str] = """
 # $4 charges the extended budget; $13 additionally takes an extended-run slot.
 # $14 marks background work: charged, but it takes no rate or concurrency slot.
 # $15 is the account scope: a scope with an open reservation already holds its
-# concurrency slot, so its later calls (tool loops, council roles) share it.
+# concurrency slot, so its later calls within a tool loop share it.
 # Any durable foreground reservation also admits that scope's one rate slot,
 # including after settlement/release or rate-window rollover.
 _HOLD_SQL: Final[str] = """

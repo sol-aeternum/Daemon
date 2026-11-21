@@ -127,35 +127,6 @@ export type ChatEvent = BaseEvent &
       } & AdvisorBaseEvent)
     | { type: 'pipeline_switch'; pipeline: 'cloud' | 'local' }
     | { type: 'conversation'; conversation_id: string }
-    | {
-        type: 'council_interview';
-        roster: Record<string, any>;
-        presets: string[];
-        rounds_options: number[];
-        audit_default: boolean;
-      }
-    | {
-        type: 'council_progress';
-        stage: string;
-        current_round: number;
-        total_rounds: number;
-        models_complete: number;
-        models_total: number;
-      }
-    | {
-        type: 'council_output';
-        section: string;
-        content: string;
-        metadata: Record<string, any>;
-      }
-    | {
-        type: 'council_done';
-        session_id: string;
-        total_tokens: number;
-        total_cost_usd: number;
-        models_used: string[];
-      }
-    | { type: 'council_error'; error: string }
     /**
      * The durable task a streamed turn belongs to, with additive recovery
      * metadata (#477): the durable event sequence, the content generation
@@ -231,11 +202,6 @@ export function isChatEvent(obj: unknown): obj is ChatEvent {
     'advisor_end',
     'pipeline_switch',
     'conversation',
-    'council_interview',
-    'council_progress',
-    'council_output',
-    'council_done',
-    'council_error',
     'rate_limited',
     'task',
     'task_reset',
@@ -416,74 +382,4 @@ export function isVideoFailedEvent(event: ChatEvent): event is ChatEvent & {
   refunded: boolean;
 } {
   return event.type === 'video_failed';
-}
-export function isCouncilEvent(event: ChatEvent): event is ChatEvent & {
-  type:
-    | 'council_interview'
-    | 'council_progress'
-    | 'council_output'
-    | 'council_done'
-    | 'council_error';
-} {
-  if (!event || typeof event !== 'object') return false;
-  return [
-    'council_interview',
-    'council_progress',
-    'council_output',
-    'council_done',
-    'council_error',
-  ].includes(event.type);
-}
-
-export function isCouncilInterviewEvent(
-  event: ChatEvent,
-): event is ChatEvent & {
-  type: 'council_interview';
-  roster: Record<string, any>;
-  presets: string[];
-  rounds_options: number[];
-  audit_default: boolean;
-} {
-  if (!event || typeof event !== 'object') return false;
-  return event.type === 'council_interview';
-}
-
-export function isCouncilProgressEvent(event: ChatEvent): event is ChatEvent & {
-  type: 'council_progress';
-  stage: string;
-  current_round: number;
-  total_rounds: number;
-  models_complete: number;
-  models_total: number;
-} {
-  if (!event || typeof event !== 'object') return false;
-  return event.type === 'council_progress';
-}
-
-export function isCouncilOutputEvent(event: ChatEvent): event is ChatEvent & {
-  type: 'council_output';
-  section: string;
-  content: string;
-  metadata: Record<string, any>;
-} {
-  if (!event || typeof event !== 'object') return false;
-  return event.type === 'council_output';
-}
-
-export function isCouncilDoneEvent(event: ChatEvent): event is ChatEvent & {
-  type: 'council_done';
-  session_id: string;
-  total_tokens: number;
-  total_cost_usd: number;
-  models_used: string[];
-} {
-  if (!event || typeof event !== 'object') return false;
-  return event.type === 'council_done';
-}
-
-export function isCouncilErrorEvent(
-  event: ChatEvent,
-): event is ChatEvent & { type: 'council_error'; error: string } {
-  if (!event || typeof event !== 'object') return false;
-  return event.type === 'council_error';
 }

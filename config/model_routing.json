@@ -1,17 +1,16 @@
 {
   "version": 1,
   "provisional": true,
-  "notes": "PROVISIONAL workload routing metadata. This file decides only WHICH MODEL FITS A WORKLOAD and, within a workload, which centrally validated reasoning controls to send. It grants no permission: every model named here must still clear the independent qualification gate in config/inference_policy.json (dated approval, operator review, verified availability, pinned https endpoint, pinned ZDR transport block, account-side logging disabled, free-model training opt-out, pinned price ceilings, declared model_capabilities and token limits) and must still fit the account's resolved entitlements, budget and context bounds before it can be dispatched. model_routing.json contains no prices, no approvals and no capability grants; commercial.json remains the only source of account capabilities and limits. The routine, background and research profiles are the one measured exception, and only inside a narrow envelope: the 28 September 2026 follow-up screen recorded 16/16 human-acceptable held-out answers for openrouter/openai/gpt-6-luna at low effort with no premium semantic advantage, and the 3 October 2026 B3 evaluation found medium effort non-inferior to always-premium on its test split, which together support that single automatic candidate at medium effort and nothing beyond the bounded routine, tool and source-synthesis tasks it was actually shown. Every other placement below, including the reasoning and council pool orderings, the per-profile minimum output budgets and the per-model reasoning presets, remains an UNMEASURED PLACEMENT PENDING REAL EVALUATION: an engineering hypothesis about which model is good enough for which task, not quality evidence. A generic capability flag (text/tools/json_schema) is a protocol fact and never implies answer quality, so a cheap model is only ever chosen because it sits in the first ACCEPTABLE group for that workload, never because it is cheap. Nothing here is fetched at runtime: the model catalogue is not consulted, a model name is never evidence of qualification, and an unlisted model is not routable by profile. Escalation groups exist so a demanding workload has a bounded, ordered, budget-aware path to a stronger model; the bound is the group list, so there is no unbounded premium climb. The routine, background and research profiles deliberately carry no fallback group at all: one accepted automatic candidate each means an unavailable or ineligible Luna is a truthful unavailable/capacity result rather than a silent substitution, and admitting another automatic alternative requires its own evaluation and approval.",
+  "notes": "PROVISIONAL workload routing metadata. This file decides only WHICH MODEL FITS A WORKLOAD and, within a workload, which centrally validated reasoning controls to send. It grants no permission: every model named here must still clear the independent qualification gate in config/inference_policy.json (dated approval, operator review, verified availability, pinned https endpoint, pinned ZDR transport block, account-side logging disabled, free-model training opt-out, pinned price ceilings, declared model_capabilities and token limits) and must still fit the account's resolved entitlements, budget and context bounds before it can be dispatched. model_routing.json contains no prices, no approvals and no capability grants; commercial.json remains the only source of account capabilities and limits. The routine, background and research profiles are the one measured exception, and only inside a narrow envelope: the 28 September 2026 follow-up screen recorded 16/16 human-acceptable held-out answers for openrouter/openai/gpt-6-luna at low effort with no premium semantic advantage, and the 3 October 2026 B3 evaluation found medium effort non-inferior to always-premium on its test split, which together support that single automatic candidate at medium effort and nothing beyond the bounded routine, tool and source-synthesis tasks it was actually shown. Every other placement below, including the reasoning pool ordering, the per-profile minimum output budgets and the per-model reasoning presets, remains an UNMEASURED PLACEMENT PENDING REAL EVALUATION: an engineering hypothesis about which model is good enough for which task, not quality evidence. A generic capability flag (text/tools/json_schema) is a protocol fact and never implies answer quality, so a cheap model is only ever chosen because it sits in the first ACCEPTABLE group for that workload, never because it is cheap. Nothing here is fetched at runtime: the model catalogue is not consulted, a model name is never evidence of qualification, and an unlisted model is not routable by profile. Escalation groups exist so a demanding workload has a bounded, ordered, budget-aware path to a stronger model; the bound is the group list, so there is no unbounded premium climb.",
   "models": [
     {
       "model": "openrouter/deepseek/deepseek-v4.1-flash-1017",
       "sampling_parameters": ["temperature", "top_p", "frequency_penalty", "presence_penalty", "seed", "stop"],
       "developer": "deepseek",
-      "suitability": ["background", "council", "research", "routine"],
+      "suitability": ["background", "research", "routine"],
       "reasoning_efforts": ["max", "high", "low"],
       "parameter_presets": {
-        "default": {"reasoning_effort": "low"},
-        "council": {"reasoning_effort": "high", "include_reasoning": true}
+        "default": {"reasoning_effort": "low"}
       },
       "notes": "Provisional cheap tier placement. It deliberately has no generic medium effort: the supported ladder is max/high/low, so a blanket medium would be an unsupported parameter. Suitability is unmeasured and must be re-placed after a real evaluation. Since 2026-11-19 it serves the 2026-10-17 checkpoint and is an operator-placed, unmeasured fallback for routine, background and research behind Luna (#747)."
     },
@@ -19,73 +18,67 @@
       "model": "openrouter/z-ai/glm-5.3-flash",
       "sampling_parameters": ["temperature", "top_p", "frequency_penalty", "presence_penalty", "seed", "stop"],
       "developer": "z-ai",
-      "suitability": ["background", "council", "research", "routine"],
+      "suitability": ["background", "research", "routine"],
       "reasoning_efforts": ["max", "high", "low"],
       "parameter_presets": {
-        "default": {"reasoning_effort": "low"},
-        "council": {"reasoning_effort": "high", "include_reasoning": true}
+        "default": {"reasoning_effort": "low"}
       },
-      "notes": "Provisional cheap tier placement and a second cheap developer, so a council round is not pinned to one vendor. Since 2026-11-19 it is an operator-placed, unmeasured fallback for routine, background and research behind Luna (#747), not an evaluated placement. No generic medium effort, for the same ladder reason as the DeepSeek flash placement."
+      "notes": "Since 2026-11-19 this is an operator-placed, unmeasured fallback for routine, background and research behind Luna (#747), not an evaluated placement. No generic medium effort, for the same ladder reason as the DeepSeek flash placement."
     },
     {
       "model": "openrouter/openai/gpt-6-luna",
       "sampling_parameters": ["seed"],
       "developer": "openai",
-      "suitability": ["background", "council", "research", "routine", "memory_decomposition", "memory_equivalence"],
+      "suitability": ["background", "research", "routine", "memory_decomposition", "memory_equivalence"],
       "reasoning_efforts": ["max", "xhigh", "high", "medium", "low", "none"],
       "parameter_presets": {
         "default": {"reasoning_effort": "medium"},
-        "memory_decomposition": {"reasoning_effort": "none"},
-        "council": {"reasoning_effort": "medium", "include_reasoning": true}
+        "memory_decomposition": {"reasoning_effort": "none"}
       },
-      "notes": "Provisional economical candidate and the single evaluated automatic candidate for the routine, background and research profiles, at its medium default effort; those profiles fall back to the unmeasured flash group when Luna is not qualified or a Luna attempt fails before output (#747). Medium was approved on 3 October 2026 after the B3 evaluation (docs/REASONING_EVAL_PROTOCOL.md): it passed the pre-registered rule on the test split, which could not separate it from low; its gain over low rests on development and validation tool and planning cases. The earlier low placement rested on 16/16 human-acceptable held-out answers inside one narrow bounded screen. Neither is evidence for memory helpers, general reasoning, coding or demanding work, and the council preset and the reasoning/council placements are unchanged."
+      "notes": "Provisional economical candidate and the single evaluated automatic candidate for the routine, background and research profiles, at its medium default effort; those profiles fall back to the unmeasured flash group when Luna is not qualified or a Luna attempt fails before output (#747). Medium was approved on 3 October 2026 after the B3 evaluation (docs/REASONING_EVAL_PROTOCOL.md): it passed the pre-registered rule on the test split, which could not separate it from low; its gain over low rests on development and validation tool and planning cases. The earlier low placement rested on 16/16 human-acceptable held-out answers inside one narrow bounded screen. Neither is evidence for memory helpers, general reasoning, coding or demanding work."
     },
     {
       "model": "openrouter/google/gemini-3.8-flash",
       "sampling_parameters": ["temperature", "top_p", "seed", "stop"],
       "developer": "google",
-      "suitability": ["background", "council", "research", "routine"],
+      "suitability": [],
       "reasoning_efforts": ["high", "medium", "low"],
       "parameter_presets": {
-        "default": {"reasoning_effort": "low"},
-        "council": {"reasoning_effort": "high", "include_reasoning": true}
+        "default": {"reasoning_effort": "low"}
       },
-      "notes": "Provisional cheap tier placement and a fourth distinct developer. It supports medium but not max or xhigh, so the loader rejects any preset outside its declared ladder."
+      "notes": "Exact selection only. It supports medium but not max or xhigh."
     },
     {
       "model": "openrouter/x-ai/grok-4.7",
       "sampling_parameters": ["temperature", "top_p", "seed"],
       "developer": "x-ai",
-      "suitability": ["council"],
+      "suitability": [],
       "reasoning_efforts": ["xhigh", "high", "medium", "low"],
       "parameter_presets": {
-        "default": {"reasoning_effort": "low"},
-        "council": {"reasoning_effort": "high", "include_reasoning": true}
+        "default": {"reasoning_effort": "low"}
       },
-      "notes": "Council diversity placement only: a fifth developer, offered so a council round can spend a perspective outside the DeepSeek, GLM, OpenAI and Google set. It is not a routine or background candidate."
+      "notes": "Exact selection only. No automatic workload placement."
     },
     {
       "model": "openrouter/z-ai/glm-5.3",
       "sampling_parameters": ["temperature", "top_p", "frequency_penalty", "presence_penalty", "seed", "stop"],
       "developer": "z-ai",
-      "suitability": ["council", "reasoning", "research", "routine"],
+      "suitability": ["reasoning", "research", "routine"],
       "reasoning_efforts": ["max", "high", "low"],
       "parameter_presets": {
-        "default": {"reasoning_effort": "high"},
-        "council": {"reasoning_effort": "high", "include_reasoning": true}
+        "default": {"reasoning_effort": "high"}
       },
-      "notes": "Provisional demanding tier placement in the reasoning and council profiles. It is no longer an automatic candidate for routine, background or research work: those profiles refuse the request rather than degrade to a demanding model. No generic medium effort."
+      "notes": "Provisional demanding tier placement in the reasoning profile. It is not an automatic candidate for routine, background or research work. No generic medium effort."
     },
     {
       "model": "openrouter/openai/gpt-6.2-sol",
       "sampling_parameters": ["seed"],
       "developer": "openai",
-      "suitability": ["council", "reasoning", "research", "routine"],
+      "suitability": ["reasoning", "research", "routine"],
       "reasoning_efforts": ["max", "xhigh", "high", "medium", "low"],
       "parameter_presets": {
         "default": {"reasoning_effort": "high"},
-        "reasoning": {"reasoning_effort": "high"},
-        "council": {"reasoning_effort": "high", "include_reasoning": true}
+        "reasoning": {"reasoning_effort": "high"}
       },
       "notes": "Sol 6.2 replaces Sol 6.1 at the same high presets and placements (operator decision, 19 November 2026, #747); same reasoning ladder (reasoning mandatory, no none). Sol 6.1 itself was an operator-selected replacement on 30 September 2026 after a bounded comparison (docs/SOL_UPGRADE_EVALUATION.md) that does not transfer to 6.2; no measured quality superiority is claimed."
     },
@@ -93,38 +86,35 @@
       "model": "openrouter/anthropic/claude-sonnet-5.5",
       "sampling_parameters": ["stop"],
       "developer": "anthropic",
-      "suitability": ["council", "reasoning", "research", "routine"],
+      "suitability": ["reasoning", "research", "routine"],
       "reasoning_efforts": ["max", "xhigh", "high", "medium", "low"],
       "parameter_presets": {
-        "default": {"reasoning_effort": "high"},
-        "council": {"reasoning_effort": "high", "include_reasoning": true}
+        "default": {"reasoning_effort": "high"}
       },
-      "notes": "Operator-selected Sonnet 5.5 replacement for Sonnet 5 on 3 October 2026, at the same high presets and placements. On the reasoning evaluation pilot cases it scored 119/120 with a three-reviewer blind AI panel (Sonnet 5: 115/120) at lower cost per attempt; paired gains were not significant and council use was not evaluated. A distinct developer from the OpenAI demanding models, so a demanding round is not pinned to one vendor. See docs/REASONING_EVAL_PROTOCOL.md."
+      "notes": "Operator-selected Sonnet 5.5 replacement for Sonnet 5 on 3 October 2026, at the same high preset and reasoning placement. On the reasoning evaluation pilot cases it scored 119/120 with a three-reviewer blind AI panel (Sonnet 5: 115/120) at lower cost per attempt; paired gains were not significant. See docs/REASONING_EVAL_PROTOCOL.md."
     },
     {
       "model": "openrouter/anthropic/claude-opus-5.5",
       "sampling_parameters": ["temperature", "stop"],
       "developer": "anthropic",
-      "suitability": ["council", "reasoning", "research"],
+      "suitability": ["reasoning", "research"],
       "reasoning_efforts": ["max", "xhigh", "high", "medium", "low"],
       "parameter_presets": {
         "default": {"reasoning_effort": "high"},
-        "research": {"reasoning_effort": "xhigh"},
-        "council": {"reasoning_effort": "high", "include_reasoning": true}
+        "research": {"reasoning_effort": "xhigh"}
       },
-      "notes": "Provisional escalation placement: the second group of the reasoning and council profiles, never placed for routine, background or research work. Whether it spends premium allowance is an inference_policy route_class decision, not one this file makes."
+      "notes": "Provisional escalation placement: the second group of the reasoning profile, never placed for routine, background or research work. Whether it spends premium allowance is an inference_policy route_class decision, not one this file makes."
     },
     {
       "model": "openrouter/openai/gpt-6.2-astra",
       "sampling_parameters": ["seed"],
       "developer": "openai",
-      "suitability": ["council", "reasoning", "research"],
+      "suitability": ["reasoning", "research"],
       "reasoning_efforts": ["max", "xhigh", "high", "medium", "low"],
       "parameter_presets": {
-        "default": {"reasoning_effort": "high"},
-        "council": {"reasoning_effort": "high", "include_reasoning": true}
+        "default": {"reasoning_effort": "high"}
       },
-      "notes": "Provisional escalation placement, the last group of the reasoning and council profiles; Astra 6.2 replaces Astra at the same presets and placements (operator decision, 19 November 2026, #747), and requires reasoning, so its declaration omits none. Placing it last is what makes the escalation bounded: it is reached only after the earlier groups have no qualified candidate or their attempts fail before output. It is not an automatic candidate for routine, background or research work."
+      "notes": "Provisional escalation placement, the last group of the reasoning profile; Astra 6.2 replaces Astra at the same presets and placements (operator decision, 19 November 2026, #747), and requires reasoning, so its declaration omits none. Placing it last is what makes the escalation bounded: it is reached only after the earlier groups have no qualified candidate or their attempts fail before output. It is not an automatic candidate for routine, background or research work."
     }
   ],
   "profiles": [
@@ -231,35 +221,6 @@
         }
       ],
       "notes": "Ordinary source synthesis remains accessible on routine capacity; complex analysis is classified as reasoning. Luna at medium effort is the first group and the only evaluated candidate, at this profile's larger comparable output floor; the operator-placed, unmeasured flash_fallback group (#747) serves when no Luna route is qualified or a Luna attempt fails before output. The demanding and escalation groups are removed, so there is no automatic premium candidate. allow_premium stays true, but with no premium model in the group it now admits no automatic premium candidate; a manually selected premium route still requires account eligibility and funding."
-    },
-    {
-      "profile": "council",
-      "min_output_tokens": 2048,
-      "allow_premium": true,
-      "diversity": {"distinct_developers": true},
-      "groups": [
-        {
-          "group": "diverse",
-          "models": [
-            "openrouter/deepseek/deepseek-v4.1-flash-1017",
-            "openrouter/z-ai/glm-5.3-flash",
-            "openrouter/openai/gpt-6-luna",
-            "openrouter/google/gemini-3.8-flash",
-            "openrouter/x-ai/grok-4.7",
-            "openrouter/z-ai/glm-5.3",
-            "openrouter/openai/gpt-6.2-sol",
-            "openrouter/anthropic/claude-sonnet-5.5"
-          ]
-        },
-        {
-          "group": "escalation",
-          "models": [
-            "openrouter/anthropic/claude-opus-5.5",
-            "openrouter/openai/gpt-6.2-astra"
-          ]
-        }
-      ],
-      "notes": "Provisional council pool. Role preferences are honored within the diverse group after qualification and budget checks; exclusions and actual-result checks preserve developer independence. Escalation remains bounded."
     }
   ]
 }

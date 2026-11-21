@@ -1,5 +1,8 @@
 # Contextual home — approved first-release contract
 
+The Council launch and verification notes in this document are historical:
+[Council execution is now retired](COUNCIL_RETIREMENT.md).
+
 Owner approval: 5 October 2026, in the implementation approval question following
 the centred-tooltip study. Product/API contract approved; production code and
 release verification have not begun. No deployment is authorised.

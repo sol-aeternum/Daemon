@@ -543,7 +543,7 @@ def test_the_offline_guard_blocks_and_reports_a_connection() -> None:
     assert "socket.create_connection" in payload["offline_attempts"][0]
 
 
-def test_enumeration_is_not_empty_and_covers_council(
+def test_enumeration_is_not_empty_and_covers_every_declared_profile(
     contract_measurement: dict[str, Any],
 ) -> None:
     _assert_offline(contract_measurement)
@@ -553,7 +553,7 @@ def test_enumeration_is_not_empty_and_covers_council(
     profiles = {outcome.profile for outcome in outcomes}
     for profile in config["profiles"]:
         assert profile["profile"] in profiles, f"profile {profile['profile']!r} not enumerated"
-    assert "council" in profiles
+    assert "reasoning" in profiles
     assert outcomes, "no routing combinations were enumerated"
     assert len(outcomes) > len(config["models"]), "declared ladder rows are missing"
 

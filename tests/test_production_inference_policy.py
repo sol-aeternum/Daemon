@@ -154,20 +154,17 @@ def test_deepseek_flash_serves_1017_checkpoint_with_operator_caps(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("profile", ["routine", "council"])
-async def test_glm_flash_existing_selection_sends_production_caps(mocked_dispatch, profile):
+async def test_glm_flash_existing_selection_sends_production_caps(mocked_dispatch):
     service, provider = mocked_dispatch
-    with model_routing.routing_context(profile, preferred_model=GLM_FLASH) as state:
+    with model_routing.routing_context("routine", preferred_model=GLM_FLASH) as state:
         await compute_runtime.guarded_completion(
-            model=GLM_FLASH if profile == "routine" else None,
+            model=GLM_FLASH,
             messages=[{"role": "user", "content": "fixture"}],
             max_tokens=4096,
         )
         assert state.selected_model == GLM_FLASH
         assert state.selected_route_id == GLM_ROUTE
-        assert state.selected_effort == ("low" if profile == "routine" else "high")
-        if profile == "council":
-            assert state.selected_group == "diverse"
+        assert state.selected_effort == "low"
     provider.assert_awaited_once()
     call = provider.await_args.kwargs
     assert call["model"] == GLM_FLASH
@@ -521,6 +518,9 @@ def test_approved_deployment_resolves_profiles_and_denies_excluded_models(monkey
         assert compute_runtime.choose_route(profile=profile).route_id == "luna-azure"
     assert compute_runtime.choose_route(profile="reasoning").route_id == "sonnet-vertex-global"
     assert compute_runtime.choose_route(DEEPSEEK_FLASH).route_id == DEEPSEEK_ROUTE
+    assert (
+        compute_runtime.choose_route("openrouter/x-ai/grok-4.7").route_id == "grok-bedrock-global"
+    )
     for model in (
         "openrouter/deepseek/deepseek-v4.1-flash",
         "openrouter/openai/gpt-6-sol",

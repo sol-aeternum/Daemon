@@ -126,13 +126,6 @@ def routing_document(
             "allow_premium": allow_premium,
             "groups": [{"group": "demanding", "models": list(declared)}],
         },
-        {
-            "profile": "council",
-            "min_output_tokens": min_output_tokens,
-            "allow_premium": allow_premium,
-            "diversity": {"distinct_developers": True},
-            "groups": [{"group": "diverse", "models": list(declared)}],
-        },
     ]
     profiles.extend(extra_profiles or [])
     return {
@@ -147,7 +140,6 @@ def routing_document(
                 "sampling_parameters": sorted(model_routing.SAMPLING_PARAMETERS),
                 "parameter_presets": {
                     "default": {"reasoning_effort": "low"},
-                    "council": {"reasoning_effort": "high", "include_reasoning": True},
                 },
             }
             for model in declared
@@ -297,14 +289,18 @@ async def test_explicit_premium_requires_premium_routing_capability(
 
 
 @pytest.mark.asyncio
-async def test_council_reasoning_round_uses_guarded_approved_transport(
+async def test_reasoning_preset_uses_guarded_approved_transport(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from orchestrator.council.engine import _call_model
-
     route = _route(input_price=1000)
     route.max_output_tokens = 64
     _qualified_policy(monkeypatch, route=route)
+    document = routing_document([route.model])
+    document["models"][0]["parameter_presets"]["reasoning"] = {
+        "reasoning_effort": "high",
+        "include_reasoning": True,
+    }
+    install_routing(monkeypatch, document)
     limits = SimpleNamespace(max_context_tokens=32000, max_output_tokens=128)
     service = SimpleNamespace(
         resolve=AsyncMock(
@@ -315,12 +311,12 @@ async def test_council_reasoning_round_uses_guarded_approved_transport(
                 remaining_for=lambda premium: 100000,
             )
         ),
-        reserve=AsyncMock(return_value="council-hold"),
+        reserve=AsyncMock(return_value="reasoning-hold"),
         settle=AsyncMock(),
     )
     response = SimpleNamespace(
         choices=[
-            SimpleNamespace(message=SimpleNamespace(content="Council answer", reasoning="Why"))
+            SimpleNamespace(message=SimpleNamespace(content="Reasoning answer", reasoning="Why"))
         ],
         usage=None,
         model=route.model,
@@ -331,23 +327,16 @@ async def test_council_reasoning_round_uses_guarded_approved_transport(
         runtime.ComputeScope(uuid.uuid4(), cast(EntitlementService, service))
     )
     try:
-        role, content, error, reasoning, _, actual_model = await _call_model(
-            role="auditor",
-            model=route.model,
-            prompt="Question",
-            system_prompt="Deliberate",
-            timeout_s=10,
-        )
+        with model_routing.routing_context("reasoning"):
+            result = await runtime.guarded_completion(
+                model=route.model,
+                messages=[{"role": "user", "content": "Question"}],
+                max_tokens=64,
+            )
     finally:
         runtime._scope.reset(token)
 
-    assert (role, content, error, reasoning, actual_model) == (
-        "auditor",
-        "Council answer",
-        None,
-        "Why",
-        route.model,
-    )
+    assert result is response
     provider.assert_awaited_once()
     assert provider.await_args is not None
     call = provider.await_args.kwargs

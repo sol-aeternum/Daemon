@@ -534,7 +534,7 @@ The real-PostgreSQL regressions in
 request-bound stream and original capture guard, asserting both refusal effects
 and absence of model dispatch, account provisioning and derived writes.
 
-This later scoped choice does not fence all request-bound persistence, council,
+This later scoped choice does not fence all request-bound persistence,
 worker outputs or generic task writers, and does not complete #477, account
 reset/deletion, deployment or no-memory compatibility qualification.
 

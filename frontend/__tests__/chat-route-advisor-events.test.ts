@@ -238,23 +238,17 @@ describe('chat route advisor event bridge', () => {
     );
   });
 
-  it('creates an assistant message from a data-only council stream', async () => {
+  it('surfaces a retired command as a definitive refusal, not a task', async () => {
     vi.stubGlobal(
       'fetch',
-      vi.fn().mockResolvedValue(
-        buildSseResponse([
-          encodeFrame('council_interview', {
-            id: 'evt_council_interview_1',
-            request_id: 'req_council',
-            data: {
-              roster: { architect: 'model-a' },
-              presets: ['lean'],
-              rounds_options: [1, 2],
-              audit_default: false,
-            },
-          }),
-        ]),
-      ),
+      vi
+        .fn()
+        .mockResolvedValue(
+          Response.json(
+            { detail: { message: 'Council has been retired.' } },
+            { status: 410 },
+          ),
+        ),
     );
 
     const response = await POST(
@@ -275,14 +269,13 @@ describe('chat route advisor event bridge', () => {
     );
 
     const chunks = await readUIMessageChunks(response);
-    expect(chunks.map((chunk) => chunk.type)).toEqual(['data-event', 'finish']);
-    expect(chunks[0]?.data).toEqual(
-      expect.objectContaining({
-        type: 'council_interview',
-        request_id: 'req_council',
-        presets: ['lean'],
-      }),
-    );
+    expect(chunks.filter((chunk) => chunk.type === 'data-event')).toEqual([
+      { type: 'data-event', data: { type: 'request_rejected', status: 410 } },
+    ]);
+    expect(chunks).toContainEqual({
+      type: 'error',
+      errorText: 'Council has been retired.',
+    });
   });
 
   it('passes req.signal to the backend fetch so abort propagates upstream', async () => {

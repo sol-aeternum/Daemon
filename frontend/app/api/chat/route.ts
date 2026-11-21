@@ -890,56 +890,6 @@ export async function POST(req: Request) {
                     },
                   ]);
                 }
-              } else if (eventType === 'council_interview') {
-                writeData([
-                  {
-                    type: 'council_interview',
-                    ...payload?.data,
-                    id: payload?.id ?? payload?.data?.id,
-                    request_id:
-                      payload?.request_id ?? payload?.data?.request_id,
-                  },
-                ]);
-              } else if (eventType === 'council_progress') {
-                writeData([
-                  {
-                    type: 'council_progress',
-                    ...payload?.data,
-                    id: payload?.id ?? payload?.data?.id,
-                    request_id:
-                      payload?.request_id ?? payload?.data?.request_id,
-                  },
-                ]);
-              } else if (eventType === 'council_output') {
-                writeData([
-                  {
-                    type: 'council_output',
-                    ...payload?.data,
-                    id: payload?.id ?? payload?.data?.id,
-                    request_id:
-                      payload?.request_id ?? payload?.data?.request_id,
-                  },
-                ]);
-              } else if (eventType === 'council_done') {
-                writeData([
-                  {
-                    type: 'council_done',
-                    ...payload?.data,
-                    id: payload?.id ?? payload?.data?.id,
-                    request_id:
-                      payload?.request_id ?? payload?.data?.request_id,
-                  },
-                ]);
-              } else if (eventType === 'council_error') {
-                writeData([
-                  {
-                    type: 'council_error',
-                    ...payload?.data,
-                    id: payload?.id ?? payload?.data?.id,
-                    request_id:
-                      payload?.request_id ?? payload?.data?.request_id,
-                  },
-                ]);
               } else if (eventType === 'final') {
                 // Provisional text only. A final never supplies finish
                 // metadata: EOF without an authoritative ``done``/terminal

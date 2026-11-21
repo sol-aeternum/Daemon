@@ -123,20 +123,8 @@ import MarkdownMessage from '../components/MarkdownMessage';
 import { TaskResources } from '../components/ResourceCards';
 import { FileDownloadCard } from '../components/FileDownloadCard';
 import { SkeletonBlock } from '../components/ui/Skeleton';
-import {
-  ChatEvent,
-  isChatEvent,
-  normalizeChatEvents,
-  isCouncilEvent,
-  isCouncilInterviewEvent,
-  isCouncilProgressEvent,
-  isCouncilOutputEvent,
-  isCouncilDoneEvent,
-} from '../lib/events';
+import { ChatEvent, isChatEvent, normalizeChatEvents } from '../lib/events';
 import { Eye, PanelRight } from 'lucide-react';
-import { CouncilInterviewCard } from '../components/council/CouncilInterviewCard';
-import { CouncilProgress } from '../components/council/CouncilProgress';
-import { CouncilOutputViewer } from '../components/council/CouncilOutputViewer';
 import {
   type DaemonMessage,
   getDaemonDataEvents,
@@ -207,7 +195,6 @@ const getPersistedToolEvents = (message: DaemonMessage): ChatEvent[] => {
   const messageWithTools = message as DaemonMessage & {
     tool_calls?: unknown;
     tool_results?: unknown;
-    metadata?: unknown;
   };
 
   const rawToolCalls = Array.isArray(messageWithTools.tool_calls)
@@ -215,10 +202,6 @@ const getPersistedToolEvents = (message: DaemonMessage): ChatEvent[] => {
     : [];
   const rawToolResults = Array.isArray(messageWithTools.tool_results)
     ? (messageWithTools.tool_results as PersistedToolResult[])
-    : [];
-  const metadata = toRecord(messageWithTools.metadata) || {};
-  const metadataCouncilEvents = Array.isArray(metadata.council_events)
-    ? metadata.council_events
     : [];
 
   const events: ChatEvent[] = [];
@@ -249,6 +232,12 @@ const getPersistedToolEvents = (message: DaemonMessage): ChatEvent[] => {
   }
 
   for (const toolResult of rawToolResults) {
+    // Council's retired rows saved its event archive as a fake tool result;
+    // its prose already lives in the message content, so this duplicate must
+    // never appear as tool activity. Ordinary tools still render.
+    if (message.model === 'council' && toolResult.name === 'council_events') {
+      continue;
+    }
     const event: Extract<ChatEvent, { type: 'tool_result' }> = {
       type: 'tool_result',
       name: getOptionalString(toolResult.name) || 'tool',
@@ -266,27 +255,6 @@ const getPersistedToolEvents = (message: DaemonMessage): ChatEvent[] => {
     if (requestId) event.request_id = requestId;
 
     pushEvent(event);
-  }
-
-  for (const candidate of metadataCouncilEvents) {
-    if (isChatEvent(candidate)) {
-      pushEvent(candidate);
-    }
-  }
-
-  for (const toolResult of rawToolResults) {
-    if (getOptionalString(toolResult.name) !== 'council_events') {
-      continue;
-    }
-    const resultRecord = toRecord(toolResult.result);
-    const resultEvents = Array.isArray(resultRecord?.events)
-      ? resultRecord?.events
-      : [];
-    for (const candidate of resultEvents) {
-      if (isChatEvent(candidate)) {
-        pushEvent(candidate);
-      }
-    }
   }
 
   return events;
@@ -338,31 +306,34 @@ const isRoutingEvent = (
 ): event is Extract<ChatEvent, { type: 'routing' }> => event.type === 'routing';
 import { SttSettings, DEFAULT_STT_SETTINGS } from '../lib/constants';
 
-const hasCouncilEvents = (events: ChatEvent[]): boolean => {
-  return events.some(isCouncilEvent);
-};
-
-const getCouncilInterviewEvent = (
-  events: ChatEvent[],
-): ChatEvent | undefined => {
-  return events.find(isCouncilInterviewEvent);
-};
-
-const getLatestCouncilProgressEvent = (
-  events: ChatEvent[],
-): ChatEvent | undefined => {
-  const progressEvents = events.filter(isCouncilProgressEvent);
-  return progressEvents[progressEvents.length - 1];
-};
-
-const getCouncilOutputEvents = (events: ChatEvent[]): ChatEvent[] => {
-  return events.filter((e) => isCouncilOutputEvent(e) || isCouncilDoneEvent(e));
-};
-
-const shouldShowCouncilProgress = (events: ChatEvent[]): boolean => {
-  const hasProgress = events.some(isCouncilProgressEvent);
-  const hasError = events.some((e) => e.type === 'council_error');
-  return hasProgress && !hasError;
+/**
+ * Retired Council rows kept their joined answer in ordinary content, with the
+ * run's event archive duplicated in metadata and a fake ``council_events``
+ * tool result. They render as normal read-only transcripts: no interview,
+ * progress or output controls are reconstituted, and only a factual status
+ * line supplements an interrupted or failed run. The stored events are never
+ * read back as duplicate prose.
+ */
+const getHistoricalCouncilPresentation = (
+  role: DaemonMessage['role'],
+  status: string | null | undefined,
+  model: string | null | undefined,
+  content: string,
+): { content: string; notice: string } | null => {
+  if (role !== 'assistant' || model !== 'council' || status !== 'error')
+    return null;
+  // The legacy writer used the same fallback for a progress-only interruption
+  // and a completed run with no answer text. Never show it as success on error.
+  if (content.trim() === 'Council run completed.') {
+    return {
+      content: '',
+      notice: 'This Council run ended before producing an answer.',
+    };
+  }
+  // An error-only reply already contains its explanation, even if its row was
+  // originally marked complete. Add a notice only where saved prose lacks one.
+  if (content.trimStart().startsWith('Council error:')) return null;
+  return { content, notice: 'This Council run did not complete.' };
 };
 
 function ChatContent() {
@@ -2159,23 +2130,6 @@ function ChatContent() {
     );
   };
 
-  const isCouncilDataEvent = (value: unknown): boolean => {
-    if (!value || typeof value !== 'object') return false;
-    const candidate = value as { type?: unknown };
-    return (
-      candidate.type === 'council_interview' ||
-      candidate.type === 'council_progress' ||
-      candidate.type === 'council_output' ||
-      candidate.type === 'council_done' ||
-      candidate.type === 'council_error'
-    );
-  };
-
-  const isCouncilDoneDataEvent = (value: unknown): boolean => {
-    if (!value || typeof value !== 'object') return false;
-    return (value as { type?: unknown }).type === 'council_done';
-  };
-
   // Capture conversation_id from SSE and update URL (for edge cases)
   const urlUpdatedRef = useRef(false);
   useEffect(() => {
@@ -2228,9 +2182,6 @@ function ChatContent() {
     setStoppingIn((previous) =>
       previous === null ? conversationId : previous,
     );
-    const hasCouncilEvent = flattenedData.some(isCouncilDataEvent);
-    const hasCouncilDoneEvent = flattenedData.some(isCouncilDoneDataEvent);
-    const shouldSyncConversationState = !hasCouncilEvent || hasCouncilDoneEvent;
 
     if ((!currentId || suggestionSubmission) && !urlUpdatedRef.current) {
       if (
@@ -2251,10 +2202,7 @@ function ChatContent() {
         void persistModel(conversationId, chosenModel, 'auto');
     }
 
-    if (
-      shouldSyncConversationState &&
-      !scheduledTitleRefreshConversationIdsRef.current.has(conversationId)
-    ) {
+    if (!scheduledTitleRefreshConversationIdsRef.current.has(conversationId)) {
       scheduledTitleRefreshConversationIdsRef.current.add(conversationId);
       for (const delayMs of [2000, 5000]) {
         const timeoutId = window.setTimeout(() => {
@@ -2701,10 +2649,24 @@ function ChatContent() {
                         : [];
                       const liveThoughtContent = getThinkingContent(liveEvents);
                       const messageContent = getDaemonMessageText(message);
+                      const persistedMessage = persistedMessagesById.get(
+                        message.id,
+                      ) as ReasoningMessage | undefined;
+                      const reasoningMessage =
+                        persistedMessage ?? (message as ReasoningMessage);
+                      const historicalCouncil =
+                        getHistoricalCouncilPresentation(
+                          message.role,
+                          message.status,
+                          reasoningMessage.model,
+                          messageContent,
+                        );
+                      const displayContent =
+                        historicalCouncil?.content ?? messageContent;
                       const artifactText =
                         message.role === 'assistant' &&
-                        hasHtmlArtifactFence(messageContent)
-                          ? splitDaemonMessageNotice(message, messageContent)
+                        hasHtmlArtifactFence(displayContent)
+                          ? splitDaemonMessageNotice(message, displayContent)
                           : null;
                       // Finish evidence is a status line beside the reply,
                       // never part of its prose, copy or audio (#759).
@@ -2713,24 +2675,8 @@ function ChatContent() {
                           ? getTurnFinishNotice(message)
                           : undefined;
                       const formattedMessageContent =
-                        formatMessageContent(messageContent);
+                        formatMessageContent(displayContent);
 
-                      const councilEventsInMessage =
-                        hasCouncilEvents(msgEvents);
-                      const councilInterviewEvent =
-                        getCouncilInterviewEvent(msgEvents);
-                      const councilProgressEvent =
-                        getLatestCouncilProgressEvent(msgEvents);
-                      const councilOutputEvents =
-                        getCouncilOutputEvents(msgEvents);
-                      const councilProgressVisible =
-                        shouldShowCouncilProgress(msgEvents);
-
-                      const persistedMessage = persistedMessagesById.get(
-                        message.id,
-                      ) as ReasoningMessage | undefined;
-                      const reasoningMessage =
-                        persistedMessage ?? (message as ReasoningMessage);
                       const persistedReasoning =
                         reasoningMessage.reasoning_text;
                       const rawDuration =
@@ -2787,119 +2733,40 @@ function ChatContent() {
                               : 'space-y-3'
                           }
                         >
-                          {message.role === 'assistant' &&
-                            !councilEventsInMessage && (
-                              <div className="w-full space-y-2">
-                                <ThinkingIndicator
-                                  event={thoughtEvent}
-                                  isThinking={isLast && isLoading}
-                                  isFinished={!isLast || !isLoading}
-                                  duration={
-                                    isLast && isLoading
-                                      ? undefined
-                                      : getDurationForMessage(message.id) > 0
-                                        ? getDurationForMessage(message.id)
-                                        : fallbackDuration
-                                  }
-                                  modelName={modelName}
-                                  onDurationChange={(d) =>
-                                    (thinkingDurationRef.current = d)
-                                  }
-                                />
-                                {!hideToolCalls && (
-                                  <ToolCallLog events={msgEvents} />
-                                )}
-                                <RoutingNotice
-                                  fallback={latestRoutingEvent?.fallback}
-                                  reasonCodes={latestRoutingEvent?.reason_codes}
-                                />
-                              </div>
-                            )}
-
-                          {councilEventsInMessage && (
-                            <div className="w-full space-y-4">
-                              {councilInterviewEvent && (
-                                <CouncilInterviewCard
-                                  event={councilInterviewEvent}
-                                  onSendConfig={(config) => {
-                                    // A retry of this turn re-sends no files.
-                                    lastTurnRef.current = {
-                                      conversationId:
-                                        currentId ||
-                                        latestConversationIdRef.current ||
-                                        null,
-                                      attachments: [],
-                                    };
-                                    // Council configuration runs request-
-                                    // bound (DURABLE_REQUEST_DESIGN §7): no
-                                    // task exists to replay, so it is not
-                                    // held, and a retry is a new run.
-                                    const text = `/council config: preset=${config.preset}, rounds=${config.rounds}, audit=${config.audit}`;
-                                    beginSend();
-                                    void sendMessage(
-                                      { text },
-                                      {
-                                        body: {
-                                          id:
-                                            currentId ||
-                                            latestConversationIdRef.current ||
-                                            null,
-                                          model: activeModel,
-                                        },
-                                      },
-                                    );
-                                  }}
-                                />
+                          {message.role === 'assistant' && (
+                            <div className="w-full space-y-2">
+                              <ThinkingIndicator
+                                event={thoughtEvent}
+                                isThinking={isLast && isLoading}
+                                isFinished={!isLast || !isLoading}
+                                duration={
+                                  isLast && isLoading
+                                    ? undefined
+                                    : getDurationForMessage(message.id) > 0
+                                      ? getDurationForMessage(message.id)
+                                      : fallbackDuration
+                                }
+                                modelName={modelName}
+                                onDurationChange={(d) =>
+                                  (thinkingDurationRef.current = d)
+                                }
+                              />
+                              {!hideToolCalls && (
+                                <ToolCallLog events={msgEvents} />
                               )}
-
-                              {councilProgressEvent &&
-                                councilProgressVisible && (
-                                  <CouncilProgress
-                                    event={
-                                      councilProgressEvent as {
-                                        type: 'council_progress';
-                                        stage: string;
-                                        current_round: number;
-                                        total_rounds: number;
-                                        models_complete: number;
-                                        models_total: number;
-                                      }
-                                    }
-                                  />
-                                )}
-
-                              {councilOutputEvents.length > 0 && (
-                                <CouncilOutputViewer
-                                  events={councilOutputEvents}
-                                />
-                              )}
-
-                              {stoppedMessageIds.has(message.id) && (
-                                <div
-                                  role="status"
-                                  className="text-xs text-[var(--color-text-muted)]"
-                                >
-                                  (stopped)
-                                </div>
-                              )}
-                              {stoppingMessageIds.has(message.id) && (
-                                <div
-                                  role="status"
-                                  className="text-xs text-[var(--color-text-muted)]"
-                                >
-                                  (stopping…)
-                                </div>
-                              )}
+                              <RoutingNotice
+                                fallback={latestRoutingEvent?.fallback}
+                                reasonCodes={latestRoutingEvent?.reason_codes}
+                              />
                             </div>
                           )}
 
-                          {message.role === 'assistant' &&
-                          !councilEventsInMessage ? (
+                          {message.role === 'assistant' ? (
                             <div className="w-full space-y-2">
                               <div className="w-full">
                                 <MarkdownMessage
                                   content={
-                                    artifactText?.source ?? messageContent
+                                    artifactText?.source ?? displayContent
                                   }
                                   sources={citationSources}
                                   streaming={
@@ -2922,6 +2789,14 @@ function ChatContent() {
                                     {turnFinishNotice}
                                   </p>
                                 )}
+                                {historicalCouncil?.notice && (
+                                  <p
+                                    role="status"
+                                    className="text-xs text-[var(--color-text-muted)]"
+                                  >
+                                    {historicalCouncil.notice}
+                                  </p>
+                                )}
                                 {getDaemonTaskId(message) && (
                                   <TaskResources
                                     key={`${authGeneration}-${getDaemonTaskId(message)}`}
@@ -2929,13 +2804,13 @@ function ChatContent() {
                                     revision={isLoading ? 'working' : 'settled'}
                                   />
                                 )}
-                                {messageContent.trim() && (
+                                {displayContent.trim() && (
                                   <>
                                     <CopyResponseButton
-                                      content={messageContent}
+                                      content={displayContent}
                                     />
                                     <TextToSpeechButton
-                                      text={messageContent}
+                                      text={displayContent}
                                       messageId={message.id}
                                       conversationId={currentId ?? null}
                                       available={
