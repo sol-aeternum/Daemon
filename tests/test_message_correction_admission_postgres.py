@@ -349,16 +349,21 @@ async def test_native_uses_original_capture_without_admission_fallback(api, monk
     events = _events(response.text)
     done = next(e["data"] for kind, e in events if kind == "done")
     if stale:
+        final = next(e["data"] for kind, e in events if kind == "final")
+        error = next(e["data"] for kind, e in events if kind == "error")
+        finish = {
+            "version": 1,
+            "outcome": "failed",
+            "reason": "internal_error",
+            "provider": {"state": "not_attempted"},
+            "limits": [],
+        }
+        assert final["finish_reason"] == "error"
+        assert final["turn_finish"] == error["turn_finish"] == finish
         assert done == {
             "ok": False,
             "status": "error",
-            "turn_finish": {
-                "version": 1,
-                "outcome": "failed",
-                "reason": "internal_error",
-                "provider": {"state": "missing"},
-                "limits": [],
-            },
+            "turn_finish": finish,
         }
     else:
         assert done["status"] == "completed" and not any(kind == "error" for kind, _ in events)

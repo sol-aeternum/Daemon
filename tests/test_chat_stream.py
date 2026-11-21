@@ -167,14 +167,26 @@ async def test_native_limit_refusal_reports_runtime_reason_without_success(clien
     final, error, done = frames[-3:]
     assert [frame["type"] for frame in (final, error, done)] == ["final", "error", "done"]
     finish = done["data"]["turn_finish"]
-    assert final["data"]["finish_reason"] is None
+    assert final["data"]["finish_reason"] == "error"
     assert final["data"]["turn_finish"] == error["data"]["turn_finish"] == finish
     assert finish["outcome"] == "incomplete"
     assert finish["reason"] == "context_limit"
+    assert finish["provider"] == {"state": "missing"}
     assert finish["limits"] == [{"kind": "context", "binding": True}]
     assert any(
         frame["type"] == "token" and frame["data"]["text"] == "checkpoint" for frame in frames
     )
+    compat = await client.post(
+        "/v1/chat/completions",
+        json={"model": "auto", "messages": [{"role": "user", "content": "hello"}], "stream": True},
+    )
+    assert compat.status_code == 200
+    chunks = [
+        json.loads(line[6:]) for line in compat.text.splitlines() if line.startswith("data: {")
+    ]
+    assert chunks[0]["choices"][0]["delta"]["content"] == "checkpoint"
+    assert chunks[-1]["choices"][0]["finish_reason"] is None
+    assert chunks[-1]["daemon_turn_finish"] == finish
 
 
 @pytest.mark.asyncio

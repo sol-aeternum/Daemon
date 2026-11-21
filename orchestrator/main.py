@@ -3162,6 +3162,7 @@ async def chat(
                     "turn_finish": refused_finish(
                         capacity.code if capacity else "internal_error",
                         category=capacity.category if capacity else None,
+                        not_attempted=live_user_admission_failed,
                     ).model_dump(exclude_none=True)
                 }
             )
@@ -3199,7 +3200,8 @@ async def chat(
                         },
                         "model": model_for_events,
                         "provider": provider,
-                        "finish_reason": "error" if council else None,
+                        # Legacy native SSE failure signal, not a provider reason.
+                        "finish_reason": "error",
                         **finish_data,
                     },
                 },

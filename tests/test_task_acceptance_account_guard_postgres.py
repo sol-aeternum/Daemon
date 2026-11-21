@@ -826,14 +826,14 @@ async def test_missing_account_request_bound_chat_refuses_before_model_and_publi
     ]
     assert [kind for kind, _ in terminal] == ["final", "error", "done"]
     final, error, done = (data for _, data in terminal)
-    assert final["finish_reason"] is None
+    assert final["finish_reason"] == "error"
     assert final["message"]["content"] == ""
     assert error["code"] == "internal_error" and error["retryable"] is False
     finish = {
         "version": 1,
         "outcome": "failed",
         "reason": "internal_error",
-        "provider": {"state": "missing"},
+        "provider": {"state": "not_attempted"},
         "limits": [],
     }
     assert final["turn_finish"] == error["turn_finish"] == finish

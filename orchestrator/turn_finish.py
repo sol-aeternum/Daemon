@@ -134,7 +134,9 @@ def unknown_finish(
     )
 
 
-def refused_finish(code: str, *, category: str | None = None) -> TurnFinish:
+def refused_finish(
+    code: str, *, category: str | None = None, not_attempted: bool = False
+) -> TurnFinish:
     """Describe existing terminal refusals without changing their classifiers."""
     limit = {
         "budget_exceeded": "compute_budget",
@@ -152,6 +154,6 @@ def refused_finish(code: str, *, category: str | None = None) -> TurnFinish:
     return TurnFinish(
         outcome="incomplete" if limit else "failed",
         reason="deadline_exceeded" if category == "deadline_exceeded" else code,
-        provider=ProviderFinish(state="missing"),
+        provider=ProviderFinish(state="not_attempted" if not_attempted else "missing"),
         limits=[LocalLimit(kind=limit, binding=True)] if limit else [],
     )

@@ -26,6 +26,10 @@ Standard `stop` means confirmed final provider stop on a completed turn;
 evidence does not get a fabricated standard reason. Legacy history without
 this record remains unknown. Capturing a finish does not stop iteration:
 trailing usage, normal end of stream and existing settlement come first.
+Native exception frames retain the legacy `final.finish_reason: "error"`
+signal alongside `turn_finish`; it is not a provider reason and does not
+appear as an OpenAI-compatible finish reason. A live admission refusal
+that proves no dispatch reports `provider.state: "not_attempted"`.
 The locked OpenRouter adapter recognizes single-choice, identity-encoded
 Chat Completions SSE with a complete `[DONE]` event and clean HTTP EOF.
 Unsupported streams, including compressed responses, fail closed to unknown;
