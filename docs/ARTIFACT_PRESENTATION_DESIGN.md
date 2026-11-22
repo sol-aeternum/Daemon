@@ -1,8 +1,11 @@
 # Chat output presentation — proposed design
 
 Status: **Owner-approved design, 2026-11-22; not implemented.** Baseline:
-`main` at `d9b330c4`. The approved scope is D0 = E1 together with the
-recommended D1–D7 and the tool contract in §6. Implementation follows the
+`main` at `d9b330c4`. The approved target is D0 = E1 together with the
+recommended D1–D7 and the tool contract in §6. **Script execution is not
+enabled by this approval:** the current candidate ships passive previews and
+downloads only, and E1 execution stays off until the release condition in D6
+is met. Implementation follows the
 delivery slices in §8. This approval does not cover any new SSE event type
 (D5 P2), dependency, environment variable, migration or deployment. Runtime
 inference remains DEC12-qualified Z-only.
@@ -29,6 +32,11 @@ inference remains DEC12-qualified Z-only.
   WebRTC). The owner chose **harden and narrow the claim**: D1, D6 and §8 below
   are corrected accordingly. Fences and SVG never execute; the frame is
   hardened and the UI promises only isolation from Daemon and the user's data.
+- 2026-11-22: re-review of #778 asked that egress isolation be a condition for
+  enabling E1, not only a wording change. The owner chose **keep execution
+  off**: no generated script runs until browser qualification closes the
+  residual egress in D6, or the owner explicitly approves a revised risk
+  boundary.
 
 Terminology: GLOSSARY reserves **artifact** for a durable, owned output with
 identity and lineage (#489). This design produces **chat blocks**: content
@@ -84,7 +92,9 @@ Chat blocks are not artifacts and are never published to the resource registry.
 - Registered component trees chosen by the model (#487). Option E2 below would
   reuse that track rather than duplicate it.
 - Binary export (PDF/DOCX). `generate_document` remains that path.
-- Blocks that call tools, read Daemon data, reach the network or take actions.
+- Blocks that call tools, read Daemon data or take actions.
+- Network access from blocks. This is a requirement, not a property the
+  current frame has proven; see the D6 release condition.
 
 ## 4. Proposed flow
 
@@ -136,7 +146,8 @@ messages keep rendering their own version.
 ### D4 — Placement and limits (unchanged; reconfirm)
 
 - `display` takes `auto | inline | panel`. Inline is allowed only for
-  `html`/`svg` up to 48 KB. Everything else goes to the panel.
+  `html`/`svg` up to 48 KB. Everything else goes to the panel. Until E1 is
+  enabled (D6), only `svg` is placed inline; `html` blocks open as a card.
 - Limits: 256 KB per block, 4 blocks per turn, a 120-character title.
 - These limits are code constants. They are not environment variables.
 - Below 768 px the panel opens as a full-screen sheet.
@@ -151,25 +162,31 @@ approval.
 
 - Use one frame route for inline and panel previews and drop the
   srcdoc-plus-nonce path.
-- The frame CSP denies the egress it governs: `default-src 'none'` (so no
+- The frame CSP restricts the egress it governs: `default-src 'none'` (so no
   `connect-src`, workers or nested fetches), inline script and style only,
-  `img-src data: blob:`, `font-src data:`, `frame-src 'none'` (the content
-  cannot navigate its own frame) and `form-action 'none'`. This closes §2.8
-  for every preview, static ones included. The sandbox omits popups, forms
-  and top navigation.
-- CSP does not govern WebRTC, so the frame document injects a guard that
-  removes the WebRTC constructors from the content window, and it tears the
-  content down if its document is replaced by anything but the frame's own
-  write. DNS prefetch is turned off by header.
-- Residual, not claimed: a nested `about:blank` frame created by the content
+  `img-src data: blob:`, `font-src data:`, `frame-src 'none'` and
+  `form-action 'none'`. This closes §2.8 for every preview, static ones
+  included. The sandbox omits popups, forms and top navigation.
+- Defence in depth, not proof: the frame document injects a guard that
+  removes the WebRTC constructors from the content window, tears the content
+  down if its document is replaced by anything but the frame's own write, and
+  turns DNS prefetch off by header. No single directive or guard is relied on
+  for navigation containment; only the browser gate below is evidence, and
+  only for the routes and browser it exercises.
+- Residual egress, open: a nested `about:blank` frame created by the content
   still exposes WebRTC (CSP cannot block it and the guard does not reach it),
-  and DNS-prefetch suppression is not browser-verified. The UI therefore says
-  the content is isolated from Daemon and the user's data, not that it has no
-  network access.
+  and DNS-prefetch suppression is not browser-verified.
+- **Release condition for E1 (approved target vs current candidate).** The
+  current candidate ships passive previews (svg as an image, markdown, csv,
+  source views) and downloads only; `kind: html` blocks are shown as source
+  and never executed, inline or in Details. Script execution is enabled only
+  when browser qualification demonstrates that the residual egress above is
+  closed, or the owner explicitly approves a revised risk boundary. Until then
+  no UI may claim that blocks have no network access.
 - Only `kind: html` from `render_block` uses the executable frame. `svg`
   renders passively as an image (no script, no subresources) inline and in
   Details.
-- Under E1, executable blocks:
+- Once E1 is enabled, executable blocks:
   - render with visible "Generated content" chrome;
   - run automatically inline only up to 48 KB, while panel blocks run on an
     explicit click;
@@ -229,7 +246,8 @@ Each PR covers one concern:
 3. Backend: `render_block`/`read_block`, validation, the content stub, and
    prompt guidance.
 4. Frontend: `BlockCard`, inline and panel rendering, versions and download.
-   Under E1, the executable mode.
+   The executable mode ships later, in its own PR, once the D6 release
+   condition is met.
 5. Feature matrix and `TECHNICAL_SPECS.md` updates alongside the PRs they
    describe.
 
@@ -237,12 +255,13 @@ Each PR passes the blocking gates in AGENTS.md. Browser tests must show:
 
 - the frame cannot read parent cookies, storage or DOM;
 - it cannot load `https:` resources;
-- **release gate for E1:** generated content aimed at a local listener
-  through fetch, XHR, WebSocket, EventSource, beacon, image, CSS, prefetch,
-  script, worker, nested frame, form, popup, top navigation, self navigation
-  and meta refresh produces zero hits, and the WebRTC constructors are absent;
-- an ordinary `html` fence stays non-executable inline and in Details, while
-  an approved `render_block` HTML block can use the executable frame;
+- egress probe: generated content aimed at a local listener through fetch,
+  XHR, WebSocket, EventSource, beacon, image, CSS, prefetch, script, worker,
+  nested frame, form, popup, top navigation, self navigation and meta refresh
+  produces zero hits, and the WebRTC constructors are absent. This is
+  necessary for E1 but not sufficient while the D6 residual egress is open;
+- until E1 is enabled, no generated script runs: ordinary `html` fences and
+  `render_block` html blocks stay non-executable inline and in Details;
 - `svg` blocks never reach the script frame;
 - a runaway script can be stopped;
 - the mobile sheet, keyboard paths and light/dark themes work.
@@ -251,7 +270,7 @@ Each PR passes the blocking gates in AGENTS.md. Browser tests must show:
 
 | Decision | Choice |
 |---|---|
-| D0 | E1 — sandboxed executable blocks for `render_block` only; fenced HTML stays static (#762) |
+| D0 | E1 — sandboxed executable blocks for `render_block` only (target); execution off until the D6 release condition is met; fenced HTML stays static (#762) |
 | D1 | C — tool primary, fences as fallback; fences never execute (Download only) |
 | D2 | S1 — encrypted tool trace; chat blocks are message content, outside `ARTIFACT_CONTINUITY.md` §6 |
 | D3 | R1 — stub plus `read_block` |
