@@ -59,6 +59,12 @@ test('HTML preview runs inline scripts only inside the isolated frame policy', a
   expect(response.headers()['x-frame-options']).toBe('SAMEORIGIN');
   expect(directive(framePolicy, 'script-src')).toContain("'unsafe-inline'");
   expect(directive(framePolicy, 'frame-ancestors')).toContain("'self'");
+  // Generated content may run script, so the frame has no network egress.
+  for (const name of ['img-src', 'font-src', 'media-src']) {
+    expect(directive(framePolicy, name)).not.toContain('https:');
+  }
+  expect(directive(framePolicy, 'connect-src')).toEqual([]);
+  expect(directive(framePolicy, 'default-src')).toEqual(["'none'"]);
 
   const outerFrame = page.frameLocator('iframe[title="Interactive HTML"]');
   const previewFrame = outerFrame.frameLocator('#daemon-html-preview-content');
@@ -89,4 +95,36 @@ test('application media-src admits supported data video URLs', async ({
   expect(
     violations.filter((event) => event.effectiveDirective === 'media-src'),
   ).toEqual([]);
+});
+
+test('sandboxed blocks size to content and cannot reach the network', async ({
+  page,
+}) => {
+  // A CSP-blocked load still surfaces as a failed request event; only a
+  // response would mean the frame reached the network.
+  const remote: string[] = [];
+  const blocked: string[] = [];
+  page.on('response', (response) => {
+    if (response.url().startsWith('https://example.com/')) {
+      remote.push(response.url());
+    }
+  });
+  page.on('requestfailed', (request) => {
+    if (request.url().startsWith('https://example.com/')) {
+      blocked.push(request.failure()?.errorText ?? '');
+    }
+  });
+  const frame = page.locator('iframe[title="Sized HTML"]');
+  await expect
+    .poll(async () => (await frame.boundingBox())?.height ?? 0)
+    .toBeGreaterThan(690);
+  const content = page
+    .frameLocator('iframe[title="Sized HTML"]')
+    .frameLocator('#daemon-html-preview-content');
+  await expect(content.locator('body')).toHaveAttribute(
+    'data-remote',
+    'blocked',
+  );
+  expect(remote).toEqual([]);
+  expect(blocked).toHaveLength(1);
 });

@@ -55,14 +55,17 @@ const FRAME_SRC_HOSTS = ["'self'", 'blob:', 'data:', ...FRAME_SRC_GIS_HOSTS];
 // relaxing the application policy would defeat the nonce baseline. The
 // dedicated frame document is sandboxed by HtmlPreview and receives this
 // isolated policy instead. X-Frame-Options is narrowed to SAMEORIGIN below so
-// only the Daemon frontend can embed the frame endpoint.
+// only the Daemon frontend can embed the frame endpoint. Generated content may
+// run script, so the frame has no network egress: no https: images, fonts or
+// media (a request URL could carry conversation text out), and connect-src
+// falls back to default-src 'none'.
 const HTML_PREVIEW_CONTENT_SECURITY_POLICY = [
   "default-src 'none'",
   "script-src 'unsafe-inline'",
   "style-src 'unsafe-inline'",
-  'img-src data: blob: https:',
-  'font-src data: https:',
-  'media-src data: blob: https:',
+  'img-src data: blob:',
+  'font-src data:',
+  'media-src data: blob:',
   "frame-src 'self'",
   "frame-ancestors 'self'",
   "base-uri 'none'",
