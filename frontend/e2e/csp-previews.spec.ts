@@ -227,11 +227,53 @@ test.describe('generated content egress', () => {
   }
 });
 
+// Waits for a probe frame's content document to report readiness. A renamed
+// or missing fixture must fail here, never pass as an observation.
+async function probeReady(
+  page: Page,
+  title: string,
+  attribute: string,
+  timeout?: number,
+) {
+  const body = page
+    .frameLocator(`iframe[title="${title}"]`)
+    .frameLocator('#daemon-html-preview-content')
+    .locator('body');
+  await expect(body).toHaveAttribute(attribute, /.+/, { timeout });
+  return body;
+}
+
+// Hostnames carrying `tag` that reached Chromium's resolver, from a net log.
+// Throws on a log it cannot vouch for rather than returning "no lookups".
+function parseResolvedHosts(text: string, tag: string): string[] {
+  const log = JSON.parse(text) as {
+    constants?: { logEventTypes?: Record<string, number> };
+    events?: { type: number; params?: unknown }[];
+  };
+  const job = log.constants?.logEventTypes?.HOST_RESOLVER_MANAGER_JOB;
+  if (typeof job !== 'number' || !Array.isArray(log.events)) {
+    throw new Error('net log lacks HOST_RESOLVER_MANAGER_JOB or events');
+  }
+  const hosts = new Set<string>();
+  for (const event of log.events) {
+    if (event.type !== job) continue;
+    for (const match of JSON.stringify(event.params ?? {}).matchAll(
+      /[a-z-]+-[a-z0-9]+\.test/g,
+    )) {
+      if (match[0].includes(tag)) hosts.add(match[0]);
+    }
+  }
+  return [...hosts].sort();
+}
+
 // D6 residual egress. Routes CSP does not govern, probed in the browser
-// configuration users actually run. Open residuals are pinned with
-// `test.fail`: the assertion states the qualified behaviour, so a mitigation
-// that closes one shows up as an unexpected pass. Each listener has a
-// positive control so a dead detector cannot read as "closed".
+// configuration users actually run. Open residuals are pinned as
+// characterization tests: setup, readiness and evidence reads are ordinary
+// requirements, and the final assertion states the egress observed today. A
+// mitigation that closes one makes it fail; then assert isolation instead and
+// update D6. Each listener has a positive control so a dead detector cannot
+// read as "closed", and the harness checks below show that a broken readiness
+// or evidence step fails rather than passing as a known residual.
 test.describe('residual egress outside CSP (D6)', () => {
   test.skip(
     ({ browserName }) => browserName !== 'chromium',
@@ -262,13 +304,17 @@ test.describe('residual egress outside CSP (D6)', () => {
 
     async function runRealm(page: Page, realm: string) {
       await page.goto(`/?stun=${port}&realm=${realm}`);
-      const body = page
-        .frameLocator('iframe[title="WebRTC probe"]')
-        .frameLocator('#daemon-html-preview-content')
-        .locator('body');
-      await expect(body).toHaveAttribute('data-started', '1');
-      return body;
+      return probeReady(page, 'WebRTC probe', 'data-started');
     }
+
+    test('harness: a missing probe fails readiness instead of passing', async ({
+      page,
+    }) => {
+      await page.goto('/');
+      await expect(
+        probeReady(page, 'WebRTC probe', 'data-started', 1000),
+      ).rejects.toThrow();
+    });
 
     test('control: the listener sees ICE gathering from an unguarded page', async ({
       page,
@@ -305,13 +351,20 @@ test.describe('residual egress outside CSP (D6)', () => {
       expect(packets).toEqual([]);
     });
 
-    test('a nested srcdoc realm cannot gather ICE', async ({ page }) => {
-      // Open residual: a nested srcdoc document runs its own script in a
-      // realm the guard never reaches, and Chromium ignores CSP `webrtc`.
-      test.fail(true, 'D6 residual: nested srcdoc realm reaches STUN');
-      await runRealm(page, 'srcdoc');
-      await page.waitForTimeout(3000);
-      expect(packets).toEqual([]);
+    test('open residual: a nested srcdoc realm gathers ICE', async ({
+      page,
+    }) => {
+      // A nested srcdoc document runs its own script in a realm the guard
+      // never reaches, and Chromium ignores CSP `webrtc`. The nested realm
+      // must report in, so a probe that never ran cannot pass as egress.
+      const body = await runRealm(page, 'srcdoc');
+      await expect(body).toHaveAttribute('data-webrtc', 'available');
+      await expect
+        .poll(() => packets.length, {
+          message: 'D6 residual closed? Assert no packets and update D6.',
+          timeout: 5000,
+        })
+        .toBeGreaterThan(0);
     });
   });
 
@@ -365,22 +418,26 @@ test.describe('residual egress outside CSP (D6)', () => {
       } finally {
         await context.close();
       }
-      const log = JSON.parse(readFileSync(netLog, 'utf8')) as {
-        constants: { logEventTypes: Record<string, number> };
-        events: { type: number; params?: unknown }[];
-      };
-      const job = log.constants.logEventTypes.HOST_RESOLVER_MANAGER_JOB;
-      const hosts = new Set<string>();
-      for (const event of log.events) {
-        if (event.type !== job) continue;
-        for (const match of JSON.stringify(event.params ?? {}).matchAll(
-          /[a-z-]+-[a-z0-9]+\.test/g,
-        )) {
-          if (match[0].includes(tag)) hosts.add(match[0]);
-        }
-      }
-      return [...hosts].sort();
+      return parseResolvedHosts(readFileSync(netLog, 'utf8'), tag);
     }
+
+    test('harness: an unreadable net log is an error, not a clean result', () => {
+      // Chromium writes the closing brackets on exit; a truncated, empty or
+      // foreign log must not parse as "no lookups".
+      for (const text of [
+        '',
+        '{"constants":{"logEventTypes":{}},"events":[',
+        '{}',
+      ]) {
+        expect(() => parseResolvedHosts(text, 'tag')).toThrow();
+      }
+      expect(() =>
+        parseResolvedHosts(
+          '{"constants":{"logEventTypes":{"OTHER":1}},"events":[]}',
+          'tag',
+        ),
+      ).toThrow(/HOST_RESOLVER_MANAGER_JOB/);
+    });
 
     test('control: the net log records hint lookups from an unguarded page', async ({}, testInfo) => {
       const tag = `control${Date.now()}`;
@@ -393,25 +450,27 @@ test.describe('residual egress outside CSP (D6)', () => {
       expect(hosts).toEqual([`hint-${tag}.test`]);
     });
 
-    test('hints from generated content trigger no lookup, connection or request', async ({}, testInfo) => {
-      // Open residual: dns-prefetch, preconnect and prerender are acted on
-      // outside CSP, and X-DNS-Prefetch-Control does not stop them.
-      test.fail(true, 'D6 residual: resource hints leave the frame');
+    test('open residual: hints from generated content leave the frame', async ({}, testInfo) => {
+      // dns-prefetch, preconnect and prerender are acted on outside CSP, and
+      // X-DNS-Prefetch-Control does not stop them. When a mitigation closes
+      // this, assert no hosts, sockets or requests and update D6.
       const tag = `frame${Date.now()}`;
       const hosts = await resolvedHosts(testInfo, tag, async (page) => {
         await page.goto(`/?hints=${port}&tag=${tag}`);
-        await expect(
-          page
-            .frameLocator('iframe[title="Hint probe"]')
-            .frameLocator('#daemon-html-preview-content')
-            .locator('body'),
-        ).toHaveAttribute('data-done', '1');
+        await probeReady(page, 'Hint probe', 'data-done');
       });
-      expect({ hosts, sockets, requests }).toEqual({
-        hosts: [],
-        sockets: 0,
-        requests: [],
-      });
+      expect(hosts, 'content-chosen hostnames reach the resolver').toEqual(
+        [
+          'dynamic-dns-prefetch',
+          'dynamic-preconnect',
+          'static-dns-prefetch',
+          'static-preconnect',
+        ].map((kind) => `${kind}-${tag}.test`),
+      );
+      expect(sockets, 'preconnect opens a socket').toBeGreaterThan(0);
+      expect(requests, 'prerender fetches its URL').toContain(
+        'GET /__egress/prerender HTTP/1.1',
+      );
     });
   });
 });
