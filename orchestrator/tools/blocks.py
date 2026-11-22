@@ -36,6 +36,8 @@ MAX_TITLE_CHARS = 120
 HISTORY_LOOKBACK_MESSAGES = 200
 
 _BLOCK_ID = re.compile(r"^blk_[0-9a-f]{16}$")
+#: Titles are quoted in the history note; keep a title from closing the quote.
+_NOTE_QUOTES = str.maketrans({'"': "'"})
 _LANGUAGE = re.compile(r"^[a-z0-9][a-z0-9+#.-]{0,19}$")
 
 
@@ -177,7 +179,7 @@ def block_history_note(tool_results: Any) -> str | None:
             continue
         if not isinstance(version, int):
             continue
-        title = (_clean_title(data.get("title")) or "Untitled").replace('"', "'")
+        title = (_clean_title(data.get("title")) or "Untitled").translate(_NOTE_QUOTES)
         kind = data.get("kind") if data.get("kind") in BLOCK_KINDS else "block"
         lines.append(f'[block {block_id} v{version} {kind} "{title}"]')
     if not lines:

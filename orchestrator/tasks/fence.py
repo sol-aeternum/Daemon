@@ -398,6 +398,15 @@ def _outcome_of_memory_reflect(result: Any) -> str:
     return "unknown"
 
 
+def _outcome_of_chat_block(result: Any) -> str:
+    """render_block / read_block answer ``{"success": bool, ...}`` on every
+    completed path (orchestrator/tools/blocks.py); nothing else is evidence."""
+    shaped = _as_json_object(result)
+    if shaped is None:
+        return "unknown"
+    return _readonly_outcome_of_json(shaped, lambda _result: False)
+
+
 #: Tool-aware outcome classification for the read-only repeatable tools. Each
 #: classifier is audited against that tool's actual return statements; a tool
 #: added later keeps the material contract until deliberately classified.
@@ -406,7 +415,9 @@ _READONLY_OUTCOME_CLASSIFIERS: Final[dict[str, Callable[[Any], str]]] = {
     "get_time": _outcome_of_get_time,
     "memory_read": _outcome_of_memory_read,
     "memory_reflect": _outcome_of_memory_reflect,
+    "read_block": _outcome_of_chat_block,
     "reminder_list": _outcome_of_reminder_list,
+    "render_block": _outcome_of_chat_block,
     "web_fetch": _outcome_of_web_fetch,
     "web_search": _outcome_of_web_search,
 }
