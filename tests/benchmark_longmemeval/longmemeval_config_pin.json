@@ -25,7 +25,7 @@
       "legacy_fallback_message_roles": [
         "user"
       ],
-      "prompt_sha256": "0ffbd21d70c7d56a3d9a4d8632bb2aa7bc136666fee39d963582d87b2a229c9a",
+      "prompt_sha256": "6427ea43ec38d5b3ab49517a6a8fbbc0509ca1314594f58276d1eff3a341386d",
       "benchmark_mode": {
         "model": "openrouter/openai/gpt-4o-2024-08-06",
         "endpoint_slug": "azure",

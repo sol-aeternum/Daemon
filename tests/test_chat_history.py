@@ -766,3 +766,74 @@ async def test_chat_with_owned_conversation_id_continues_without_creating(
     mock_store.get_conversation.assert_any_await(conversation_id)
     mock_store.create_conversation.assert_not_awaited()
     mock_store.insert_message.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_chat_history_names_earlier_chat_blocks_for_the_model(client) -> None:
+    """History replay drops tool traces, so earlier blocks are named in a model-only note."""
+    conversation_id = uuid.uuid4()
+    user_id = uuid.uuid4()
+    block_id = "blk_" + "e" * 16
+    db_messages = [
+        {"role": "user", "content": "Make a dashboard", "status": "complete"},
+        {
+            "role": "assistant",
+            "content": "Here is the dashboard.",
+            "status": "complete",
+            "tool_calls": [{"name": "render_block", "arguments": {"content": "<p>x</p>"}}],
+            "tool_results": [
+                {
+                    "name": "render_block",
+                    "result": {
+                        "success": True,
+                        "data": {
+                            "block_id": block_id,
+                            "version": 1,
+                            "kind": "html",
+                            "title": "Sales",
+                        },
+                    },
+                }
+            ],
+        },
+        {"role": "user", "content": "Make the bars blue", "status": "complete"},
+    ]
+    captured_history: list[dict[str, Any]] | None = None
+
+    async def mock_stream_sse_chat(*, history_messages=None, **kwargs):
+        nonlocal captured_history
+        captured_history = history_messages
+        yield 'event: final\ndata: {"type": "final", "data": {}}\n\n'
+        yield 'event: done\ndata: {"type": "done", "data": {"ok": true}}\n\n'
+
+    mock_store = AsyncMock()
+    mock_store.get_conversation = AsyncMock(
+        return_value={
+            "id": conversation_id,
+            "user_id": user_id,
+            "pipeline": "cloud",
+            "title": "Blocks",
+            "created_at": datetime.now(),
+            "updated_at": datetime.now(),
+        }
+    )
+    mock_store.get_recent_messages = AsyncMock(return_value=db_messages)
+    mock_store.insert_message = AsyncMock(return_value={"id": uuid.uuid4()})
+    set_app_state(create_mock_app_state(mock_store))
+
+    with patch("orchestrator.main.stream_sse_chat", mock_stream_sse_chat):
+        response = await client.post(
+            "/chat",
+            json={
+                "conversation_id": f"conv_{conversation_id.hex}",
+                "message": "Make the bars blue",
+                "messages": [],
+            },
+        )
+
+    assert response.status_code == 200
+    assert captured_history is not None
+    assistant = [m["content"] for m in captured_history if m["role"] == "assistant"]
+    assert assistant[0].startswith("Here is the dashboard.")
+    assert f'[block {block_id} v1 html "Sales"]' in assistant[0]
+    assert "<p>x</p>" not in assistant[0]

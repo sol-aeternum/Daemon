@@ -38,6 +38,7 @@ from orchestrator.router import COUNCIL_RETIRED_MESSAGE, is_retired_council_comm
 from orchestrator.tasks.fence import guard_registry, outcome_of_tool_result
 from orchestrator.tasks.states import RetryCause, TaskStatus
 from orchestrator.prompts import DAEMON_PROMPT_VERSION
+from orchestrator.tools.blocks import block_history_note
 from orchestrator.tasks.store import (
     Claim,
     EffectRefused,
@@ -720,6 +721,10 @@ async def _history(store: Any, claim: Claim, limit: int, prepared: Any) -> list[
         mapped: dict[str, Any] = {"role": row["role"], "content": row["content"]}
         if row.get("id") == claim.user_message_id and prepared is not None:
             mapped["content"] = prepared
+        if row["role"] == "assistant" and isinstance(mapped["content"], str):
+            note = block_history_note(row.get("tool_results"))
+            if note:
+                mapped["content"] = f"{mapped['content']}{note}"
         if row.get("reasoning_text"):
             mapped["reasoning"] = row["reasoning_text"]
         if row.get("reasoning_duration_secs") is not None:

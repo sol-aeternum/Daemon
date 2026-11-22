@@ -31,7 +31,10 @@ REPEATABLE_TOOLS = frozenset(
         "get_time",
         "memory_read",
         "memory_reflect",
+        "read_block",
         "reminder_list",
+        # A chat block is message content: no external effect to fence.
+        "render_block",
         "web_fetch",
         "web_search",
     }

@@ -14,7 +14,8 @@ Daemon is a personal AI assistant orchestration layer. The system prompt (v4) de
 - Concise, accurate, and pragmatic.
 
 **Tools Available:**
-- `get_time`, `calculate`, `web_search`, `web_fetch` (with transcript support), `http_request`, `notification_send`, `reminder_set`, `reminder_list`, `spawn_agent`, `spawn_multiple`, `generate_document`.
+- `get_time`, `calculate`, `web_search`, `web_fetch` (with transcript support), `http_request`, `notification_send`, `reminder_set`, `reminder_list`, `spawn_agent`, `spawn_multiple`, `generate_document`, `render_block`, `read_block`.
+- `render_block` and `read_block` are conversation-scoped chat blocks (`orchestrator/tools/blocks.py`; design in `docs/ARTIFACT_PRESENTATION_DESIGN.md`). The block source lives only in the message's encrypted tool-call trace, never on disk. Results return an id, version, display, bytes and sha256, not the source. History replay adds a model-only note naming earlier blocks. Both tools are repeatable in the durable-task fence. Limits: 256 KB per block, 48 KB inline (html/svg only), 4 per turn, and a 200-message look-back for revisions.
 - Reminder notes are account-owned and encrypted (#695). **Limitation:** a pre-#695 `data/reminders.json` is never imported, because its notes have no owner. While that file holds notes or cannot be read, `reminder_set`/`reminder_list` refuse. The file stays on disk as unowned plaintext outside account erasure until an operator reviews it and moves it out of `data/` by hand; there is no claim or disposition tool.
 
 **Subagent Dispatch:**

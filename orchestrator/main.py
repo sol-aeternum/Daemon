@@ -176,6 +176,7 @@ from orchestrator.models import (
     OpenAIUsage,
 )
 from orchestrator.prompts import DAEMON_SYSTEM_PROMPT
+from orchestrator.tools.blocks import block_history_note
 from orchestrator.request_body_limit import (
     REQUEST_BODY_TOO_LARGE_RESPONSES,
     RequestBodyLimitMiddleware,
@@ -2630,6 +2631,10 @@ async def chat(
             if msg.get("role") != "user" or not isinstance(msg.get("content"), str):
                 raise ValueError("Invalid bound home turn")
             mapped["content"] = render_context(msg["content"], metadata["home_suggestion"])
+        if msg.get("role") == "assistant" and isinstance(mapped["content"], str):
+            note = block_history_note(msg.get("tool_results"))
+            if note:
+                mapped["content"] = f"{mapped['content']}{note}"
         if msg.get("reasoning_text"):
             mapped["reasoning"] = msg.get("reasoning_text")
         if msg.get("reasoning_duration_secs") is not None:

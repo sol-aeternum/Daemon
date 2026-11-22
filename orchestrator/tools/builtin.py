@@ -318,6 +318,11 @@ def create_default_registry(
     registry.register(SkillManageTool(skill_store, skill_owner))
     registry.register(GenerateDocumentTool(user_id=user_id))
 
+    from orchestrator.tools.blocks import block_tools
+
+    for block_tool in block_tools(memory_store, user_id, conversation_id):
+        registry.register(block_tool)
+
     if memory_store and user_id:
         from orchestrator.memory.revisions import current_read_scope
         from orchestrator.memory.tools import MemoryReadTool, MemoryWriteTool
