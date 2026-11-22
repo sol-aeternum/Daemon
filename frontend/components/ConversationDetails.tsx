@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useId, useRef, useSyncExternalStore } from 'react';
+import { useEffect, useId, useMemo, useRef, useSyncExternalStore } from 'react';
 import { X, ArrowLeft } from 'lucide-react';
 import { buildMessageCitationSources } from '@/lib/messageSources';
 import {
@@ -14,6 +14,8 @@ import {
   type ConversationOutput,
   type DetailTurn,
 } from '@/lib/conversationDetails';
+import { useChatBlocks } from '@/lib/chatBlocks';
+import { ChatBlockPreview } from './chat/ChatBlockView';
 import { FileDownloadCard } from './FileDownloadCard';
 import { FilePreview } from '@/src/components/FilePreview';
 import { RetainedSources } from './RetainedSources';
@@ -41,6 +43,9 @@ interface Props {
   onTab: (tab: DetailsTab) => void;
   selected?: ConversationOutput;
   onSelect: (output?: ConversationOutput) => void;
+  /** Key of the chat block shown in the Outputs tab (blockId:vN). */
+  selectedBlockKey?: string;
+  onSelectBlock?: (key?: string) => void;
   onClose: () => void;
   modal: boolean;
 }
@@ -52,6 +57,8 @@ export function ConversationDetails({
   onTab,
   selected,
   onSelect,
+  selectedBlockKey,
+  onSelectBlock,
   onClose,
   modal,
 }: Props) {
@@ -63,6 +70,14 @@ export function ConversationDetails({
   const sources = dedupeSources(
     turns.flatMap((turn) => buildMessageCitationSources(turn.events)),
   );
+  const allEvents = useMemo(
+    () => turns.flatMap((turn) => turn.events),
+    [turns],
+  );
+  const blocks = useChatBlocks(allEvents);
+  const selectedBlock = selectedBlockKey
+    ? blocks.find((block) => block.key === selectedBlockKey)
+    : undefined;
   const outputs = [
     ...new Map(
       turns
@@ -93,20 +108,24 @@ export function ConversationDetails({
     document.addEventListener('keydown', closeOnEscape);
     return () => document.removeEventListener('keydown', closeOnEscape);
   }, [modal, onClose]);
+  const selectionKey = selected?.fileUrl ?? selectedBlock?.key;
   useEffect(() => {
     const previous = previousSelection.current;
-    previousSelection.current = selected?.fileUrl;
-    if (selected?.fileUrl)
-      previewHeading.current?.focus({ preventScroll: true });
+    previousSelection.current = selectionKey;
+    if (selectionKey) previewHeading.current?.focus({ preventScroll: true });
     else if (previous) {
       const buttons = document.querySelectorAll<HTMLButtonElement>(
-        `[data-output-preview]`,
+        `[data-output-preview], [data-block-preview]`,
       );
       [...buttons]
-        .find((button) => button.dataset.outputPreview === previous)
+        .find(
+          (button) =>
+            button.dataset.outputPreview === previous ||
+            button.dataset.blockPreview === previous,
+        )
         ?.focus({ preventScroll: true });
     }
-  }, [selected?.fileUrl]);
+  }, [selectionKey]);
 
   const content = (
     <>
@@ -207,9 +226,27 @@ export function ConversationDetails({
           <>
             <p className="text-sm text-[var(--color-text-secondary)]">
               Files returned in this conversation are temporary and may become
-              unavailable.
+              unavailable. Chat blocks stay with the conversation.
             </p>
-            {selected ? (
+            {selectedBlock ? (
+              <>
+                <button
+                  type="button"
+                  className="min-h-touch inline-flex items-center gap-2 text-sm"
+                  onClick={() => onSelectBlock?.(undefined)}
+                >
+                  <ArrowLeft size={16} />
+                  All outputs
+                </button>
+                <h3 ref={previewHeading} tabIndex={-1} className="sr-only">
+                  {selectedBlock.title}
+                </h3>
+                <ChatBlockPreview
+                  key={selectedBlock.key}
+                  block={selectedBlock}
+                />
+              </>
+            ) : selected ? (
               <>
                 <button
                   type="button"
@@ -234,23 +271,51 @@ export function ConversationDetails({
                   fileSize={selected.fileSize}
                 />
               </>
-            ) : outputs.length ? (
-              outputs.map((output) => (
-                <FileDownloadCard
-                  key={output.fileUrl}
-                  {...output}
-                  trailingAction={
+            ) : outputs.length || blocks.length ? (
+              <>
+                {blocks.map((block) => (
+                  <div
+                    key={block.key}
+                    className="flex min-h-touch items-center justify-between gap-3 rounded-xl border border-[var(--color-border-primary)] p-3"
+                  >
+                    <span className="min-w-0">
+                      <span className="block truncate text-sm font-medium">
+                        {block.title}
+                      </span>
+                      <span className="text-xs text-[var(--color-text-secondary)]">
+                        Chat block · {block.kind}
+                        {block.version > 1 ? ` · v${block.version}` : ''}
+                      </span>
+                    </span>
                     <button
                       type="button"
-                      data-output-preview={output.fileUrl}
-                      className="min-h-touch rounded-lg border border-[var(--color-border-primary)] px-3 text-sm"
-                      onClick={() => onSelect(output)}
+                      data-block-preview={block.key}
+                      className="min-h-touch shrink-0 rounded-lg border border-[var(--color-border-primary)] px-3 text-sm"
+                      onClick={() => onSelectBlock?.(block.key)}
+                      aria-label={`Preview ${block.title}`}
                     >
-                      Preview<span className="sr-only"> {output.filename}</span>
+                      Preview
                     </button>
-                  }
-                />
-              ))
+                  </div>
+                ))}
+                {outputs.map((output) => (
+                  <FileDownloadCard
+                    key={output.fileUrl}
+                    {...output}
+                    trailingAction={
+                      <button
+                        type="button"
+                        data-output-preview={output.fileUrl}
+                        className="min-h-touch rounded-lg border border-[var(--color-border-primary)] px-3 text-sm"
+                        onClick={() => onSelect(output)}
+                      >
+                        Preview
+                        <span className="sr-only"> {output.filename}</span>
+                      </button>
+                    }
+                  />
+                ))}
+              </>
             ) : (
               <p className="text-sm">No completed files returned yet.</p>
             )}
