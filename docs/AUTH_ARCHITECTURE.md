@@ -193,7 +193,13 @@ origins and the cross-site guard remain unchanged. No arbitrary
 media/provider origin is contacted with account credentials to perform cleanup.
 
 Browser initialization and local sign-in/account changes wait for cache cleanup
-before protected content is exposed; failed cleanup is retryable. Local sign-out
+before protected content is exposed; failed cleanup is retryable. The client
+contacts targets one at a time and retries a timed-out target once before
+reporting failure (#773): Chromium withholds the directive's response until its
+deletion, which sweeps the whole profile disk cache, completes, so concurrent
+targets on large profiles overran the timeout. Status, header and network
+failures are not retried, and the first failed target ends the attempt (later
+targets report `not attempted`). Local sign-out
 still removes local auth state when cleanup or backend revocation fails. Cookie,
 storage and service-worker registrations are not targeted by this directive.
 Secure-context/browser support and permitted cross-origin transport are required:

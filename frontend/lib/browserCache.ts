@@ -82,6 +82,9 @@ export interface BrowserCacheState {
 }
 
 export const BROWSER_CACHE_CLEAR_TIMEOUT_MS = 10_000;
+/** Automatic retries per target, after a timeout only (#773). */
+export const BROWSER_CACHE_CLEAR_TIMEOUT_RETRIES = 1;
+const REQUEST_TIMED_OUT = 'request timed out';
 
 const _stateListeners = new Set<() => void>();
 
@@ -286,7 +289,7 @@ async function _clearCacheAt(
       signal: controller.signal,
     });
     if (controller.signal.aborted) {
-      return { ...target, ok: false, error: 'request timed out' };
+      return { ...target, ok: false, error: REQUEST_TIMED_OUT };
     }
     if (response.status !== 204) {
       return {
@@ -305,12 +308,32 @@ async function _clearCacheAt(
     return { ...target, ok: true, error: null };
   } catch (error) {
     if (controller.signal.aborted) {
-      return { ...target, ok: false, error: 'request timed out' };
+      return { ...target, ok: false, error: REQUEST_TIMED_OUT };
     }
     return { ...target, ok: false, error: 'cache-clear request failed' };
   } finally {
     clearTimeout(timer);
   }
+}
+
+/**
+ * Retries a target only after a timeout, never after a status, header or
+ * network failure: a slow browser-side cache sweep is the one transient
+ * case (#773). Every retry is a fresh, fully guarded request.
+ */
+async function _clearCacheWithTimeoutRetry(
+  target: BrowserCacheClearRequestResult,
+): Promise<BrowserCacheClearRequestResult> {
+  let result = await _clearCacheAt(target);
+  for (
+    let retry = 0;
+    retry < BROWSER_CACHE_CLEAR_TIMEOUT_RETRIES &&
+    result.error === REQUEST_TIMED_OUT;
+    retry += 1
+  ) {
+    result = await _clearCacheAt(target);
+  }
+  return result;
 }
 
 async function _runAttempt(
@@ -350,9 +373,21 @@ async function _runAttempt(
     };
   }
   const targets = resolvedBrowserCacheTargets(appOrigin);
-  const results = await Promise.all(
-    targets.map((target) => _clearCacheAt(target)),
-  );
+  // Sequential on purpose (#773): Chromium withholds a `Clear-Site-Data:
+  // "cache"` response until its origin-filtered deletion finishes, and that
+  // deletion sweeps the whole profile disk cache. Concurrent targets on one
+  // site duplicate the sweep and race a single timeout on large profiles.
+  // Acknowledgement needs every target, so the first failure ends the
+  // attempt; later targets keep their 'not attempted' result.
+  const results: BrowserCacheClearRequestResult[] = [];
+  for (const [index, target] of targets.entries()) {
+    const result = await _clearCacheWithTimeoutRetry(target);
+    results.push(result);
+    if (!result.ok) {
+      results.push(...targets.slice(index + 1));
+      break;
+    }
+  }
   const all = [...results, ..._configProblemTargets(appOrigin)];
   const failures = all.filter((target) => !target.ok);
   const acknowledged = failures.length === 0;
