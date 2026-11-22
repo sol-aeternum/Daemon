@@ -49,8 +49,7 @@ def _attested_snapshot(*, revoked: bool = False) -> attestation.AttestationSnaps
     )
 
 
-@pytest.fixture(autouse=True)
-def _review_clock(monkeypatch: pytest.MonkeyPatch) -> None:
+def _pin_review_clock(monkeypatch: pytest.MonkeyPatch) -> None:
     """Admission defaults to the review time, never the run date (#775).
 
     The attested snapshot below is dated REVIEWED and goes stale after
@@ -68,6 +67,11 @@ def _review_clock(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture(autouse=True)
+def _review_clock(monkeypatch: pytest.MonkeyPatch) -> None:
+    _pin_review_clock(monkeypatch)
+
+
+@pytest.fixture(autouse=True)
 def _attested() -> Iterator[None]:
     """Every production route confirmed by a ZDR check at review time."""
     previous = attestation.snapshot()
@@ -80,6 +84,9 @@ def _attested() -> Iterator[None]:
 
 @pytest.fixture
 def production_policy(monkeypatch: pytest.MonkeyPatch) -> InferencePolicy:
+    # Also pinned here: other modules import this fixture without the
+    # autouse clock (tests/test_multi_query.py, test_multi_query_gather.py).
+    _pin_review_clock(monkeypatch)
     policy = parse_inference_policy(
         json.loads((ROOT / "config/inference_policy.production.json").read_text())
     )
