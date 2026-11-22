@@ -72,7 +72,7 @@ async def test_render_returns_compact_reference_without_echoing_content() -> Non
     assert data["block_id"].startswith("blk_") and len(data["block_id"]) == 20
     assert data["version"] == 1
     assert data["title"] == "Sales dashboard"
-    assert data["display"] == "inline"
+    assert data["display"] == "panel"
     assert data["bytes"] == len(PAGE.encode())
     assert data["sha256"] == _digest(PAGE)
     assert "content" not in data
@@ -83,10 +83,12 @@ async def test_render_returns_compact_reference_without_echoing_content() -> Non
 @pytest.mark.parametrize(
     ("kind", "content", "display", "expected"),
     [
-        ("html", PAGE, "auto", "inline"),
-        ("html", PAGE, "panel", "panel"),
+        # html is never inline while E1 execution is held off (design D4/D6).
+        ("html", PAGE, "auto", "panel"),
+        ("html", PAGE, "inline", "panel"),
         ("svg", "<svg/>", "inline", "inline"),
-        ("html", "x" * (MAX_INLINE_BYTES + 1), "inline", "panel"),
+        ("svg", "<svg/>", "panel", "panel"),
+        ("svg", "<svg>" + "x" * MAX_INLINE_BYTES + "</svg>", "inline", "panel"),
         ("markdown", "# Report", "inline", "panel"),
         ("code", "print(1)", "auto", "panel"),
     ],

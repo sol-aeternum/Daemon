@@ -25,7 +25,9 @@ RENDER_BLOCK = "render_block"
 READ_BLOCK = "read_block"
 
 BLOCK_KINDS = ("html", "svg", "markdown", "code", "csv", "json")
-INLINE_KINDS = frozenset({"html", "svg"})
+#: Only passive svg renders inline. html stays a card, shown as source, until
+#: E1 script execution meets its release condition (design D4/D6).
+INLINE_KINDS = frozenset({"svg"})
 MAX_BLOCK_BYTES = 256 * 1024
 MAX_INLINE_BYTES = 48 * 1024
 MAX_BLOCKS_PER_TURN = 4
@@ -208,13 +210,14 @@ class _ConversationBlocks:
 class RenderBlockTool(Tool):
     name = RENDER_BLOCK
     description = (
-        "Show content to the user as a chat block. Small html/svg renders inline in the "
-        "message; larger content and other kinds open as a card with a full preview panel. "
-        "Every block can be downloaded. HTML may use inline JavaScript and CSS: it runs in an "
-        "isolated sandbox that blocks network requests, so inline all data, styles and scripts "
-        "(no external libraries, fonts, images or requests). Use this instead of a code fence "
-        "when the user wants something to see, use or download. Do not repeat the content in "
-        "your reply. To change an existing block, pass its id as `revises`."
+        "Show content to the user as a chat block. Small svg renders inline as a static image; "
+        "other content opens as a card with a full preview panel. Every block can be "
+        "downloaded. HTML is shown as source with a download and does not run in the chat: "
+        "make it self-contained (inline all data, styles and scripts; no external libraries, "
+        "fonts, images or requests) so it works when the user opens the downloaded file. Use "
+        "this instead of a code fence when the user wants something to see, keep or download. "
+        "Do not repeat the content in your reply. To change an existing block, pass its id as "
+        "`revises`."
     )
     parameters = {
         "type": "object",
@@ -222,7 +225,8 @@ class RenderBlockTool(Tool):
             "kind": {
                 "type": "string",
                 "enum": list(BLOCK_KINDS),
-                "description": "html (interactive page or widget), svg, markdown (document), "
+                "description": "html (complete page, shown as source with a download), svg, "
+                "markdown (document), "
                 "code (source file), csv or json.",
             },
             "title": {
@@ -240,7 +244,7 @@ class RenderBlockTool(Tool):
             "display": {
                 "type": "string",
                 "enum": ["auto", "inline", "panel"],
-                "description": "auto (default): inline when small html/svg, otherwise panel.",
+                "description": "auto (default): inline when small svg, otherwise panel.",
             },
             "revises": {
                 "type": "string",
