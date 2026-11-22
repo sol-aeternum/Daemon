@@ -23,6 +23,12 @@ inference remains DEC12-qualified Z-only.
   `ARTIFACT_CONTINUITY.md` §6) and the carried-forward D1 and D3–D7 are
   recorded under the earlier "Approve as recommended". #762's static behaviour
   for fenced HTML is unchanged.
+- 2026-11-22: source review of #778–#781 found that the draft let ordinary
+  fences run, ran SVG in the script frame, and claimed "no network access"
+  beyond what the CSP can prove (it does not govern frame navigation or
+  WebRTC). The owner chose **harden and narrow the claim**: D1, D6 and §8 below
+  are corrected accordingly. Fences and SVG never execute; the frame is
+  hardened and the UI promises only isolation from Daemon and the user's data.
 
 Terminology: GLOSSARY reserves **artifact** for a durable, owned output with
 identity and lineage (#489). This design produces **chat blocks**: content
@@ -99,7 +105,7 @@ later turn: stub visible → model calls read_block(block_id) to revise
 
 | Option | Summary | Tradeoff |
 |---|---|---|
-| **E1. Sandboxed executable blocks (recommended)** | `kind: html` from `render_block` may contain script. It runs only in an opaque-origin frame (`sandbox="allow-scripts"`, no `allow-same-origin`) with a CSP that blocks all network access. Fenced HTML keeps #762's static behaviour. | Delivers the requested sliders and live charts with modest work. It deliberately reverses #762 for this tool path only. Residual risks: model logic can be wrong, a fake form can be drawn inside the frame, and a runaway script can hang the tab (mitigated in D6). |
+| **E1. Sandboxed executable blocks (recommended)** | `kind: html` from `render_block` may contain script. It runs only in an opaque-origin frame (`sandbox="allow-scripts"`, no `allow-same-origin`) hardened against egress (D6). Fenced HTML keeps #762's static behaviour. | Delivers the requested sliders and live charts with modest work. It deliberately reverses #762 for this tool path only. Residual risks: model logic can be wrong, a fake form can be drawn inside the frame, and a runaway script can hang the tab (mitigated in D6). |
 | E2. Trusted components only | The model emits a bounded data spec. App-owned chart, table and parameter components render it, so no model code runs. | Fits #487 and the static rule. Only interactions that were declared up front are possible, a chart renderer is needed (a hand-written SVG component or a dependency approval), and the scope is much larger. |
 | E3. E2 first, E1 behind "Run" | Native components for common cases; executable blocks need an explicit click. | Safest mix, with the largest build. |
 
@@ -107,9 +113,9 @@ later turn: stub visible → model calls read_block(block_id) to revise
 
 **C. A tool as the primary path; fences as the fallback.** `render_block` is
 the rendered path. Under #762, fences keep the static preview and source-only
-behaviour. The Stage 1 toolbar (Download / Open in panel) applies to all
-HTML/SVG fences. Under E1, ordinary `html` fences also gain a user-initiated
-"Run in sandbox" control.
+behaviour, and HTML/SVG fences gain a Download action. E1 applies to
+`render_block` only: an ordinary fence never executes, whether inline, opened
+in the Details panel or anywhere else, and has no Run control.
 
 ### D2 — Where block source lives (**changed: classification needed**)
 
@@ -145,9 +151,24 @@ approval.
 
 - Use one frame route for inline and panel previews and drop the
   srcdoc-plus-nonce path.
-- The frame CSP blocks all network access: `default-src 'none'`, inline script
-  and style only, `img-src data: blob:`, `font-src data:`, and no `https:`.
-  This closes §2.8 for every preview, static ones included.
+- The frame CSP denies the egress it governs: `default-src 'none'` (so no
+  `connect-src`, workers or nested fetches), inline script and style only,
+  `img-src data: blob:`, `font-src data:`, `frame-src 'none'` (the content
+  cannot navigate its own frame) and `form-action 'none'`. This closes §2.8
+  for every preview, static ones included. The sandbox omits popups, forms
+  and top navigation.
+- CSP does not govern WebRTC, so the frame document injects a guard that
+  removes the WebRTC constructors from the content window, and it tears the
+  content down if its document is replaced by anything but the frame's own
+  write. DNS prefetch is turned off by header.
+- Residual, not claimed: a nested `about:blank` frame created by the content
+  still exposes WebRTC (CSP cannot block it and the guard does not reach it),
+  and DNS-prefetch suppression is not browser-verified. The UI therefore says
+  the content is isolated from Daemon and the user's data, not that it has no
+  network access.
+- Only `kind: html` from `render_block` uses the executable frame. `svg`
+  renders passively as an image (no script, no subresources) inline and in
+  Details.
 - Under E1, executable blocks:
   - render with visible "Generated content" chrome;
   - run automatically inline only up to 48 KB, while panel blocks run on an
@@ -203,7 +224,7 @@ Each PR covers one concern:
 
 1. Docs: approval record, `SOURCES_OF_TRUTH.md` registration, and a prompt note
    if D0 changes.
-2. Frontend: shared no-network frame and the Stage 1 toolbar. This keeps the
+2. Frontend: shared egress-hardened frame and fence Download. This keeps the
    #762 static behaviour for fences.
 3. Backend: `render_block`/`read_block`, validation, the content stub, and
    prompt guidance.
@@ -216,6 +237,13 @@ Each PR passes the blocking gates in AGENTS.md. Browser tests must show:
 
 - the frame cannot read parent cookies, storage or DOM;
 - it cannot load `https:` resources;
+- **release gate for E1:** generated content aimed at a local listener
+  through fetch, XHR, WebSocket, EventSource, beacon, image, CSS, prefetch,
+  script, worker, nested frame, form, popup, top navigation, self navigation
+  and meta refresh produces zero hits, and the WebRTC constructors are absent;
+- an ordinary `html` fence stays non-executable inline and in Details, while
+  an approved `render_block` HTML block can use the executable frame;
+- `svg` blocks never reach the script frame;
 - a runaway script can be stopped;
 - the mobile sheet, keyboard paths and light/dark themes work.
 
@@ -224,10 +252,10 @@ Each PR passes the blocking gates in AGENTS.md. Browser tests must show:
 | Decision | Choice |
 |---|---|
 | D0 | E1 — sandboxed executable blocks for `render_block` only; fenced HTML stays static (#762) |
-| D1 | C — tool primary, fences as fallback |
+| D1 | C — tool primary, fences as fallback; fences never execute (Download only) |
 | D2 | S1 — encrypted tool trace; chat blocks are message content, outside `ARTIFACT_CONTINUITY.md` §6 |
 | D3 | R1 — stub plus `read_block` |
 | D4 | 48 KB inline, 256 KB per block, 4 per turn, code constants |
 | D5 | P1 — activity status only; P2 needs separate approval |
-| D6 | One frame route, no-network CSP, Stop control, click-to-run in panel |
+| D6 | One frame route, egress-hardened frame (CSP, navigation teardown, WebRTC guard) with a narrowed isolation claim, Stop control, click-to-run in panel, passive SVG |
 | D7 | Client-side Blob download |
