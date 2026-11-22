@@ -82,6 +82,16 @@ export interface BrowserCacheState {
 }
 
 export const BROWSER_CACHE_CLEAR_TIMEOUT_MS = 10_000;
+/** Automatic retries per target, after a timeout only (#773). */
+export const BROWSER_CACHE_CLEAR_TIMEOUT_RETRIES = 1;
+/**
+ * Total budget for one attempt across every target and retry (#773). Each
+ * request is bounded by the smaller of its own timeout and what remains, so
+ * the barrier reports failure within this bound, never later.
+ */
+export const BROWSER_CACHE_CLEAR_ATTEMPT_DEADLINE_MS = 20_000;
+const REQUEST_TIMED_OUT = 'request timed out';
+const ATTEMPT_DEADLINE_EXCEEDED = 'attempt deadline exceeded';
 
 const _stateListeners = new Set<() => void>();
 
@@ -261,6 +271,7 @@ function _cacheControlHasNoStore(value: string | null): boolean {
 
 async function _clearCacheAt(
   target: BrowserCacheClearRequestResult,
+  timeoutMs: number,
 ): Promise<BrowserCacheClearRequestResult> {
   if (typeof window === 'undefined' || typeof fetch === 'undefined') {
     return {
@@ -271,10 +282,7 @@ async function _clearCacheAt(
   }
 
   const controller = new AbortController();
-  const timer = setTimeout(
-    () => controller.abort(),
-    BROWSER_CACHE_CLEAR_TIMEOUT_MS,
-  );
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
     // Deliberately headerless and bodyless: no bearer, no tokens, nothing
     // sensitive leaves the page for this endpoint.
@@ -286,7 +294,7 @@ async function _clearCacheAt(
       signal: controller.signal,
     });
     if (controller.signal.aborted) {
-      return { ...target, ok: false, error: 'request timed out' };
+      return { ...target, ok: false, error: REQUEST_TIMED_OUT };
     }
     if (response.status !== 204) {
       return {
@@ -305,12 +313,40 @@ async function _clearCacheAt(
     return { ...target, ok: true, error: null };
   } catch (error) {
     if (controller.signal.aborted) {
-      return { ...target, ok: false, error: 'request timed out' };
+      return { ...target, ok: false, error: REQUEST_TIMED_OUT };
     }
     return { ...target, ok: false, error: 'cache-clear request failed' };
   } finally {
     clearTimeout(timer);
   }
+}
+
+/**
+ * Retries a target only after a timeout, never after a status, header or
+ * network failure: a slow browser-side cache sweep is the one transient
+ * case (#773). Every retry is a fresh, fully guarded request. No request
+ * starts or runs past the attempt deadline; running out fails closed.
+ */
+async function _clearCacheWithTimeoutRetry(
+  target: BrowserCacheClearRequestResult,
+  deadline: number,
+): Promise<BrowserCacheClearRequestResult> {
+  const budget = (): number =>
+    Math.min(BROWSER_CACHE_CLEAR_TIMEOUT_MS, deadline - Date.now());
+  if (budget() <= 0) {
+    return { ...target, ok: false, error: ATTEMPT_DEADLINE_EXCEEDED };
+  }
+  let result = await _clearCacheAt(target, budget());
+  for (
+    let retry = 0;
+    retry < BROWSER_CACHE_CLEAR_TIMEOUT_RETRIES &&
+    result.error === REQUEST_TIMED_OUT &&
+    budget() > 0;
+    retry += 1
+  ) {
+    result = await _clearCacheAt(target, budget());
+  }
+  return result;
 }
 
 async function _runAttempt(
@@ -350,9 +386,22 @@ async function _runAttempt(
     };
   }
   const targets = resolvedBrowserCacheTargets(appOrigin);
-  const results = await Promise.all(
-    targets.map((target) => _clearCacheAt(target)),
-  );
+  // Sequential on purpose (#773): Chromium withholds a `Clear-Site-Data:
+  // "cache"` response until its origin-filtered deletion finishes, and that
+  // deletion sweeps the whole profile disk cache. Concurrent targets on one
+  // site duplicate the sweep and race a single timeout on large profiles.
+  // Acknowledgement needs every target, so the first failure ends the
+  // attempt; later targets keep their 'not attempted' result.
+  const deadline = Date.now() + BROWSER_CACHE_CLEAR_ATTEMPT_DEADLINE_MS;
+  const results: BrowserCacheClearRequestResult[] = [];
+  for (const [index, target] of targets.entries()) {
+    const result = await _clearCacheWithTimeoutRetry(target, deadline);
+    results.push(result);
+    if (!result.ok) {
+      results.push(...targets.slice(index + 1));
+      break;
+    }
+  }
   const all = [...results, ..._configProblemTargets(appOrigin)];
   const failures = all.filter((target) => !target.ok);
   const acknowledged = failures.length === 0;

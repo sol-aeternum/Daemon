@@ -55,15 +55,21 @@ const FRAME_SRC_HOSTS = ["'self'", 'blob:', 'data:', ...FRAME_SRC_GIS_HOSTS];
 // relaxing the application policy would defeat the nonce baseline. The
 // dedicated frame document is sandboxed by HtmlPreview and receives this
 // isolated policy instead. X-Frame-Options is narrowed to SAMEORIGIN below so
-// only the Daemon frontend can embed the frame endpoint.
+// only the Daemon frontend can embed the frame endpoint. Generated content may
+// run script, so the policy denies egress it can govern: no https: images,
+// fonts or media (a request URL could carry conversation text out),
+// connect-src falls back to default-src 'none', and frame-src 'none' stops the
+// content navigating its own frame (srcdoc frames are not fetches, so the
+// frame's own content still loads). WebRTC is outside CSP; see the frame
+// route's guard.
 const HTML_PREVIEW_CONTENT_SECURITY_POLICY = [
   "default-src 'none'",
   "script-src 'unsafe-inline'",
   "style-src 'unsafe-inline'",
-  'img-src data: blob: https:',
-  'font-src data: https:',
-  'media-src data: blob: https:',
-  "frame-src 'self'",
+  'img-src data: blob:',
+  'font-src data:',
+  'media-src data: blob:',
+  "frame-src 'none'",
   "frame-ancestors 'self'",
   "base-uri 'none'",
   "form-action 'none'",

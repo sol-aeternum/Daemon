@@ -249,24 +249,201 @@ describe('trusted endpoint request guards and checks', () => {
     );
   });
 
-  it('marks timed-out requests as failures after the bounded timeout', async () => {
+  function hangUntilAborted(
+    _url: string,
+    init: RequestInit,
+  ): Promise<Response> {
+    return new Promise<Response>((_resolve, reject) => {
+      if (!init.signal) throw new Error('Abort signal required');
+      init.signal.addEventListener('abort', () =>
+        reject(new Error('The operation was aborted')),
+      );
+    });
+  }
+
+  it('marks a target failed only after its bounded timeout and one automatic retry', async () => {
     vi.useFakeTimers();
-    const { BROWSER_CACHE_CLEAR_TIMEOUT_MS } =
-      await import('../lib/browserCache');
-    currentImpl = (_url, init) =>
-      new Promise<Response>((_resolve, reject) => {
-        if (!init.signal) throw new Error('Abort signal required');
-        init.signal.addEventListener('abort', () =>
-          reject(new Error('The operation was aborted')),
-        );
-      });
-    const { startBrowserCacheClearAttempt } =
+    currentImpl = hangUntilAborted;
+    const {
+      BROWSER_CACHE_CLEAR_TIMEOUT_MS,
+      BROWSER_CACHE_CLEAR_TIMEOUT_RETRIES,
+      startBrowserCacheClearAttempt,
+    } = await import('../lib/browserCache');
+    expect(BROWSER_CACHE_CLEAR_TIMEOUT_RETRIES).toBe(1);
+    let settled = false;
+    const resultPromise = startBrowserCacheClearAttempt({
+      reason: 'retry',
+    }).finally(() => {
+      settled = true;
+    });
+    await vi.advanceTimersByTimeAsync(BROWSER_CACHE_CLEAR_TIMEOUT_MS);
+    // The first timeout is absorbed by the automatic retry.
+    expect(settled).toBe(false);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    await vi.advanceTimersByTimeAsync(BROWSER_CACHE_CLEAR_TIMEOUT_MS);
+    const result = await resultPromise;
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(result.endpointAcknowledged).toBe(false);
+    expect(result.error).toContain('timed out');
+  });
+
+  it('acknowledges when the automatic retry after a timeout succeeds', async () => {
+    vi.useFakeTimers();
+    let calls = 0;
+    currentImpl = (url, init) => {
+      calls += 1;
+      return calls === 1 ? hangUntilAborted(url, init) : ok204NoStore();
+    };
+    const { BROWSER_CACHE_CLEAR_TIMEOUT_MS, startBrowserCacheClearAttempt } =
       await import('../lib/browserCache');
     const resultPromise = startBrowserCacheClearAttempt({ reason: 'retry' });
     await vi.advanceTimersByTimeAsync(BROWSER_CACHE_CLEAR_TIMEOUT_MS);
     const result = await resultPromise;
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(result.endpointAcknowledged).toBe(true);
+    expect(result.error).toBeNull();
+  });
+
+  it('bounds the whole two-origin attempt by the attempt deadline, not per target', async () => {
+    // Review of 792a8cf: proxy times out, its retry acknowledges just before
+    // its own deadline, then the direct origin stalls. Per-target timers
+    // alone would let this run to ~40 s.
+    vi.useFakeTimers();
+    process.env.NEXT_PUBLIC_API_URL = 'https://api.example.com';
+    const {
+      BROWSER_CACHE_CLEAR_TIMEOUT_MS,
+      BROWSER_CACHE_CLEAR_ATTEMPT_DEADLINE_MS,
+      startBrowserCacheClearAttempt,
+    } = await import('../lib/browserCache');
+    expect(BROWSER_CACHE_CLEAR_ATTEMPT_DEADLINE_MS).toBe(20_000);
+    let proxyCalls = 0;
+    currentImpl = (url, init) => {
+      if (url !== '/api/v1/auth/cache/clear')
+        return hangUntilAborted(url, init);
+      proxyCalls += 1;
+      if (proxyCalls === 1) return hangUntilAborted(url, init);
+      return new Promise<Response>((resolve) =>
+        setTimeout(
+          () => resolve(ok204NoStore()),
+          BROWSER_CACHE_CLEAR_TIMEOUT_MS - 100,
+        ),
+      );
+    };
+    let settled = false;
+    const resultPromise = startBrowserCacheClearAttempt({
+      reason: 'retry',
+    }).finally(() => {
+      settled = true;
+    });
+    await vi.advanceTimersByTimeAsync(
+      BROWSER_CACHE_CLEAR_ATTEMPT_DEADLINE_MS - 1,
+    );
+    expect(settled).toBe(false);
+    await vi.advanceTimersByTimeAsync(1);
+    const result = await resultPromise;
+    expect(settled).toBe(true);
     expect(result.endpointAcknowledged).toBe(false);
-    expect(result.error).toContain('timed out');
+    expect(result.targets).toEqual([
+      expect.objectContaining({ kind: 'app-proxy', ok: true }),
+      expect.objectContaining({
+        kind: 'direct-configured',
+        ok: false,
+        error: 'request timed out',
+      }),
+    ]);
+    // Proxy: timeout + retry. Direct: one 100 ms request, no retry.
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+  });
+
+  it('fails closed without a request when the deadline is spent before a target', async () => {
+    vi.useFakeTimers();
+    process.env.NEXT_PUBLIC_API_URL = 'https://api.example.com';
+    const {
+      BROWSER_CACHE_CLEAR_ATTEMPT_DEADLINE_MS,
+      startBrowserCacheClearAttempt,
+    } = await import('../lib/browserCache');
+    currentImpl = async () => {
+      // The proxy acknowledges, but only after the whole budget is gone.
+      vi.setSystemTime(Date.now() + BROWSER_CACHE_CLEAR_ATTEMPT_DEADLINE_MS);
+      return ok204NoStore();
+    };
+    const result = await startBrowserCacheClearAttempt({ reason: 'retry' });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(result.endpointAcknowledged).toBe(false);
+    expect(result.error).toContain('attempt deadline exceeded');
+    expect(result.targets[1]).toEqual(
+      expect.objectContaining({
+        kind: 'direct-configured',
+        ok: false,
+        error: 'attempt deadline exceeded',
+      }),
+    );
+  });
+
+  it('never retries status, header or network failures', async () => {
+    const { startBrowserCacheClearAttempt } =
+      await import('../lib/browserCache');
+    const impls: FetchImpl[] = [
+      async () => new Response(null, { status: 403 }),
+      async () => new Response(null, { status: 204 }),
+      async () => {
+        throw new Error('network down');
+      },
+    ];
+    for (const impl of impls) {
+      fetchMock.mockClear();
+      currentImpl = impl;
+      const result = await startBrowserCacheClearAttempt({ reason: 'retry' });
+      expect(result.endpointAcknowledged).toBe(false);
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+    }
+  });
+
+  it('stops at the first failed target and reports later ones as not attempted', async () => {
+    process.env.NEXT_PUBLIC_API_URL = 'https://api.example.com';
+    currentImpl = async () => new Response(null, { status: 503 });
+    const { startBrowserCacheClearAttempt } =
+      await import('../lib/browserCache');
+    const result = await startBrowserCacheClearAttempt({ reason: 'retry' });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(result.endpointAcknowledged).toBe(false);
+    expect(result.targets).toEqual([
+      expect.objectContaining({
+        kind: 'app-proxy',
+        error: 'unexpected response status 503',
+      }),
+      expect.objectContaining({
+        kind: 'direct-configured',
+        ok: false,
+        error: 'not attempted',
+      }),
+    ]);
+  });
+
+  it('contacts targets sequentially, never overlapping their requests (#773)', async () => {
+    process.env.NEXT_PUBLIC_API_URL = 'https://api.example.com';
+    const pending: Deferred<Response>[] = [];
+    currentImpl = () => {
+      const next = deferred<Response>();
+      pending.push(next);
+      return next.promise;
+    };
+    const { startBrowserCacheClearAttempt } =
+      await import('../lib/browserCache');
+    const resultPromise = startBrowserCacheClearAttempt({ reason: 'retry' });
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+    expect(fetchMock.mock.calls[0]?.[0]).toBe('/api/v1/auth/cache/clear');
+    // The direct target waits for the app-proxy response.
+    await Promise.resolve();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    pending[0]?.resolve(ok204NoStore());
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+    expect(fetchMock.mock.calls[1]?.[0]).toBe(
+      'https://api.example.com/v1/auth/cache/clear',
+    );
+    pending[1]?.resolve(ok204NoStore());
+    const result = await resultPromise;
+    expect(result.endpointAcknowledged).toBe(true);
   });
 
   it('turns network errors into fail-closed attempt failures', async () => {

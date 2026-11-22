@@ -1,12 +1,8 @@
 'use client';
 
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { useState } from 'react';
 import { AlertCircle, Code2 } from 'lucide-react';
-import {
-  HTML_PREVIEW_FRAME_PATH,
-  HTML_PREVIEW_MESSAGE_TYPE,
-  type HtmlPreviewMessage,
-} from '@/lib/htmlPreviewFrame';
+import { SandboxedHtmlFrame } from '@/components/chat/SandboxedHtmlFrame';
 
 interface HtmlPreviewProps {
   content: string;
@@ -15,37 +11,6 @@ interface HtmlPreviewProps {
 
 export function HtmlPreview({ content, title }: HtmlPreviewProps) {
   const [error, setError] = useState<string | null>(null);
-  const iframeRef = useRef<HTMLIFrameElement>(null);
-
-  const postPreviewContent = useCallback(() => {
-    const target = iframeRef.current?.contentWindow;
-    if (!target) return;
-
-    const message: HtmlPreviewMessage = {
-      type: HTML_PREVIEW_MESSAGE_TYPE,
-      content,
-      title: title || 'HTML Preview',
-    };
-    // The outer frame is intentionally sandboxed without allow-same-origin,
-    // so its effective origin is opaque and postMessage requires "*". The
-    // message is still sent directly to that frame's contentWindow, and the
-    // receiver accepts messages only from window.parent.
-    target.postMessage(message, '*');
-  }, [content, title]);
-
-  useEffect(() => {
-    postPreviewContent();
-  }, [postPreviewContent]);
-
-  const handleIframeLoad = () => {
-    postPreviewContent();
-  };
-
-  // Handle iframe load errors
-  const handleIframeError = () => {
-    setError('Failed to load HTML preview');
-  };
-
   if (error) {
     return (
       <div className="flex items-start gap-3 p-4 bg-red-500/10 border border-red-500/30 rounded-xl max-h-file-preview">
@@ -75,14 +40,11 @@ export function HtmlPreview({ content, title }: HtmlPreviewProps) {
 
       {/* Sandboxed iframe */}
       <div className="overflow-auto max-h-file-content">
-        <iframe
-          ref={iframeRef}
-          src={HTML_PREVIEW_FRAME_PATH}
-          sandbox="allow-scripts"
+        <SandboxedHtmlFrame
+          content={content}
           title={title || 'HTML Preview'}
-          className="w-full min-h-html-preview bg-[var(--color-bg-document)]"
-          onLoad={handleIframeLoad}
-          onError={handleIframeError}
+          className="min-h-html-preview"
+          onError={() => setError('Failed to load HTML preview')}
         />
       </div>
     </div>

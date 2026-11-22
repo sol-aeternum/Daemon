@@ -4,6 +4,7 @@ import { memo } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import rehypeHighlight from 'rehype-highlight';
+import { CodeFenceActions } from '../../components/chat/CodeFenceActions';
 import { InlineArtifact } from '../../components/chat/InlineArtifact';
 import {
   HTML_ARTIFACT_LANGUAGE,
@@ -137,32 +138,34 @@ const MarkdownContent = memo(function MarkdownContent({
           const code = node?.children[0];
           const start = node?.position?.start.offset;
           const end = node?.position?.end.offset;
-          if (
-            code?.type === 'element' &&
-            code.tagName === 'code' &&
-            getClassNameValue(code.properties.className)
-              .split(/\s+/)
-              .some(
-                (value) =>
-                  value.startsWith('language-') &&
-                  HTML_ARTIFACT_LANGUAGE.test(value.slice(9)),
-              ) &&
-            typeof start === 'number' &&
-            typeof end === 'number'
-          ) {
-            // rehype-highlight may wrap portions in spans. Recover the
-            // underlying code text only for nested Markdown containers.
+          const languages =
+            code?.type === 'element' && code.tagName === 'code'
+              ? getClassNameValue(code.properties.className)
+                  .split(/\s+/)
+                  .filter((value) => value.startsWith('language-'))
+                  .map((value) => value.slice(9))
+              : [];
+          // rehype-highlight may wrap portions in spans; recover the text.
+          const codeText = () => {
+            if (code?.type !== 'element') return '';
             const text = (child: (typeof code.children)[number]): string =>
               child.type === 'text'
                 ? child.value
                 : child.type === 'element'
                   ? child.children.map(text).join('')
                   : '';
+            return code.children.map(text).join('').replace(/\n$/, '');
+          };
+          if (
+            languages.some((value) => HTML_ARTIFACT_LANGUAGE.test(value)) &&
+            typeof start === 'number' &&
+            typeof end === 'number'
+          ) {
             const artifact = readHtmlArtifactFence(
               content,
               start,
               end,
-              code.children.map(text).join('').replace(/\n$/, ''),
+              codeText(),
             );
             if (artifact) {
               return (
@@ -175,11 +178,27 @@ const MarkdownContent = memo(function MarkdownContent({
             }
           }
 
-          return (
+          const block = (
             <pre
               {...props}
               className="overflow-x-auto my-2 p-3 bg-[var(--color-bg-tertiary)] rounded-lg border border-[var(--color-border-primary)]"
             />
+          );
+          const fenceKind = languages.includes('html')
+            ? 'html'
+            : languages.includes('svg')
+              ? 'svg'
+              : null;
+          if (!fenceKind) return block;
+          return (
+            <>
+              {block}
+              <CodeFenceActions
+                source={codeText()}
+                kind={fenceKind}
+                streaming={streaming}
+              />
+            </>
           );
         },
         table: ({ node, ...props }) => (

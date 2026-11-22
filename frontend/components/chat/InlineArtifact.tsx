@@ -10,6 +10,12 @@ import {
 import { sanitizeHtml } from '../../lib/sanitizeHtml';
 import { useClientMounted } from '../../hooks/useClientMounted';
 import { CopyResponseButton } from '../CopyResponseButton';
+import { fenceTitle } from './CodeFenceActions';
+import {
+  downloadTextFile,
+  textFileMime,
+  textFileName,
+} from '../../lib/textDownload';
 
 interface InlineArtifactProps {
   htmlContent: string;
@@ -143,7 +149,23 @@ export function InlineArtifact({
           <code>{htmlContent}</code>
         </pre>
       </details>
-      <CopyResponseButton content={htmlContent} label="Copy source" />
+      <div className="flex flex-wrap items-center gap-2">
+        <CopyResponseButton content={htmlContent} label="Copy source" />
+        <button
+          type="button"
+          disabled={streaming}
+          className="min-h-touch rounded-lg border border-[var(--color-border-primary)] px-3 text-sm disabled:opacity-50"
+          onClick={() =>
+            downloadTextFile(
+              htmlContent,
+              textFileName(fenceTitle(htmlContent, 'html'), 'html'),
+              textFileMime('html'),
+            )
+          }
+        >
+          Download source
+        </button>
+      </div>
     </section>
   );
 }
