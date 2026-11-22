@@ -150,32 +150,20 @@ describe('SandboxedHtmlFrame', () => {
 });
 
 describe('ordinary html and svg fences', () => {
-  it('keeps html source-only until the user runs it in the sandbox', () => {
+  it('keeps html source-only: no frame and no run control', () => {
     render(<MarkdownMessage content={`\`\`\`html\n${page}\n\`\`\``} />);
-    expect(screen.queryByTitle('Sales Dashboard')).toBeNull();
-    fireEvent.click(screen.getByRole('button', { name: 'Run in sandbox' }));
-    const frame = screen.getByTitle('Sales Dashboard');
-    expect(frame.getAttribute('sandbox')).toBe('allow-scripts');
-    expect(
-      screen.getByText(/isolated from Daemon with no network access/),
-    ).toBeTruthy();
-    fireEvent.click(screen.getByRole('button', { name: 'Stop' }));
-    expect(screen.queryByTitle('Sales Dashboard')).toBeNull();
+    expect(document.querySelector('iframe')).toBeNull();
+    expect(screen.queryByRole('button', { name: /run/i })).toBeNull();
+    expect(screen.getByRole('button', { name: 'Download' })).toBeTruthy();
   });
 
-  it('cannot run or download while the answer is still streaming', () => {
+  it('cannot download while the answer is still streaming', () => {
     render(<MarkdownMessage content={`\`\`\`html\n${page}`} streaming />);
-    expect(
-      (
-        screen.getByRole('button', {
-          name: 'Run in sandbox',
-        }) as HTMLButtonElement
-      ).disabled,
-    ).toBe(true);
     expect(
       (screen.getByRole('button', { name: 'Download' }) as HTMLButtonElement)
         .disabled,
     ).toBe(true);
+    expect(document.querySelector('iframe')).toBeNull();
   });
 
   it('offers download but not execution for svg', () => {
@@ -194,7 +182,8 @@ describe('ordinary html and svg fences', () => {
         content={'```svg\n<svg viewBox="0 0 1 1"><circle r="1"/></svg>\n```'}
       />,
     );
-    expect(screen.queryByRole('button', { name: 'Run in sandbox' })).toBeNull();
+    expect(screen.queryByRole('button', { name: /run/i })).toBeNull();
+    expect(document.querySelector('iframe')).toBeNull();
     fireEvent.click(screen.getByRole('button', { name: 'Download' }));
     expect(click).toHaveBeenCalledOnce();
   });
