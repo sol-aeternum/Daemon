@@ -22,7 +22,8 @@ interface SandboxedHtmlFrameProps {
 /**
  * Runs generated HTML in Daemon's isolated preview frame:
  * an opaque-origin `allow-scripts` sandbox (no `allow-same-origin`) whose
- * document is served with a no-network CSP. The app only accepts a bounded
+ * document is served with an egress-restricting CSP and guard (see the frame
+ * route). The app only accepts a bounded
  * height message from that frame, and only from this element's window.
  */
 export function SandboxedHtmlFrame({

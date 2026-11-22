@@ -1,3 +1,5 @@
+import { createServer, type Server } from 'node:http';
+import type { AddressInfo } from 'node:net';
 import { expect, test, type Page } from '@playwright/test';
 
 interface CspViolation {
@@ -127,4 +129,83 @@ test('sandboxed blocks size to content and cannot reach the network', async ({
   );
   expect(remote).toEqual([]);
   expect(blocked).toHaveLength(1);
+});
+
+test.describe('generated content egress', () => {
+  let server: Server;
+  let port = 0;
+  const hits: string[] = [];
+
+  test.beforeAll(async () => {
+    server = createServer((request, response) => {
+      hits.push(`${request.method} ${request.url}`);
+      response.writeHead(200, { 'Access-Control-Allow-Origin': '*' });
+      response.end('reached');
+    });
+    server.on('upgrade', (request, socket) => {
+      hits.push(`UPGRADE ${request.url}`);
+      socket.destroy();
+    });
+    await new Promise<void>((resolve) =>
+      server.listen(0, '127.0.0.1', resolve),
+    );
+    port = (server.address() as AddressInfo).port;
+  });
+
+  test.afterAll(async () => {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  });
+
+  test.beforeEach(() => {
+    hits.length = 0;
+  });
+
+  test('frame policy denies frame navigation and every governed fetch', async ({
+    page,
+  }) => {
+    const response = await page.request.get('/api/previews/html');
+    const framePolicy = response.headers()['content-security-policy'] ?? '';
+    expect(directive(framePolicy, 'frame-src')).toEqual(["'none'"]);
+    expect(directive(framePolicy, 'form-action')).toEqual(["'none'"]);
+    expect(response.headers()['x-dns-prefetch-control']).toBe('off');
+  });
+
+  test('every request route from generated content stays inside the browser', async ({
+    page,
+  }) => {
+    await page.goto(`/?probe=${port}`);
+    const probe = page
+      .frameLocator('iframe[title="Egress probe"]')
+      .frameLocator('#daemon-html-preview-content');
+    const body = probe.locator('body');
+    await expect(body).toHaveAttribute('data-done', '1');
+    await expect(body).toHaveAttribute('data-webrtc', 'unavailable');
+    await expect(body).toHaveAttribute('data-fetch', 'blocked');
+    await expect(body).toHaveAttribute('data-xhr', 'blocked');
+    await expect(body).toHaveAttribute('data-image', 'blocked');
+    await expect(body).toHaveAttribute('data-popup', /blocked|threw/);
+    await expect(body).toHaveAttribute('data-top', 'threw');
+    // Give queued work (beacon, prefetch, form, worker, CSS) time to fire.
+    await page.waitForTimeout(1500);
+    expect(hits).toEqual([]);
+  });
+
+  for (const [title, how] of [
+    ['Navigation probe', 'location'],
+    ['Refresh probe', 'refresh'],
+  ] as const) {
+    test(`content cannot navigate its frame out (${how})`, async ({ page }) => {
+      await page.goto(`/?probe=${port}`);
+      const content = page
+        .frameLocator(`iframe[title="${title}"]`)
+        .frameLocator('#daemon-html-preview-content');
+      await expect(
+        content.getByText(
+          'This page tried to leave its sandbox and was stopped.',
+        ),
+      ).toBeVisible();
+      await page.waitForTimeout(500);
+      expect(hits).toEqual([]);
+    });
+  }
 });

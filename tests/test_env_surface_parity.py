@@ -256,7 +256,7 @@ NON_FIELD_CONSUMERS: dict[str, NonFieldConsumer] = {
     ),
     "NEXT_PUBLIC_API_URL": NonFieldConsumer(
         kind="frontend-source",
-        sources=("frontend/proxy.ts:88",),
+        sources=("frontend/proxy.ts:91",),
         reason="public build-time backend URL; also a Docker build arg and a runtime entry",
     ),
     "NEXT_PUBLIC_DAEMON_DEPLOYMENT_MODE": NonFieldConsumer(

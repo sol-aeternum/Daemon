@@ -1,5 +1,6 @@
 'use client';
 
+import { useSyncExternalStore } from 'react';
 import { VideoPlayer } from '../../../components/VideoPlayer';
 import { DocxPreview } from '../../../src/components/previews/DocxPreview';
 import { HtmlPreview } from '../../../src/components/previews/HtmlPreview';
@@ -27,6 +28,71 @@ const SIZED_CONTENT = `<!doctype html>
   image.addEventListener("load", () => { document.body.dataset.remote = "loaded"; });
 </script>`;
 
+// Every egress route generated content could try, aimed at a local listener
+// the browser test runs (?probe=<port>). Results land on body data
+// attributes; the listener's hit count is the real evidence.
+function egressProbe(port: string): string {
+  const base = `http://127.0.0.1:${port}/__egress/`;
+  return `<!doctype html>
+<body>
+<p>probe</p>
+<script>
+  const base = ${JSON.stringify(base)};
+  const mark = (name, value) => { document.body.dataset[name] = value; };
+  const attempt = (name, run) => { try { run(); } catch (e) { mark(name, "threw"); } };
+  attempt("fetch", () => fetch(base + "fetch").then(() => mark("fetch", "open"), () => mark("fetch", "blocked")));
+  attempt("xhr", () => { const x = new XMLHttpRequest(); x.onload = () => mark("xhr", "open"); x.onerror = () => mark("xhr", "blocked"); x.open("GET", base + "xhr"); x.send(); });
+  attempt("socket", () => { const w = new WebSocket(base.replace("http", "ws") + "socket"); w.onopen = () => mark("socket", "open"); w.onerror = () => mark("socket", "blocked"); });
+  attempt("events", () => { const e = new EventSource(base + "events"); e.onopen = () => mark("events", "open"); e.onerror = () => { mark("events", "blocked"); e.close(); }; });
+  attempt("beacon", () => mark("beacon", String(navigator.sendBeacon(base + "beacon", "x"))));
+  attempt("image", () => { const i = new Image(); i.onload = () => mark("image", "open"); i.onerror = () => mark("image", "blocked"); i.src = base + "image"; });
+  attempt("css", () => { const d = document.createElement("div"); d.style.backgroundImage = "url(" + base + "css)"; d.style.width = d.style.height = "4px"; document.body.append(d); });
+  attempt("prefetch", () => { const l = document.createElement("link"); l.rel = "prefetch"; l.href = base + "prefetch"; document.head.append(l); });
+  attempt("script", () => { const s = document.createElement("script"); s.src = base + "script"; document.head.append(s); });
+  attempt("worker", () => { new Worker(URL.createObjectURL(new Blob(["fetch(" + JSON.stringify(base + "worker") + ")"]))); mark("worker", "created"); });
+  attempt("frame", () => { const f = document.createElement("iframe"); f.src = base + "frame"; document.body.append(f); });
+  attempt("form", () => { const f = document.createElement("form"); f.method = "post"; f.action = base + "form"; document.body.append(f); f.submit(); });
+  attempt("popup", () => mark("popup", window.open(base + "popup") ? "open" : "blocked"));
+  attempt("top", () => { top.location.href = base + "top"; });
+  mark("webrtc", typeof RTCPeerConnection === "undefined" && typeof webkitRTCPeerConnection === "undefined" ? "unavailable" : "available");
+  mark("done", "1");
+</script>
+</body>`;
+}
+
+function navigationProbe(port: string, how: 'location' | 'refresh'): string {
+  const target = `http://127.0.0.1:${port}/__egress/navigate-${how}`;
+  return how === 'location'
+    ? `<!doctype html><p>leaving</p><script>setTimeout(() => { location.href = ${JSON.stringify(target)}; }, 100);</script>`
+    : `<!doctype html><meta http-equiv="refresh" content="0;url=${target}"><p>leaving</p>`;
+}
+
+const noSubscription = () => () => {};
+
+function EgressProbes() {
+  const search = useSyncExternalStore(
+    noSubscription,
+    () => window.location.search,
+    () => '',
+  );
+  const value = new URLSearchParams(search).get('probe');
+  const port = value && /^\d{2,5}$/.test(value) ? value : null;
+  if (!port) return null;
+  return (
+    <section data-testid="egress-probes">
+      <SandboxedHtmlFrame content={egressProbe(port)} title="Egress probe" />
+      <SandboxedHtmlFrame
+        content={navigationProbe(port, 'location')}
+        title="Navigation probe"
+      />
+      <SandboxedHtmlFrame
+        content={navigationProbe(port, 'refresh')}
+        title="Refresh probe"
+      />
+    </section>
+  );
+}
+
 const VIDEO_DATA_URL =
   'data:video/webm;base64,GkXfo59ChoEBQveBAULygQRC84EIQoKEd2VibUKHgQJChYECGFOAZwH/////////EU2bdKtNu4tTq4QVSalmU6yBoU27i1OrhBZUrmtTrIHNTbuMU6uEElTDZ1OsggET7AEAAAAAAABoAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAVSalmpyrXsYMPQkBNgI1MYXZmNjAuMTYuMTAwV0GNTGF2ZjYwLjE2LjEwMBZUrmvBrgEAAAAAAAA414EBc8WIK1B6ze09/aicgQAitZyDdW5kiIEAhoVWX1ZQOYOBASPjg4QCYloA4ImwgRC6gRCagQISVMNn3HNzoGPAgGfImkWjh0VOQ09ERVJEh41MYXZmNjAuMTYuMTAwc3O2Y8CLY8WIK1B6ze09/ahnyKVFo4dFTkNPREVSRIeYTGF2YzYwLjMxLjEwMiBsaWJ2cHgtdnA5H0O2dfnngQCjoIEAAICCSYNCAADwAPYAOCQcGEoAADBgAAAQv//9SIwAo5OBACgAhgBAkpwAUAAAAyAAAEJAo5OBAFAAhgBAkpwATuAAAyAAAEJAo5OBAHgAhgBAkpwAUAAAAyAAAEJAo5OBAKAAhgBAkpwATUAAAyAAAEJA';
 
@@ -51,6 +117,8 @@ export default function Page() {
           autoHeight
         />
       </section>
+
+      <EgressProbes />
 
       <section data-testid="video-preview">
         <VideoPlayer src={VIDEO_DATA_URL} filename="inline.webm" />
