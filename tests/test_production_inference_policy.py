@@ -50,6 +50,24 @@ def _attested_snapshot(*, revoked: bool = False) -> attestation.AttestationSnaps
 
 
 @pytest.fixture(autouse=True)
+def _review_clock(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Admission defaults to the review time, never the run date (#775).
+
+    The attested snapshot below is dated REVIEWED and goes stale after
+    attestation.STALE_AFTER, so a wall-clock default expires the suite.
+    Staleness tests pass an explicit ``now`` and are unaffected.
+    """
+    from orchestrator.entitlements import policy as policy_module
+
+    class ReviewClock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return REVIEWED
+
+    monkeypatch.setattr(policy_module, "datetime", ReviewClock)
+
+
+@pytest.fixture(autouse=True)
 def _attested() -> Iterator[None]:
     """Every production route confirmed by a ZDR check at review time."""
     previous = attestation.snapshot()
@@ -62,14 +80,6 @@ def _attested() -> Iterator[None]:
 
 @pytest.fixture
 def production_policy(monkeypatch: pytest.MonkeyPatch) -> InferencePolicy:
-    from orchestrator.entitlements import policy as policy_module
-
-    class ReviewClock(datetime):
-        @classmethod
-        def now(cls, tz=None):
-            return REVIEWED
-
-    monkeypatch.setattr(policy_module, "datetime", ReviewClock)
     policy = parse_inference_policy(
         json.loads((ROOT / "config/inference_policy.production.json").read_text())
     )
