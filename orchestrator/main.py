@@ -176,7 +176,7 @@ from orchestrator.models import (
     OpenAIUsage,
 )
 from orchestrator.prompts import DAEMON_SYSTEM_PROMPT
-from orchestrator.tools.blocks import block_history_note
+from orchestrator.tools.blocks import BlockVersion, block_history_note, iter_persisted_blocks
 from orchestrator.request_body_limit import (
     REQUEST_BODY_TOO_LARGE_RESPONSES,
     RequestBodyLimitMiddleware,
@@ -2620,6 +2620,8 @@ async def chat(
             conversation_exists = False
 
     history_messages: list[dict[str, Any]] | None = None
+    # Chat blocks visible to this turn come from the same rows as its history.
+    history_blocks: list[BlockVersion] = []
 
     def _to_history_message(msg: dict[str, Any]) -> dict[str, Any]:
         mapped: dict[str, Any] = {
@@ -2669,6 +2671,7 @@ async def chat(
                 and msg.get("content") is not None
                 and msg.get("role") != "system"
             ]
+            history_blocks = list(iter_persisted_blocks(db_messages))
             # Keep the copied source turn after Redis expiry and after normal
             # recent-history truncation. Persisted prompt remains distinct from
             # its context on public history reads.
@@ -2789,6 +2792,7 @@ async def chat(
                 queue=app_state.redis if app_state else None,
                 summary_generation=title_generation,
                 temporal_scope=temporal_scope,
+                history_blocks=history_blocks,
                 db_pool=app_state.db_pool if app_state else None,
                 trusted_spawn_context=trusted_spawn_context,
                 disable_memory_write=bool(payload.disable_memory_write),

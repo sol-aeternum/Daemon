@@ -38,7 +38,7 @@ from orchestrator.router import COUNCIL_RETIRED_MESSAGE, is_retired_council_comm
 from orchestrator.tasks.fence import guard_registry, outcome_of_tool_result
 from orchestrator.tasks.states import RetryCause, TaskStatus
 from orchestrator.prompts import DAEMON_PROMPT_VERSION
-from orchestrator.tools.blocks import block_history_note
+from orchestrator.tools.blocks import BlockVersion, block_history_note, iter_persisted_blocks
 from orchestrator.tasks.store import (
     Claim,
     EffectRefused,
@@ -692,13 +692,20 @@ async def _publish(redis: Any, state: AttemptState, message: dict[str, Any]) -> 
             logger.warning("Live task updates unavailable (task_id=%s)", state.claim.task_id)
 
 
-async def _history(store: Any, claim: Claim, limit: int, prepared: Any) -> list[dict[str, Any]]:
+async def _history(
+    store: Any,
+    claim: Claim,
+    limit: int,
+    prepared: Any,
+    blocks: list[BlockVersion] | None = None,
+) -> list[dict[str, Any]]:
     """History as of acceptance: up to and including the accepted user turn.
 
     Request-bound paths may still write to the same
     conversation after acceptance, so later rows are cut off rather than
     assumed absent. The task's own placeholder is a streaming row and is
-    excluded.
+    excluded. ``blocks``, when given, receives the chat blocks in exactly
+    these rows, so block reads and revisions share the same boundary.
     """
     if claim.task_input.get("temporal_scope") is not None:
         return [{"role": "user", "content": prepared or str(claim.task_input.get("message") or "")}]
@@ -714,6 +721,8 @@ async def _history(store: Any, claim: Claim, limit: int, prepared: Any) -> list[
     if not accepted_ids:
         raise RuntimeError("accepted user turn is not in the recent history window")
     rows = rows[: accepted_ids[-1] + 1]
+    if blocks is not None:
+        blocks.extend(iter_persisted_blocks(rows))
     history: list[dict[str, Any]] = []
     for row in rows:
         if row.get("role") in (None, "system") or row.get("content") is None:
@@ -976,8 +985,13 @@ async def _execute(ctx: dict[str, Any], store: TaskStore, state: AttemptState) -
             system_prompt, user_timezone = await _text_system_prompt(memory, claim)
         else:
             system_prompt, user_timezone = await _system_prompt(memory, db_pool, claim)
+        history_blocks: list[BlockVersion] = []
         history = await _history(
-            memory, claim, settings.chat_history_limit, task_input.get("prepared_content")
+            memory,
+            claim,
+            settings.chat_history_limit,
+            task_input.get("prepared_content"),
+            history_blocks,
         )
         try:
             async with _mutation(state):
@@ -1028,6 +1042,7 @@ async def _execute(ctx: dict[str, Any], store: TaskStore, state: AttemptState) -
             message_sink=AttemptSink(store, state),
             tool_guard=lambda registry: _guard_tools(registry, store, state),
             summary_generation=summary_generation,
+            history_blocks=history_blocks,
             temporal_scope=TemporalReadScope.model_validate(task_input["temporal_scope"])
             if task_input.get("temporal_scope")
             else None,

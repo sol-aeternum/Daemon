@@ -15,8 +15,7 @@ import io
 import json
 import re
 import secrets
-import uuid
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
@@ -31,9 +30,6 @@ MAX_BLOCK_BYTES = 256 * 1024
 MAX_INLINE_BYTES = 48 * 1024
 MAX_BLOCKS_PER_TURN = 4
 MAX_TITLE_CHARS = 120
-# Bounded look-back for revisions/reads. Blocks older than this window are
-# reported as not found rather than scanned without a limit.
-HISTORY_LOOKBACK_MESSAGES = 200
 
 _BLOCK_ID = re.compile(r"^blk_[0-9a-f]{16}$")
 #: Titles are quoted in the history note; keep a title from closing the quote.
@@ -192,36 +188,21 @@ def block_history_note(tool_results: Any) -> str | None:
 
 
 class _ConversationBlocks:
-    """Blocks visible to this turn: persisted history plus this turn's renders."""
+    """Blocks visible to this turn: its accepted history plus its own renders.
 
-    def __init__(self, memory_store: Any, user_id: Any, conversation_id: Any) -> None:
-        self._store = memory_store
-        self._user_id = user_id
-        self._conversation_id = conversation_id
-        self._persisted: list[BlockVersion] | None = None
+    The persisted part comes from the exact history rows the turn was built
+    from (``iter_persisted_blocks`` over them), never from a fresh read: a
+    later revision written after the turn was accepted is neither readable nor
+    a revision base, and newer rows cannot push eligible versions out of view.
+    Where a caller has no such history, reads and revisions are withheld.
+    """
+
+    def __init__(self, history_blocks: Sequence[BlockVersion] = ()) -> None:
+        self._persisted = list(history_blocks)
         self.turn: list[BlockVersion] = []
 
-    async def _load(self) -> list[BlockVersion]:
-        if self._persisted is not None:
-            return self._persisted
-        self._persisted = []
-        if self._store is None or self._user_id is None or self._conversation_id is None:
-            return self._persisted
-        conversation_id = uuid.UUID(str(self._conversation_id))
-        conversation = await self._store.get_conversation(conversation_id)
-        if not conversation or str(conversation.get("user_id")) != str(self._user_id):
-            return self._persisted
-        messages = await self._store.get_recent_messages(
-            conversation_id,
-            limit=HISTORY_LOOKBACK_MESSAGES,
-            exclude_status=["streaming", "error", "cancelled"],
-        )
-        self._persisted = list(iter_persisted_blocks(messages))
-        return self._persisted
-
     async def versions(self, block_id: str) -> list[BlockVersion]:
-        persisted = await self._load()
-        return [block for block in [*persisted, *self.turn] if block.block_id == block_id]
+        return [block for block in [*self._persisted, *self.turn] if block.block_id == block_id]
 
 
 class RenderBlockTool(Tool):
@@ -230,7 +211,7 @@ class RenderBlockTool(Tool):
         "Show content to the user as a chat block. Small html/svg renders inline in the "
         "message; larger content and other kinds open as a card with a full preview panel. "
         "Every block can be downloaded. HTML may use inline JavaScript and CSS: it runs in an "
-        "isolated sandbox with no network access, so inline all data, styles and scripts "
+        "isolated sandbox that blocks network requests, so inline all data, styles and scripts "
         "(no external libraries, fonts, images or requests). Use this instead of a code fence "
         "when the user wants something to see, use or download. Do not repeat the content in "
         "your reply. To change an existing block, pass its id as `revises`."
@@ -332,6 +313,7 @@ class RenderBlockTool(Tool):
                     "display": resolved,
                     "bytes": size,
                     "sha256": digest,
+                    **({"language": language} if language else {}),
                 },
             }
         )
@@ -383,7 +365,7 @@ class ReadBlockTool(Tool):
         return json.dumps({"success": True, "data": data})
 
 
-def block_tools(memory_store: Any, user_id: Any, conversation_id: Any) -> list[Tool]:
-    """Both tools share one per-turn view of the conversation's blocks."""
-    blocks = _ConversationBlocks(memory_store, user_id, conversation_id)
+def block_tools(history_blocks: Sequence[BlockVersion] | None = None) -> list[Tool]:
+    """Both tools share one per-turn view of the turn's accepted blocks."""
+    blocks = _ConversationBlocks(history_blocks or ())
     return [RenderBlockTool(blocks), ReadBlockTool(blocks)]

@@ -53,25 +53,9 @@ def _persisted_message(content: str, block_id: str, version: int = 1, **extra: A
     }
 
 
-class FakeStore:
-    def __init__(self, messages: list[dict[str, Any]], owner: uuid.UUID = USER) -> None:
-        self.messages = messages
-        self.owner = owner
-        self.reads = 0
-
-    async def get_conversation(self, conversation_id: uuid.UUID) -> dict[str, Any]:
-        assert conversation_id == CONVERSATION
-        return {"id": conversation_id, "user_id": self.owner}
-
-    async def get_recent_messages(self, conversation_id: uuid.UUID, **kwargs: Any):
-        self.reads += 1
-        assert conversation_id == CONVERSATION
-        assert "streaming" in kwargs["exclude_status"]
-        return self.messages
-
-
-def _tools(store: Any = None):
-    render, read = block_tools(store, USER, CONVERSATION)
+def _tools(messages: list[dict[str, Any]] | None = None):
+    """Tools over the blocks in a turn's accepted history rows."""
+    render, read = block_tools(list(iter_persisted_blocks(messages or [])))
     return render, read
 
 
@@ -146,9 +130,11 @@ async def test_csv_and_code_language_validation() -> None:
     ok = await _call(render, kind="csv", title="Rows", content="a,b\n1,2\n")
     assert ok["success"] is True
     code = await _call(render, kind="code", title="Script", content="print(1)", language="Python")
+    assert code["data"]["language"] == "python"
     source = await _call(read, block_id=code["data"]["block_id"])
     assert source["data"]["language"] == "python"
     odd = await _call(render, kind="code", title="Odd", content="x", language="<script>")
+    assert "language" not in odd["data"]
     assert "language" not in (await _call(read, block_id=odd["data"]["block_id"]))["data"]
 
 
@@ -184,8 +170,7 @@ async def test_revision_within_turn_keeps_id_and_bumps_version() -> None:
 @pytest.mark.asyncio
 async def test_revision_and_read_of_persisted_block() -> None:
     block_id = "blk_" + "a" * 16
-    store = FakeStore([_persisted_message(PAGE, block_id, version=2)])
-    render, read = _tools(store)
+    render, read = _tools([_persisted_message(PAGE, block_id, version=2)])
     source = await _call(read, block_id=block_id)
     assert source["data"] == {
         "block_id": block_id,
@@ -198,21 +183,23 @@ async def test_revision_and_read_of_persisted_block() -> None:
         render, kind="html", title="Sales", content="<p>new</p>", revises=block_id
     )
     assert revised["data"]["version"] == 3
-    assert store.reads == 1  # history is read once per turn
 
 
 @pytest.mark.asyncio
-async def test_other_owner_and_unpaired_results_are_not_found() -> None:
+async def test_unpaired_results_and_missing_history_are_not_found() -> None:
     block_id = "blk_" + "b" * 16
-    foreign = FakeStore([_persisted_message(PAGE, block_id)], owner=uuid.uuid4())
-    _, read = _tools(foreign)
+    # Without the turn's history rows, reads and revisions are withheld.
+    render, read = _tools()
     assert await _call(read, block_id=block_id) == {"success": False, "error": "not_found"}
+    assert (await _call(render, kind="html", title="x", content="x", revises=block_id))[
+        "error"
+    ] == "unknown_revision"
 
     forged = _persisted_message(PAGE, block_id, sha256=_digest("something else"))
-    _, read = _tools(FakeStore([forged]))
+    _, read = _tools([forged])
     assert await _call(read, block_id=block_id) == {"success": False, "error": "not_found"}
 
-    _, read = _tools(FakeStore([_persisted_message(PAGE, block_id)]))
+    _, read = _tools([_persisted_message(PAGE, block_id)])
     for bad in ({"block_id": "../x"}, {"block_id": block_id, "version": True}):
         assert await _call(read, **bad) == {"success": False, "error": "not_found"}
 
@@ -278,3 +265,58 @@ async def test_durable_task_history_also_names_blocks() -> None:
     assert history[1]["content"].startswith("Here it is.")
     assert f"[block {block_id} v1 html" in history[1]["content"]
     assert history[2]["content"] == "Bigger font"
+
+
+@pytest.mark.asyncio
+async def test_durable_turn_sees_only_blocks_in_its_accepted_history() -> None:
+    """A revision written after acceptance is neither readable nor a revision base."""
+    from types import SimpleNamespace
+
+    from orchestrator.tasks.runner import _history
+    from orchestrator.tools.blocks import BlockVersion
+
+    block_id = "blk_" + "d" * 16
+    accepted = uuid.uuid4()
+    later = _persisted_message("<p>v2</p>", block_id, version=2)
+    later["tool_calls"][0]["arguments"]["content"] = "<p>v2</p>"
+    rows = [
+        {"id": uuid.uuid4(), **_persisted_message(PAGE, block_id)},
+        {"id": accepted, "role": "user", "content": "Make it blue"},
+        # A request-bound turn wrote v2 after this task was accepted.
+        {"id": uuid.uuid4(), **later},
+    ]
+    seen: dict[str, Any] = {}
+
+    class Store:
+        async def get_recent_messages(self, conversation_id: uuid.UUID, **kwargs: Any):
+            seen.update(kwargs)
+            return rows
+
+    claim = SimpleNamespace(task_input={}, conversation_id=CONVERSATION, user_message_id=accepted)
+    blocks: list[BlockVersion] = []
+    await _history(Store(), claim, 20, None, blocks)  # type: ignore[arg-type]
+    assert seen["until_message_id"] == accepted
+    assert [(block.block_id, block.version) for block in blocks] == [(block_id, 1)]
+
+    render, read = block_tools(blocks)
+    latest = (await _call(read, block_id=block_id))["data"]
+    assert (latest["version"], latest["content"]) == (1, PAGE)
+    assert await _call(read, block_id=block_id, version=2) == {
+        "success": False,
+        "error": "not_found",
+    }
+    revised = await _call(render, kind="html", title="Blue", content="<p>b</p>", revises=block_id)
+    assert revised["data"]["version"] == 2
+
+
+@pytest.mark.asyncio
+async def test_registry_threads_history_blocks_to_read_block() -> None:
+    block_id = "blk_" + "e" * 16
+    history_blocks = list(iter_persisted_blocks([_persisted_message(PAGE, block_id)]))
+    registry = create_default_registry(
+        user_id=USER, conversation_id=CONVERSATION, history_blocks=history_blocks
+    )
+    read_block = registry.get("read_block")
+    assert read_block is not None
+    result = json.loads(await read_block.execute(block_id=block_id))
+    assert result["data"]["content"] == PAGE

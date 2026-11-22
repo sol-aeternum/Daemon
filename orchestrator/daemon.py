@@ -6,7 +6,7 @@ from orchestrator.memory.temporal import TemporalReadScope
 # pyright: reportMissingImports=false
 
 import asyncio
-from collections.abc import AsyncIterator, Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
 from contextlib import suppress
 from datetime import datetime, timedelta, timezone
 from orchestrator.services.account_control.guard import CapturedGeneration
@@ -30,6 +30,7 @@ from orchestrator.compute_runtime import tool_round_limit
 from orchestrator.services.fetch.url_extract import extract_urls
 from orchestrator.timezones import resolve_runtime_timezone
 from orchestrator.tools.builtin import create_default_registry
+from orchestrator.tools.blocks import BlockVersion
 from orchestrator.tools.completion import completion_with_tools
 from orchestrator.turn_finish import (
     ProviderFinish,
@@ -374,6 +375,7 @@ async def stream_sse_chat(
     tool_guard: Callable[[Any], None] | None = None,
     summary_generation: CapturedGeneration | None = None,
     temporal_scope: TemporalReadScope | None = None,
+    history_blocks: Sequence[BlockVersion] | None = None,
 ) -> AsyncIterator[str]:
     """Stream one chat turn as SSE frames.
 
@@ -381,6 +383,8 @@ async def stream_sse_chat(
     ``update_message`` calls instead of ``memory_store`` (a durable task routes
     them through its lease fence); tools and memory still use ``memory_store``.
     ``tool_guard`` may wrap tools in the turn's registry before use.
+    ``history_blocks`` are the chat blocks in the history rows this turn was
+    built from; ``read_block``/``render_block(revises=…)`` see only those.
     """
     provider, model = effective_provider_and_model(settings, provider_config)
     message_writer = message_sink if message_sink is not None else memory_store
@@ -658,6 +662,7 @@ async def stream_sse_chat(
                     trusted_spawn_context=trusted_spawn_context,
                     disable_memory_write=disable_memory_write,
                     conversation_id=conversation_uuid,
+                    history_blocks=history_blocks,
                 )
                 if tool_guard is not None:
                     tool_guard(registry)
