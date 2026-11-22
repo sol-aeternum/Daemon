@@ -384,7 +384,7 @@ async def stream_sse_chat(
     them through its lease fence); tools and memory still use ``memory_store``.
     ``tool_guard`` may wrap tools in the turn's registry before use.
     ``history_blocks`` are the chat blocks in the history rows this turn was
-    built from; ``read_block``/``render_block(revises=…)`` see only those.
+    built from; ``read_block`` sees only those.
     """
     provider, model = effective_provider_and_model(settings, provider_config)
     message_writer = message_sink if message_sink is not None else memory_store

@@ -4,7 +4,9 @@ See docs/ARTIFACT_PRESENTATION_DESIGN.md. A chat block is message content, not a
 durable artifact: its source lives only in the message's encrypted tool trace
 (the ``render_block`` call arguments), and it is deleted with the conversation.
 The tool never echoes the source back to the model; ``read_block`` returns it on
-request so a later turn can revise it.
+request so a later turn can build on it. Each render is a new block
+(``version`` is always 1): revisions are deferred until a revision identity
+cannot collide across overlapping turns (review on #779).
 """
 
 from __future__ import annotations
@@ -185,7 +187,7 @@ def block_history_note(tool_results: Any) -> str | None:
     return (
         "\n\n"
         + "\n".join(lines)
-        + "\n(Shown to the user. Call read_block with the id to see or revise it.)"
+        + "\n(Shown to the user. Call read_block with the id to see its source.)"
     )
 
 
@@ -194,9 +196,9 @@ class _ConversationBlocks:
 
     The persisted part comes from the exact history rows the turn was built
     from (``iter_persisted_blocks`` over them), never from a fresh read: a
-    later revision written after the turn was accepted is neither readable nor
-    a revision base, and newer rows cannot push eligible versions out of view.
-    Where a caller has no such history, reads and revisions are withheld.
+    block written after the turn was accepted is not readable, and newer rows
+    cannot push eligible blocks out of view. Where a caller has no such
+    history, reads are withheld.
     """
 
     def __init__(self, history_blocks: Sequence[BlockVersion] = ()) -> None:
@@ -216,8 +218,8 @@ class RenderBlockTool(Tool):
         "make it self-contained (inline all data, styles and scripts; no external libraries, "
         "fonts, images or requests) so it works when the user opens the downloaded file. Use "
         "this instead of a code fence when the user wants something to see, keep or download. "
-        "Do not repeat the content in your reply. To change an existing block, pass its id as "
-        "`revises`."
+        "Do not repeat the content in your reply. Each call creates a new block; to change "
+        "one, render the full updated content again."
     )
     parameters = {
         "type": "object",
@@ -246,11 +248,6 @@ class RenderBlockTool(Tool):
                 "enum": ["auto", "inline", "panel"],
                 "description": "auto (default): inline when small svg, otherwise panel.",
             },
-            "revises": {
-                "type": "string",
-                "description": "Id of an existing block in this conversation to replace with a "
-                "new version.",
-            },
         },
         "required": ["kind", "title", "content"],
     }
@@ -277,18 +274,11 @@ class RenderBlockTool(Tool):
             candidate = kwargs["language"].strip().lower()
             language = candidate if _LANGUAGE.match(candidate) else None
 
-        revises = kwargs.get("revises")
-        if revises not in (None, ""):
-            if not isinstance(revises, str) or not _BLOCK_ID.match(revises):
-                return _failure("unknown_revision")
-            versions = await self._blocks.versions(revises)
-            if not versions:
-                return _failure("unknown_revision")
-            block_id = revises
-            version = max(block.version for block in versions) + 1
-        else:
-            block_id = f"blk_{secrets.token_hex(8)}"
-            version = 1
+        # Every render is a new block. Revisions are deferred: a version number
+        # derived from the turn's frozen history can collide when two
+        # overlapping turns revise the same block (review on #779).
+        block_id = f"blk_{secrets.token_hex(8)}"
+        version = 1
 
         size = len(content.encode("utf-8"))
         display = kwargs.get("display")
@@ -327,16 +317,12 @@ class ReadBlockTool(Tool):
     name = READ_BLOCK
     description = (
         "Read the source of a chat block shown earlier in this conversation, so you can "
-        "answer questions about it or revise it with render_block(revises=...)."
+        "answer questions about it or build an updated block from it."
     )
     parameters = {
         "type": "object",
         "properties": {
             "block_id": {"type": "string", "description": "The block id, e.g. blk_…"},
-            "version": {
-                "type": "integer",
-                "description": "Optional version; defaults to the latest.",
-            },
         },
         "required": ["block_id"],
     }
@@ -349,11 +335,6 @@ class ReadBlockTool(Tool):
         if not isinstance(block_id, str) or not _BLOCK_ID.match(block_id):
             return _failure("not_found")
         versions = await self._blocks.versions(block_id)
-        requested = kwargs.get("version")
-        if isinstance(requested, int) and not isinstance(requested, bool):
-            versions = [block for block in versions if block.version == requested]
-        elif requested is not None:
-            return _failure("not_found")
         if not versions:
             return _failure("not_found")
         block = max(versions, key=lambda item: item.version)

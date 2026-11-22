@@ -14,6 +14,8 @@ from orchestrator.tools.blocks import (
     MAX_BLOCK_BYTES,
     MAX_BLOCKS_PER_TURN,
     MAX_INLINE_BYTES,
+    ReadBlockTool,
+    RenderBlockTool,
     block_history_note,
     block_tools,
     iter_persisted_blocks,
@@ -114,11 +116,6 @@ async def test_placement_is_enforced_server_side(
         ({"kind": "html", "title": "x", "content": "\ud800"}, "invalid_content"),
         ({"kind": "json", "title": "x", "content": "{nope"}, "invalid_content"),
         ({"kind": "html", "title": "x", "content": "x" * (MAX_BLOCK_BYTES + 1)}, "too_large"),
-        ({"kind": "html", "title": "x", "content": "x", "revises": "blk_zz"}, "unknown_revision"),
-        (
-            {"kind": "html", "title": "x", "content": "x", "revises": "blk_" + "0" * 16},
-            "unknown_revision",
-        ),
     ],
 )
 async def test_invalid_input_fails_closed(kwargs: dict[str, Any], error: str) -> None:
@@ -153,7 +150,10 @@ async def test_turn_limit() -> None:
 
 
 @pytest.mark.asyncio
-async def test_revision_within_turn_keeps_id_and_bumps_version() -> None:
+async def test_every_render_is_a_new_block_even_if_revises_is_passed() -> None:
+    """Revisions are deferred: a stray ``revises`` never reuses an identity."""
+    assert "revises" not in RenderBlockTool.parameters["properties"]
+    assert "version" not in ReadBlockTool.parameters["properties"]
     render, read = _tools()
     first = (await _call(render, kind="html", title="Chart", content="<p>v1</p>"))["data"]
     second = (
@@ -161,48 +161,58 @@ async def test_revision_within_turn_keeps_id_and_bumps_version() -> None:
             render, kind="html", title="Chart", content="<p>v2</p>", revises=first["block_id"]
         )
     )["data"]
-    assert second["block_id"] == first["block_id"]
-    assert second["version"] == 2
-    latest = (await _call(read, block_id=first["block_id"]))["data"]
-    assert latest["content"] == "<p>v2</p>"
-    older = (await _call(read, block_id=first["block_id"], version=1))["data"]
-    assert older["content"] == "<p>v1</p>"
+    assert second["block_id"] != first["block_id"]
+    assert first["version"] == second["version"] == 1
+    assert (await _call(read, block_id=first["block_id"]))["data"]["content"] == "<p>v1</p>"
+    assert (await _call(read, block_id=second["block_id"]))["data"]["content"] == "<p>v2</p>"
 
 
 @pytest.mark.asyncio
-async def test_revision_and_read_of_persisted_block() -> None:
+async def test_read_of_persisted_block() -> None:
     block_id = "blk_" + "a" * 16
-    render, read = _tools([_persisted_message(PAGE, block_id, version=2)])
+    _, read = _tools([_persisted_message(PAGE, block_id)])
     source = await _call(read, block_id=block_id)
     assert source["data"] == {
         "block_id": block_id,
-        "version": 2,
+        "version": 1,
         "kind": "html",
         "title": "Sales dashboard",
         "content": PAGE,
     }
-    revised = await _call(
-        render, kind="html", title="Sales", content="<p>new</p>", revises=block_id
-    )
-    assert revised["data"]["version"] == 3
+
+
+@pytest.mark.asyncio
+async def test_overlapping_turns_never_share_a_block_identity() -> None:
+    """Two turns that accepted the same history each publish a distinct block."""
+    block_id = "blk_" + "a" * 16
+    history = [_persisted_message(PAGE, block_id)]
+    outputs = []
+    for content in ("<p>red</p>", "<p>blue</p>"):
+        render, _ = _tools(history)
+        data = (await _call(render, kind="html", title="Sales", content=content, revises=block_id))[
+            "data"
+        ]
+        message = _persisted_message(content, data["block_id"])
+        outputs.append(message)
+    persisted = list(iter_persisted_blocks([*history, *outputs]))
+    identities = [(block.block_id, block.version) for block in persisted]
+    assert len(set(identities)) == len(identities) == 3
+    assert {block.content for block in persisted} == {PAGE, "<p>red</p>", "<p>blue</p>"}
 
 
 @pytest.mark.asyncio
 async def test_unpaired_results_and_missing_history_are_not_found() -> None:
     block_id = "blk_" + "b" * 16
-    # Without the turn's history rows, reads and revisions are withheld.
-    render, read = _tools()
+    # Without the turn's history rows, reads are withheld.
+    _, read = _tools()
     assert await _call(read, block_id=block_id) == {"success": False, "error": "not_found"}
-    assert (await _call(render, kind="html", title="x", content="x", revises=block_id))[
-        "error"
-    ] == "unknown_revision"
 
     forged = _persisted_message(PAGE, block_id, sha256=_digest("something else"))
     _, read = _tools([forged])
     assert await _call(read, block_id=block_id) == {"success": False, "error": "not_found"}
 
     _, read = _tools([_persisted_message(PAGE, block_id)])
-    for bad in ({"block_id": "../x"}, {"block_id": block_id, "version": True}):
+    for bad in ({"block_id": "../x"}, {"block_id": 42}):
         assert await _call(read, **bad) == {"success": False, "error": "not_found"}
 
 
@@ -271,7 +281,7 @@ async def test_durable_task_history_also_names_blocks() -> None:
 
 @pytest.mark.asyncio
 async def test_durable_turn_sees_only_blocks_in_its_accepted_history() -> None:
-    """A revision written after acceptance is neither readable nor a revision base."""
+    """A block written after acceptance is not readable by the accepted turn."""
     from types import SimpleNamespace
 
     from orchestrator.tasks.runner import _history
@@ -279,12 +289,12 @@ async def test_durable_turn_sees_only_blocks_in_its_accepted_history() -> None:
 
     block_id = "blk_" + "d" * 16
     accepted = uuid.uuid4()
-    later = _persisted_message("<p>v2</p>", block_id, version=2)
-    later["tool_calls"][0]["arguments"]["content"] = "<p>v2</p>"
+    later_id = "blk_" + "9" * 16
+    later = _persisted_message("<p>v2</p>", later_id)
     rows = [
         {"id": uuid.uuid4(), **_persisted_message(PAGE, block_id)},
         {"id": accepted, "role": "user", "content": "Make it blue"},
-        # A request-bound turn wrote v2 after this task was accepted.
+        # A request-bound turn wrote a block after this task was accepted.
         {"id": uuid.uuid4(), **later},
     ]
     seen: dict[str, Any] = {}
@@ -300,15 +310,10 @@ async def test_durable_turn_sees_only_blocks_in_its_accepted_history() -> None:
     assert seen["until_message_id"] == accepted
     assert [(block.block_id, block.version) for block in blocks] == [(block_id, 1)]
 
-    render, read = block_tools(blocks)
+    _, read = block_tools(blocks)
     latest = (await _call(read, block_id=block_id))["data"]
     assert (latest["version"], latest["content"]) == (1, PAGE)
-    assert await _call(read, block_id=block_id, version=2) == {
-        "success": False,
-        "error": "not_found",
-    }
-    revised = await _call(render, kind="html", title="Blue", content="<p>b</p>", revises=block_id)
-    assert revised["data"]["version"] == 2
+    assert await _call(read, block_id=later_id) == {"success": False, "error": "not_found"}
 
 
 @pytest.mark.asyncio

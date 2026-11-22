@@ -705,7 +705,7 @@ async def _history(
     conversation after acceptance, so later rows are cut off rather than
     assumed absent. The task's own placeholder is a streaming row and is
     excluded. ``blocks``, when given, receives the chat blocks in exactly
-    these rows, so block reads and revisions share the same boundary.
+    these rows, so block reads share the same boundary.
     """
     if claim.task_input.get("temporal_scope") is not None:
         return [{"role": "user", "content": prepared or str(claim.task_input.get("message") or "")}]
