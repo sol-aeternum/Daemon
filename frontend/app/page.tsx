@@ -87,6 +87,7 @@ import {
   type SidebarSection,
 } from '../components/ConversationList';
 import { ToolCallLog } from '../components/ToolCallBlock';
+import { MessageChatBlocks } from '../components/chat/MessageChatBlocks';
 import {
   COLLAPSE_MIN_CHARS,
   CollapsibleMessage,
@@ -384,6 +385,7 @@ function ChatContent() {
     generation: number;
     tab: DetailsTab;
     fileUrl?: string;
+    blockKey?: string;
   } | null>(null);
   const detailsOpener = useRef<HTMLElement | null>(null);
   const wideDetails = useWideDetails();
@@ -2293,6 +2295,18 @@ function ChatContent() {
       fileUrl: output?.fileUrl,
     });
   };
+  const openBlock = (blockKey: string) => {
+    detailsOpener.current =
+      document.activeElement instanceof HTMLElement
+        ? document.activeElement
+        : null;
+    setDetails({
+      conversationId: currentId ?? null,
+      generation: authGeneration,
+      tab: 'Outputs',
+      blockKey,
+    });
+  };
   const closeDetails = () => {
     setDetails(null);
     requestAnimationFrame(() => {
@@ -2319,6 +2333,15 @@ function ChatContent() {
           generation: authGeneration,
           tab: 'Outputs',
           fileUrl: output?.fileUrl,
+        })
+      }
+      selectedBlockKey={activeDetails.blockKey}
+      onSelectBlock={(blockKey) =>
+        setDetails({
+          conversationId: currentId ?? null,
+          generation: authGeneration,
+          tab: 'Outputs',
+          blockKey,
         })
       }
       onClose={closeDetails}
@@ -2836,6 +2859,12 @@ function ChatContent() {
                                 >
                                   (stopping…)
                                 </div>
+                              )}
+                              {currentMessagesMatch && (
+                                <MessageChatBlocks
+                                  events={msgEvents}
+                                  onOpen={openBlock}
+                                />
                               )}
                               {documentsForMessage.map(
                                 (documentDownloadForMessage) => (
