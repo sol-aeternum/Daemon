@@ -67,15 +67,100 @@ function navigationProbe(port: string, how: 'location' | 'refresh'): string {
     : `<!doctype html><meta http-equiv="refresh" content="0;url=${target}"><p>leaving</p>`;
 }
 
+// WebRTC is outside CSP's fetch directives. Each probe gets a peer connection
+// from a different realm the content can reach (its own window, a nested
+// about:blank frame, a nested srcdoc frame) and gathers ICE against a local
+// STUN listener (?stun=<udp port>). The listener's packet count is the
+// evidence; the attributes only say how far the script got.
+type RtcRealm = 'top' | 'blank' | 'srcdoc';
+
+function webrtcProbe(stunPort: string, realm: RtcRealm): string {
+  // Runs in whichever realm it is placed in and reports via `report`.
+  const gather = `function gather(w, report) {
+    const PC = w.RTCPeerConnection || w.webkitRTCPeerConnection;
+    if (typeof PC !== "function") { report("webrtc", "unavailable"); return; }
+    report("webrtc", "available");
+    try {
+      const pc = new PC({ iceServers: [{ urls: "stun:127.0.0.1:${stunPort}" }] });
+      pc.createDataChannel("probe");
+      pc.onicegatheringstatechange = () => report("gathering", pc.iceGatheringState);
+      pc.createOffer()
+        .then((offer) => pc.setLocalDescription(offer))
+        .then(() => report("offer", "set"), () => report("offer", "error"));
+    } catch (e) {
+      report("webrtc", "threw");
+    }
+  }`;
+  const nested = `<script>${gather}
+    gather(window, (name, value) => parent.postMessage({ probe: name, value }, "*"));</script>`;
+  return `<!doctype html>
+<body>
+<p>webrtc ${realm}</p>
+<script>
+  const mark = (name, value) => { document.body.dataset[name] = value; };
+  ${gather}
+  const realm = ${JSON.stringify(realm)};
+  if (realm === "top") {
+    gather(window, mark);
+  } else if (realm === "blank") {
+    const frame = document.createElement("iframe");
+    document.body.append(frame);
+    try { gather(frame.contentWindow, mark); } catch (e) { mark("webrtc", e.name); }
+  } else {
+    addEventListener("message", (e) => {
+      if (e.data && typeof e.data.probe === "string") mark(e.data.probe, String(e.data.value));
+    });
+    const frame = document.createElement("iframe");
+    frame.srcdoc = ${JSON.stringify(nested).replaceAll('</', '<\\/')};
+    document.body.append(frame);
+  }
+  mark("started", "1");
+</script>
+</body>`;
+}
+
 const noSubscription = () => () => {};
 
-function EgressProbes() {
+const RTC_REALMS: readonly RtcRealm[] = ['top', 'blank', 'srcdoc'];
+
+// Resource hints are handled by the browser's preconnect predictor, outside
+// CSP. Hostnames carry a per-test tag so a net log can tell them apart.
+function hintProbe(port: string, tag: string): string {
+  const host = (kind: string) => `${kind}-${tag}.test`;
+  return `<!doctype html>
+<html><head>
+<link rel="dns-prefetch" href="//${host('static-dns-prefetch')}">
+<link rel="preconnect" href="http://${host('static-preconnect')}">
+<link rel="preconnect" href="http://127.0.0.1:${port}/">
+<link rel="prerender" href="http://127.0.0.1:${port}/__egress/prerender">
+</head><body>
+<p>hints</p>
+<script>
+  for (const [rel, href] of [
+    ["dns-prefetch", "//${host('dynamic-dns-prefetch')}"],
+    ["preconnect", "http://${host('dynamic-preconnect')}"],
+  ]) {
+    const link = document.createElement("link");
+    link.rel = rel;
+    link.href = href;
+    document.head.append(link);
+  }
+  document.body.dataset.done = "1";
+</script>
+</body></html>`;
+}
+
+function useSearchParams(): URLSearchParams {
   const search = useSyncExternalStore(
     noSubscription,
     () => window.location.search,
     () => '',
   );
-  const value = new URLSearchParams(search).get('probe');
+  return new URLSearchParams(search);
+}
+
+function EgressProbes() {
+  const value = useSearchParams().get('probe');
   const port = value && /^\d{2,5}$/.test(value) ? value : null;
   if (!port) return null;
   return (
@@ -89,6 +174,35 @@ function EgressProbes() {
         content={navigationProbe(port, 'refresh')}
         title="Refresh probe"
       />
+    </section>
+  );
+}
+
+function WebrtcProbes() {
+  const params = useSearchParams();
+  const value = params.get('stun');
+  const port = value && /^\d{2,5}$/.test(value) ? value : null;
+  const realm = RTC_REALMS.find((name) => name === params.get('realm'));
+  if (!port || !realm) return null;
+  return (
+    <section data-testid="webrtc-probe">
+      <SandboxedHtmlFrame
+        content={webrtcProbe(port, realm)}
+        title="WebRTC probe"
+      />
+    </section>
+  );
+}
+
+function HintProbes() {
+  const params = useSearchParams();
+  const value = params.get('hints');
+  const tag = params.get('tag');
+  const port = value && /^\d{2,5}$/.test(value) ? value : null;
+  if (!port || !tag || !/^[a-z0-9]{1,40}$/.test(tag)) return null;
+  return (
+    <section data-testid="hint-probe">
+      <SandboxedHtmlFrame content={hintProbe(port, tag)} title="Hint probe" />
     </section>
   );
 }
@@ -119,6 +233,8 @@ export default function Page() {
       </section>
 
       <EgressProbes />
+      <WebrtcProbes />
+      <HintProbes />
 
       <section data-testid="video-preview">
         <VideoPlayer src={VIDEO_DATA_URL} filename="inline.webm" />
