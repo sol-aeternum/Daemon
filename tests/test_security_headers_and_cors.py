@@ -359,9 +359,16 @@ def test_html_preview_uses_an_isolated_frame_policy() -> None:
     preview_source = (
         ROOT / "frontend" / "src" / "components" / "previews" / "HtmlPreview.tsx"
     ).read_text()
+    # HtmlPreview and chat blocks share one frame component.
+    frame_source = (
+        ROOT / "frontend" / "components" / "chat" / "SandboxedHtmlFrame.tsx"
+    ).read_text()
 
-    assert "HTML_PREVIEW_FRAME_PATH" in preview_source
+    assert "<SandboxedHtmlFrame" in preview_source
     assert "srcDoc={content}" not in preview_source
+    assert "src={HTML_PREVIEW_FRAME_PATH}" in frame_source
+    assert 'sandbox="allow-scripts"' in frame_source
+    assert "srcDoc={content}" not in frame_source
     assert "HTML_PREVIEW_CONTENT_SECURITY_POLICY" in proxy_source
     assert "response.headers.set('X-Frame-Options', 'SAMEORIGIN')" in proxy_source
 
