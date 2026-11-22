@@ -124,8 +124,22 @@ function SourceView({ block }: { block: ChatBlock }) {
   );
 }
 
-const sandboxNote =
-  'Generated content, isolated from Daemon with no network access';
+const sandboxNote = 'Generated content, isolated from Daemon and your data';
+
+/**
+ * SVG renders passively as an image: no script runs and no subresource
+ * loads, inline or in Details. Only `kind: html` uses the executable frame.
+ */
+function PassiveSvg({ block }: { block: ChatBlock }) {
+  return (
+    // eslint-disable-next-line @next/next/no-img-element -- data: URL, no optimisation
+    <img
+      src={`data:image/svg+xml;charset=utf-8,${encodeURIComponent(block.content)}`}
+      alt={block.title}
+      className="mx-auto block h-auto max-h-file-content max-w-full"
+    />
+  );
+}
 
 /** A block inside its message: inline widget or compact card. */
 export function ChatBlockCard({
@@ -138,6 +152,7 @@ export function ChatBlockCard({
   const [view, setView] = useState<'preview' | 'code'>('preview');
   const [running, setRunning] = useState(true);
   const inline = block.display === 'inline';
+  const executable = block.kind === 'html';
 
   return (
     <section
@@ -159,7 +174,7 @@ export function ChatBlockCard({
               <Code2 className="h-4 w-4" aria-hidden />
               {view === 'code' ? 'Preview' : 'Code'}
             </button>
-            {view === 'preview' && (
+            {view === 'preview' && executable && (
               <button
                 type="button"
                 className={buttonClass}
@@ -181,6 +196,10 @@ export function ChatBlockCard({
           {view === 'code' ? (
             <div className="p-3">
               <SourceView block={block} />
+            </div>
+          ) : !executable ? (
+            <div className="p-3">
+              <PassiveSvg block={block} />
             </div>
           ) : running ? (
             <>
@@ -213,46 +232,48 @@ export function ChatBlockPreview({ block }: { block: ChatBlock }) {
   const [view, setView] = useState<'preview' | 'code'>('preview');
 
   let preview: React.ReactNode;
-  if (block.kind === 'html' || block.kind === 'svg') {
-    preview =
-      block.kind === 'html' && !running ? (
-        <div className="flex flex-col items-center gap-2 rounded-lg border border-dashed border-[var(--color-border-primary)] p-6 text-center">
-          <p className="text-sm text-[var(--color-text-secondary)]">
-            This page runs generated code in an isolated sandbox with no network
-            access.
-          </p>
+  if (block.kind === 'svg') {
+    preview = (
+      <div className="rounded-lg border border-[var(--color-border-primary)] p-3">
+        <PassiveSvg block={block} />
+      </div>
+    );
+  } else if (block.kind === 'html') {
+    preview = !running ? (
+      <div className="flex flex-col items-center gap-2 rounded-lg border border-dashed border-[var(--color-border-primary)] p-6 text-center">
+        <p className="text-sm text-[var(--color-text-secondary)]">
+          This page runs generated code in a sandbox isolated from Daemon and
+          your data.
+        </p>
+        <button
+          type="button"
+          className={buttonClass}
+          onClick={() => setRunning(true)}
+        >
+          <Play className="h-4 w-4" aria-hidden />
+          Run
+        </button>
+      </div>
+    ) : (
+      <div className="overflow-hidden rounded-lg border border-[var(--color-border-primary)]">
+        <p className="flex items-center justify-between gap-2 border-b border-[var(--color-border-primary)] px-3 py-1.5 text-xs text-[var(--color-text-muted)]">
+          {sandboxNote}
           <button
             type="button"
-            className={buttonClass}
-            onClick={() => setRunning(true)}
+            className="inline-flex min-h-touch items-center gap-1 px-2"
+            onClick={() => setRunning(false)}
           >
-            <Play className="h-4 w-4" aria-hidden />
-            Run
+            <Square className="h-3.5 w-3.5" aria-hidden />
+            Stop
           </button>
-        </div>
-      ) : (
-        <div className="overflow-hidden rounded-lg border border-[var(--color-border-primary)]">
-          <p className="flex items-center justify-between gap-2 border-b border-[var(--color-border-primary)] px-3 py-1.5 text-xs text-[var(--color-text-muted)]">
-            {sandboxNote}
-            {block.kind === 'html' && (
-              <button
-                type="button"
-                className="inline-flex min-h-touch items-center gap-1 px-2"
-                onClick={() => setRunning(false)}
-              >
-                <Square className="h-3.5 w-3.5" aria-hidden />
-                Stop
-              </button>
-            )}
-          </p>
-          <SandboxedHtmlFrame
-            content={block.content}
-            title={block.title}
-            className="min-h-html-preview"
-            autoHeight={block.kind === 'svg'}
-          />
-        </div>
-      );
+        </p>
+        <SandboxedHtmlFrame
+          content={block.content}
+          title={block.title}
+          className="min-h-html-preview"
+        />
+      </div>
+    );
   } else if (block.kind === 'markdown') {
     preview = <MarkdownRenderer content={block.content} />;
   } else if (block.kind === 'csv') {

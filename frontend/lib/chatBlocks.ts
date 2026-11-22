@@ -6,9 +6,11 @@ import type { TextFileKind } from './textDownload';
 /**
  * A conversation-scoped chat block produced by the `render_block` tool
  * (docs/ARTIFACT_PRESENTATION_DESIGN.md). The source comes from the tool
- * call's arguments; the result supplies the server-assigned identity. A block
- * is shown only when the call content's SHA-256 matches the result, so a
- * mispaired call can never display another block's source.
+ * call's arguments; the validated result supplies everything else (identity,
+ * kind, title, language). A block is shown only when a call's content SHA-256
+ * matches the result, so the digest authenticates the bytes and nothing else:
+ * two blocks with identical source can never borrow each other's metadata.
+ * Calls are matched within one message only.
  */
 export interface ChatBlock {
   key: string;
@@ -32,6 +34,8 @@ const KINDS = new Set<TextFileKind>([
 ]);
 const BLOCK_ID = /^blk_[0-9a-f]{16}$/;
 const SHA256 = /^[0-9a-f]{64}$/;
+/** Same normalization as the backend's `render_block` language check. */
+const LANGUAGE = /^[a-z0-9][a-z0-9+#.-]{0,19}$/;
 /** Client re-check of the server's inline limit (design D4). */
 export const MAX_INLINE_BLOCK_BYTES = 48 * 1024;
 
@@ -43,10 +47,6 @@ interface BlockResult {
   display: 'inline' | 'panel';
   bytes: number;
   sha256: string;
-}
-
-interface BlockCall {
-  content: string;
   language?: string;
 }
 
@@ -63,7 +63,8 @@ function readResult(event: ChatEvent): BlockResult | null {
   const data = payload.data;
   if (!data || typeof data !== 'object' || Array.isArray(data)) return null;
   const record = data as Record<string, unknown>;
-  const { block_id, version, kind, title, display, bytes, sha256 } = record;
+  const { block_id, version, kind, title, display, bytes, sha256, language } =
+    record;
   if (
     typeof block_id !== 'string' ||
     !BLOCK_ID.test(block_id) ||
@@ -88,17 +89,17 @@ function readResult(event: ChatEvent): BlockResult | null {
     display: display === 'inline' ? 'inline' : 'panel',
     bytes: typeof bytes === 'number' && bytes >= 0 ? bytes : 0,
     sha256,
+    language:
+      kind === 'code' && typeof language === 'string' && LANGUAGE.test(language)
+        ? language
+        : undefined,
   };
 }
 
-function readCall(event: ChatEvent): BlockCall | null {
+function readCallContent(event: ChatEvent): string | null {
   if (event.type !== 'tool_call' || event.name !== 'render_block') return null;
-  const args = event.arguments;
-  if (!args || typeof args.content !== 'string') return null;
-  return {
-    content: args.content,
-    language: typeof args.language === 'string' ? args.language : undefined,
-  };
+  const content = event.arguments?.content;
+  return typeof content === 'string' ? content : null;
 }
 
 async function sha256Hex(text: string): Promise<string> {
@@ -111,34 +112,33 @@ async function sha256Hex(text: string): Promise<string> {
   ).join('');
 }
 
-/** Resolve verified blocks in event order, deduplicated by id and version. */
-export async function resolveChatBlocks(
+/** Verified blocks of one message, in result order. */
+async function resolveMessageBlocks(
   events: ChatEvent[],
-): Promise<ChatBlock[]> {
-  const calls: BlockCall[] = [];
+  blocks: Map<string, ChatBlock>,
+): Promise<void> {
+  const contents: string[] = [];
   const results: BlockResult[] = [];
   for (const event of events) {
     if (isAdvisorScoped(event)) continue;
-    const call = readCall(event);
-    if (call) calls.push(call);
+    const content = readCallContent(event);
+    if (content !== null) contents.push(content);
     const result = readResult(event);
     if (result) results.push(result);
   }
-  if (results.length === 0) return [];
-  const byDigest = new Map<string, BlockCall>();
-  for (const call of calls) {
-    const digest = await sha256Hex(call.content);
-    if (!byDigest.has(digest)) byDigest.set(digest, call);
+  if (results.length === 0) return;
+  const byDigest = new Map<string, string>();
+  for (const content of contents) {
+    byDigest.set(await sha256Hex(content), content);
   }
-  const blocks = new Map<string, ChatBlock>();
   for (const result of results) {
-    const call = byDigest.get(result.sha256);
-    if (!call) continue;
+    const content = byDigest.get(result.sha256);
+    if (content === undefined) continue;
     const key = chatBlockKey(result.blockId, result.version);
     if (blocks.has(key)) continue;
     const inlineAllowed =
       (result.kind === 'html' || result.kind === 'svg') &&
-      new TextEncoder().encode(call.content).length <= MAX_INLINE_BLOCK_BYTES;
+      new TextEncoder().encode(content).length <= MAX_INLINE_BLOCK_BYTES;
     blocks.set(key, {
       key,
       blockId: result.blockId,
@@ -148,31 +148,44 @@ export async function resolveChatBlocks(
       display:
         result.display === 'inline' && inlineAllowed ? 'inline' : 'panel',
       bytes: result.bytes,
-      content: call.content,
-      language: result.kind === 'code' ? call.language : undefined,
+      content,
+      language: result.language,
     });
   }
+}
+
+/**
+ * Resolve verified blocks, deduplicated by id and version. Each group is one
+ * message's events; calls never pair with results from another message.
+ */
+export async function resolveChatBlocks(
+  groups: ChatEvent[][],
+): Promise<ChatBlock[]> {
+  const blocks = new Map<string, ChatBlock>();
+  for (const events of groups) await resolveMessageBlocks(events, blocks);
   return [...blocks.values()];
 }
 
-/** Verified blocks for a set of events; empty until hashing completes. */
-export function useChatBlocks(events: ChatEvent[]): ChatBlock[] {
+/** Verified blocks per message group; empty until hashing completes. */
+export function useChatBlocks(groups: ChatEvent[][]): ChatBlock[] {
   const [blocks, setBlocks] = useState<ChatBlock[]>([]);
   const signature = useMemo(
     () =>
       JSON.stringify(
-        events.filter(
-          (event) =>
-            (event.type === 'tool_call' || event.type === 'tool_result') &&
-            event.name === 'render_block' &&
-            !isAdvisorScoped(event),
+        groups.map((events) =>
+          events.filter(
+            (event) =>
+              (event.type === 'tool_call' || event.type === 'tool_result') &&
+              event.name === 'render_block' &&
+              !isAdvisorScoped(event),
+          ),
         ),
       ),
-    [events],
+    [groups],
   );
   useEffect(() => {
     let cancelled = false;
-    resolveChatBlocks(JSON.parse(signature) as ChatEvent[]).then(
+    resolveChatBlocks(JSON.parse(signature) as ChatEvent[][]).then(
       (next) => {
         if (!cancelled) setBlocks(next);
       },

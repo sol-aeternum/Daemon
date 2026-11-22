@@ -70,11 +70,9 @@ export function ConversationDetails({
   const sources = dedupeSources(
     turns.flatMap((turn) => buildMessageCitationSources(turn.events)),
   );
-  const allEvents = useMemo(
-    () => turns.flatMap((turn) => turn.events),
-    [turns],
-  );
-  const blocks = useChatBlocks(allEvents);
+  // One group per turn: block calls pair only within their own message.
+  const eventGroups = useMemo(() => turns.map((turn) => turn.events), [turns]);
+  const blocks = useChatBlocks(eventGroups);
   const selectedBlock = selectedBlockKey
     ? blocks.find((block) => block.key === selectedBlockKey)
     : undefined;

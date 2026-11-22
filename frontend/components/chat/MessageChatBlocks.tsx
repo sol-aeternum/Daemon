@@ -1,5 +1,6 @@
 'use client';
 
+import { useMemo } from 'react';
 import type { ChatEvent } from '@/lib/events';
 import { useChatBlocks } from '@/lib/chatBlocks';
 import { ChatBlockCard } from './ChatBlockView';
@@ -12,7 +13,8 @@ export function MessageChatBlocks({
   events: ChatEvent[];
   onOpen: (blockKey: string) => void;
 }) {
-  const blocks = useChatBlocks(events);
+  const groups = useMemo(() => [events], [events]);
+  const blocks = useChatBlocks(groups);
   if (blocks.length === 0) return null;
   return (
     <>
