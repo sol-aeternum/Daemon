@@ -71,16 +71,23 @@ describe('resolveChatBlocks', () => {
   });
 
   it('re-checks inline placement on the client', async () => {
-    const big = `<p>${'x'.repeat(49 * 1024)}</p>`;
+    const big = `<svg>${'x'.repeat(49 * 1024)}</svg>`;
     const blocks = await resolveChatBlocks([
       [
         call(big),
-        result(big),
+        result(big, { kind: 'svg' }),
         call(DOC),
         result(DOC, { block_id: ID_B, kind: 'markdown' }),
+        call(PAGE),
+        // html is never inline while execution is held off.
+        result(PAGE, { block_id: `blk_${'c'.repeat(16)}` }),
       ],
     ]);
-    expect(blocks.map((block) => block.display)).toEqual(['panel', 'panel']);
+    expect(blocks.map((block) => block.display)).toEqual([
+      'panel',
+      'panel',
+      'panel',
+    ]);
   });
 
   it('takes metadata from the result, so identical sources keep their own', async () => {
@@ -171,26 +178,17 @@ describe('chat block cards', () => {
     expect(names).toEqual(['a.py', 'b.rb']);
   });
 
-  it('runs a small html block inline in the sandbox, with stop and code views', async () => {
+  it('never runs an html block: it is a card, even when marked inline', async () => {
     const onOpen = vi.fn();
     render(
       <MessageChatBlocks events={[call(PAGE), result(PAGE)]} onOpen={onOpen} />,
     );
-    const frame = await screen.findByTitle('Sales dashboard');
-    expect(frame.getAttribute('sandbox')).toBe('allow-scripts');
-    expect(frame.getAttribute('src')).toBe('/api/previews/html');
-
-    fireEvent.click(screen.getByRole('button', { name: 'Stop' }));
-    expect(screen.queryByTitle('Sales dashboard')).toBeNull();
-    fireEvent.click(screen.getByRole('button', { name: 'Run' }));
-    expect(screen.getByTitle('Sales dashboard')).toBeTruthy();
-
-    fireEvent.click(screen.getByRole('button', { name: 'Code' }));
-    expect(screen.getByText(PAGE)).toBeTruthy();
-
-    fireEvent.click(
-      screen.getByRole('button', { name: /Open Sales dashboard in panel/ }),
-    );
+    const open = await screen.findByRole('button', {
+      name: /Open Sales dashboard in panel/,
+    });
+    expect(document.querySelector('iframe')).toBeNull();
+    expect(screen.queryByRole('button', { name: /^(Run|Stop)$/ })).toBeNull();
+    fireEvent.click(open);
     expect(onOpen).toHaveBeenCalledWith(`${ID_A}:v1`);
   });
 
@@ -227,7 +225,7 @@ describe('details panel', () => {
     },
   ];
 
-  it('lists blocks and runs html only after an explicit click', async () => {
+  it('lists blocks and shows html as source, never executed', async () => {
     const onSelectBlock = vi.fn();
     const view = render(
       <ConversationDetails
@@ -259,13 +257,11 @@ describe('details panel', () => {
       />,
     );
     await waitFor(() =>
-      expect(
-        screen.getByText(/isolated from Daemon and your data/),
-      ).toBeTruthy(),
+      expect(screen.getByText(/isn't enabled yet/)).toBeTruthy(),
     );
+    expect(screen.getByText(PAGE)).toBeTruthy();
     expect(document.querySelector('iframe')).toBeNull();
-    fireEvent.click(screen.getByRole('button', { name: 'Run' }));
-    expect(screen.getByTitle('Sales dashboard')).toBeTruthy();
+    expect(screen.queryByRole('button', { name: /^(Run|Stop)$/ })).toBeNull();
   });
 
   it('shows svg passively in Details and pairs calls per turn', async () => {

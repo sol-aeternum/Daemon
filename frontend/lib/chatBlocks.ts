@@ -136,8 +136,9 @@ async function resolveMessageBlocks(
     if (content === undefined) continue;
     const key = chatBlockKey(result.blockId, result.version);
     if (blocks.has(key)) continue;
+    // Only passive svg is inline while E1 execution is held off (design D4/D6).
     const inlineAllowed =
-      (result.kind === 'html' || result.kind === 'svg') &&
+      result.kind === 'svg' &&
       new TextEncoder().encode(content).length <= MAX_INLINE_BLOCK_BYTES;
     blocks.set(key, {
       key,

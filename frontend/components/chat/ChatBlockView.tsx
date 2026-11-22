@@ -9,8 +9,6 @@ import {
   FileText,
   Image as ImageIcon,
   LayoutPanelLeft,
-  Play,
-  Square,
   Table,
 } from 'lucide-react';
 import type { ChatBlock } from '@/lib/chatBlocks';
@@ -22,7 +20,6 @@ import {
 import MarkdownRenderer from '@/src/components/MarkdownRenderer';
 import { CsvPreview } from '@/src/components/previews/CsvPreview';
 import { CopyResponseButton } from '../CopyResponseButton';
-import { SandboxedHtmlFrame } from './SandboxedHtmlFrame';
 
 const KIND_LABEL: Record<ChatBlock['kind'], string> = {
   html: 'Interactive page',
@@ -124,12 +121,15 @@ function SourceView({ block }: { block: ChatBlock }) {
   );
 }
 
-const sandboxNote = 'Generated content, isolated from Daemon and your data';
-
 /**
- * SVG renders passively as an image: no script runs and no subresource
- * loads, inline or in Details. Only `kind: html` uses the executable frame.
+ * Generated script never runs here: E1 execution is held off until the
+ * release condition in docs/ARTIFACT_PRESENTATION_DESIGN.md D6 is met. HTML
+ * blocks show their source; SVG renders passively as an image (no script, no
+ * subresources), inline and in Details.
  */
+const htmlHeldNote =
+  "Running generated pages in Daemon isn't enabled yet. Download the file to use it.";
+
 function PassiveSvg({ block }: { block: ChatBlock }) {
   return (
     // eslint-disable-next-line @next/next/no-img-element -- data: URL, no optimisation
@@ -141,7 +141,7 @@ function PassiveSvg({ block }: { block: ChatBlock }) {
   );
 }
 
-/** A block inside its message: inline widget or compact card. */
+/** A block inside its message: inline image or compact card. */
 export function ChatBlockCard({
   block,
   onOpen,
@@ -150,9 +150,8 @@ export function ChatBlockCard({
   onOpen: () => void;
 }) {
   const [view, setView] = useState<'preview' | 'code'>('preview');
-  const [running, setRunning] = useState(true);
-  const inline = block.display === 'inline';
-  const executable = block.kind === 'html';
+  // Only passive svg is ever shown inline; html is a card (D4/D6).
+  const inline = block.display === 'inline' && block.kind === 'svg';
 
   return (
     <section
@@ -162,60 +161,25 @@ export function ChatBlockCard({
       <header className="flex flex-wrap items-center justify-between gap-2 border-b border-[var(--color-border-primary)] px-3 py-2">
         <BlockHeader block={block} />
         {inline && (
-          <div className="flex gap-2">
-            <button
-              type="button"
-              className={buttonClass}
-              aria-pressed={view === 'code'}
-              onClick={() =>
-                setView((value) => (value === 'code' ? 'preview' : 'code'))
-              }
-            >
-              <Code2 className="h-4 w-4" aria-hidden />
-              {view === 'code' ? 'Preview' : 'Code'}
-            </button>
-            {view === 'preview' && executable && (
-              <button
-                type="button"
-                className={buttonClass}
-                onClick={() => setRunning((value) => !value)}
-              >
-                {running ? (
-                  <Square className="h-4 w-4" aria-hidden />
-                ) : (
-                  <Play className="h-4 w-4" aria-hidden />
-                )}
-                {running ? 'Stop' : 'Run'}
-              </button>
-            )}
-          </div>
+          <button
+            type="button"
+            className={buttonClass}
+            aria-pressed={view === 'code'}
+            onClick={() =>
+              setView((value) => (value === 'code' ? 'preview' : 'code'))
+            }
+          >
+            <Code2 className="h-4 w-4" aria-hidden />
+            {view === 'code' ? 'Preview' : 'Code'}
+          </button>
         )}
       </header>
       {inline && (
-        <div className="bg-[var(--color-bg-primary)]">
+        <div className="bg-[var(--color-bg-primary)] p-3">
           {view === 'code' ? (
-            <div className="p-3">
-              <SourceView block={block} />
-            </div>
-          ) : !executable ? (
-            <div className="p-3">
-              <PassiveSvg block={block} />
-            </div>
-          ) : running ? (
-            <>
-              <p className="px-3 pt-2 text-xs text-[var(--color-text-muted)]">
-                {sandboxNote}
-              </p>
-              <SandboxedHtmlFrame
-                content={block.content}
-                title={block.title}
-                autoHeight
-              />
-            </>
+            <SourceView block={block} />
           ) : (
-            <p className="px-3 py-6 text-center text-sm text-[var(--color-text-muted)]">
-              Stopped. Select Run to start it again.
-            </p>
+            <PassiveSvg block={block} />
           )}
         </div>
       )}
@@ -226,9 +190,8 @@ export function ChatBlockCard({
   );
 }
 
-/** Full preview in the Details panel. Executable HTML runs on request. */
+/** Full preview in the Details panel. Nothing here executes. */
 export function ChatBlockPreview({ block }: { block: ChatBlock }) {
-  const [running, setRunning] = useState(false);
   const [view, setView] = useState<'preview' | 'code'>('preview');
 
   let preview: React.ReactNode;
@@ -239,39 +202,12 @@ export function ChatBlockPreview({ block }: { block: ChatBlock }) {
       </div>
     );
   } else if (block.kind === 'html') {
-    preview = !running ? (
-      <div className="flex flex-col items-center gap-2 rounded-lg border border-dashed border-[var(--color-border-primary)] p-6 text-center">
+    preview = (
+      <div className="space-y-2">
         <p className="text-sm text-[var(--color-text-secondary)]">
-          This page runs generated code in a sandbox isolated from Daemon and
-          your data.
+          {htmlHeldNote}
         </p>
-        <button
-          type="button"
-          className={buttonClass}
-          onClick={() => setRunning(true)}
-        >
-          <Play className="h-4 w-4" aria-hidden />
-          Run
-        </button>
-      </div>
-    ) : (
-      <div className="overflow-hidden rounded-lg border border-[var(--color-border-primary)]">
-        <p className="flex items-center justify-between gap-2 border-b border-[var(--color-border-primary)] px-3 py-1.5 text-xs text-[var(--color-text-muted)]">
-          {sandboxNote}
-          <button
-            type="button"
-            className="inline-flex min-h-touch items-center gap-1 px-2"
-            onClick={() => setRunning(false)}
-          >
-            <Square className="h-3.5 w-3.5" aria-hidden />
-            Stop
-          </button>
-        </p>
-        <SandboxedHtmlFrame
-          content={block.content}
-          title={block.title}
-          className="min-h-html-preview"
-        />
+        <SourceView block={block} />
       </div>
     );
   } else if (block.kind === 'markdown') {
@@ -282,7 +218,8 @@ export function ChatBlockPreview({ block }: { block: ChatBlock }) {
     preview = <SourceView block={block} />;
   }
 
-  const hasSourceToggle = block.kind !== 'code' && block.kind !== 'json';
+  const hasSourceToggle =
+    block.kind !== 'code' && block.kind !== 'json' && block.kind !== 'html';
   return (
     <div className="space-y-3">
       <BlockHeader block={block} />
