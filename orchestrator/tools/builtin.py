@@ -247,6 +247,7 @@ def create_default_registry(
     web_search_provider: str = "brave",
     tavily_api_key: str | None = None,
     conversation_id: Any = None,
+    history_blocks: Any = None,
 ):
     from orchestrator.tools.registry import ToolRegistry
     from orchestrator.tools.http_request import HttpRequestTool
@@ -317,6 +318,12 @@ def create_default_registry(
             skill_store = None
     registry.register(SkillManageTool(skill_store, skill_owner))
     registry.register(GenerateDocumentTool(user_id=user_id))
+
+    from orchestrator.tools.blocks import block_tools
+
+    # Blocks come from the turn's own accepted history rows, not a fresh read.
+    for block_tool in block_tools(history_blocks):
+        registry.register(block_tool)
 
     if memory_store and user_id:
         from orchestrator.memory.revisions import current_read_scope

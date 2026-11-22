@@ -120,6 +120,7 @@ For detailed architecture, see [MEMORY_LAYER.md](../MEMORY_LAYER.md).
 | `@image` | Retired execution | Image/video generation denied pending qualified bounded adapters; legacy Studio image API returns 410 |
 | `@audio` | Retired execution | Audio generation denied pending a qualified bounded adapter |
 | `generate_document` | Implemented | Deterministic CSV/DOCX generation via `generate_document` tool |
+| `render_block` / `read_block` | Implemented (backend) | Conversation-scoped chat blocks stored in the encrypted tool trace; client rendering ships separately |
 | `@code` | **Reserved** | Not implemented |
 | `@reader` | **Reserved** | Not implemented |
 

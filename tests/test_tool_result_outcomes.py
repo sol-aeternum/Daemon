@@ -235,7 +235,9 @@ def test_repeatable_tool_classification_is_unchanged():
             "get_time",
             "memory_read",
             "memory_reflect",
+            "read_block",
             "reminder_list",
+            "render_block",
             "web_fetch",
             "web_search",
         }
@@ -244,6 +246,23 @@ def test_repeatable_tool_classification_is_unchanged():
         assert not is_material(name)
     assert is_material("memory_write")
     assert is_material("reminder_set")
+
+
+@pytest.mark.parametrize("tool_name", ["render_block", "read_block"])
+@pytest.mark.parametrize(
+    ("result", "expected"),
+    [
+        ({"success": True, "data": {"block_id": "blk_" + "a" * 16}}, "succeeded"),
+        ({"success": False, "error": "not_found"}, "failed"),
+        ({"success": False, "error": "too_large"}, "failed"),
+        ({"block_id": "blk_" + "a" * 16}, "unknown"),
+        ("rendered", "unknown"),
+    ],
+)
+def test_chat_block_outcomes(tool_name, result, expected):
+    assert outcome_of_tool_result(tool_name, result) == expected
+    if isinstance(result, dict):
+        assert outcome_of_tool_result(tool_name, json.dumps(result)) == expected
 
 
 def test_does_not_mutate_inputs():
