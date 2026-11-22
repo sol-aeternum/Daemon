@@ -103,32 +103,37 @@ test('sandboxed blocks size to content and cannot reach the network', async ({
   page,
 }) => {
   // A CSP-blocked load still surfaces as a failed request event; only a
-  // response would mean the frame reached the network.
+  // response would mean the frame reached the network. The shared beforeEach
+  // has already loaded `page`, whose frame may try the remote image before
+  // listeners attach, so observe a fresh page from before its navigation.
+  const probe = await page.context().newPage();
   const remote: string[] = [];
   const blocked: string[] = [];
-  page.on('response', (response) => {
+  probe.on('response', (response) => {
     if (response.url().startsWith('https://example.com/')) {
       remote.push(response.url());
     }
   });
-  page.on('requestfailed', (request) => {
+  probe.on('requestfailed', (request) => {
     if (request.url().startsWith('https://example.com/')) {
       blocked.push(request.failure()?.errorText ?? '');
     }
   });
-  const frame = page.locator('iframe[title="Sized HTML"]');
+  await probe.goto('/');
+  const frame = probe.locator('iframe[title="Sized HTML"]');
   await expect
     .poll(async () => (await frame.boundingBox())?.height ?? 0)
     .toBeGreaterThan(690);
-  const content = page
+  const content = probe
     .frameLocator('iframe[title="Sized HTML"]')
     .frameLocator('#daemon-html-preview-content');
   await expect(content.locator('body')).toHaveAttribute(
     'data-remote',
     'blocked',
   );
+  await expect.poll(() => blocked.length).toBe(1);
   expect(remote).toEqual([]);
-  expect(blocked).toHaveLength(1);
+  await probe.close();
 });
 
 test.describe('generated content egress', () => {
