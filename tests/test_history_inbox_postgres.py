@@ -1,8 +1,11 @@
 """#761 proof on disposable PostgreSQL, actual bearer sessions and protected H files."""
 
 import asyncio
+from dataclasses import dataclass
+import json
+from typing import Literal
 from unittest.mock import AsyncMock, Mock
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from asyncpg.transaction import Transaction
 from httpx import ASGITransport, AsyncClient, ReadError
@@ -10,9 +13,16 @@ import pytest
 import pytest_asyncio
 
 from orchestrator.auth_tokens import hash_token
+from orchestrator.memory.store import MemoryStore
+from orchestrator.services.connection_cleanup import pool_connection
+from orchestrator.services.restore_history.acceptance_host import create_isolated_ui_app
 from orchestrator.services.restore_history.coordination import HistoryOperation
-from orchestrator.services.restore_history.model import AcceptPrepare
-from tests.history_inbox_support import DDL, create_fixture_inbox_app
+from orchestrator.services.restore_history.model import AcceptPrepare, Command, commitments
+from orchestrator.tasks.inputs import chat_request_fingerprint
+from orchestrator.tasks.store import TaskStore
+from tests.history_inbox_support import DDL, KEY_PREFIX, create_fixture_inbox_app
+from tests.restore_history_support import KEY
+from tests.test_history_composition_postgres import deadline
 from tests.test_history_acceptance_postgres import (
     db as db,
     metadata_cluster as metadata_cluster,
@@ -191,29 +201,58 @@ async def test_database_acceptance_faults(inbox, monkeypatch, point):
     # driver boundaries. Independent SQL must not see any of A's staged rows.
     real_append = HistoryOperation.append
     real_exit = Transaction.__aexit__
-    armed = False
+    staged = None
 
     async def append(operation, command):
-        nonlocal armed
+        nonlocal staged
         if operation._coordinator is not history or type(command.data) is not AcceptPrepare:
             return await real_append(operation, command)
         assert bundle_counts(s) == "0|0|0|0|0|0"
         if point == "before_prepare":
             raise ConnectionError("synthetic failure before durable prepare")
         result = await real_append(operation, command)
-        armed = True
+        staged = command.data
         return result
 
     async def exit_transaction(tx, kind, value, traceback):
-        nonlocal armed
-        if not armed or kind is not None:
+        nonlocal staged
+        if staged is None or kind is not None:
             return await real_exit(tx, kind, value, traceback)
-        armed = False
+        prepared, staged = staged, None
+        # The projection and link have now been staged. Count the tables
+        # separately: an inner join alone would hide a partially visible bundle.
+        assert bundle_counts(s) == "0|0|0|0|0|0"
         if point == "durable_prepare_rollback":
             error = ConnectionError("synthetic rollback before database commit")
             await real_exit(tx, type(error), error, None)
             raise error
         await real_exit(tx, kind, value, traceback)
+        # Observe from a separate connection immediately after COMMIT, before
+        # returning even an uncertain acknowledgement to the application.
+        async with s.db.connection() as observer:
+            rows = await observer.fetch(
+                """SELECT l.task_id, l.conversation_id, l.user_message_id, l.result_message_id
+                   FROM fixture_inbox_links l
+                   JOIN fixture_inboxes i ON (i.id,i.account_id,i.generation)
+                                           = (l.inbox_id,l.account_id,l.generation)
+                   JOIN tasks t ON (t.id,t.user_id,t.conversation_id,t.user_message_id,
+                                    t.result_message_id)
+                                 = (l.task_id,l.account_id,l.conversation_id,l.user_message_id,
+                                    l.result_message_id)
+                   JOIN conversations c ON (c.id,c.user_id) = (l.conversation_id,l.account_id)
+                   WHERE i.account_id=$1 AND i.generation=$2 AND t.idempotency_key=$3""",
+                s.account,
+                prepared.account_generation,
+                KEY_PREFIX + str(key),
+            )
+        assert [tuple(row) for row in rows] == [
+            (
+                prepared.task_id,
+                prepared.conversation_id,
+                prepared.user_message_id,
+                prepared.result_message_id,
+            )
+        ]
         raise ConnectionError("synthetic lost database commit acknowledgement")
 
     with monkeypatch.context() as fault:
@@ -227,6 +266,9 @@ async def test_database_acceptance_faults(inbox, monkeypatch, point):
         assert bundle_counts(s) == "1|1|1|2|1|1"
         assert observed.status_code == 200
         assert observed.json()["items"][0]["text"] == "Faulted sample"
+        original = entries(s)[0].command.data
+        assert isinstance(original, AcceptPrepare)
+        assert observed.json()["items"][0]["id"] == f"request:{original.task_id}"
         assert observed.json() == (await retrieve(s, s.a1, key)).json()
     else:
         assert bundle_counts(s) == "0|0|0|0|0|0"
@@ -238,6 +280,8 @@ async def test_database_acceptance_faults(inbox, monkeypatch, point):
     assert len(entries(s)) == (0 if point == "before_prepare" else 1)
     assert s.v.acceptance._blocked
     assert (await start(s, s.a2, key, "Faulted sample")).status_code == 503
+    if point == "lost_database_ack":
+        assert bundle_counts(s) == "1|1|1|2|1|1"
 
 
 async def test_http_response_loss_is_after_confirmed_acceptance(inbox):
@@ -415,3 +459,451 @@ async def test_revoked_session_and_invalid_canonical_fields(inbox):
     assert (await s.http.get("/inbox", headers=s.a1)).status_code == 401
     assert (await status(s, s.a1, "Retained sample")).status_code == 401
     assert (await retrieve(s, s.a2, key)).status_code == 200
+
+
+# Read-only prelinked proof. This setup seeds the native and history stores
+# directly; only the tests above exercise the fixture acceptance transaction.
+LOOKUP_KEY_PREFIX = "fixture-lookup-v1:"
+
+
+@dataclass(frozen=True, slots=True)
+class LinkedJob:
+    key: str
+    text: str
+    task_id: UUID
+    conversation_id: UUID
+    user_message_id: UUID
+    result_message_id: UUID
+
+
+@dataclass(frozen=True, slots=True)
+class Resolution:
+    kind: Literal["job", "ambiguous", "missing"]
+    job: LinkedJob | None = None
+    candidates: tuple[LinkedJob, ...] = ()
+
+
+def new_key() -> str:
+    return LOOKUP_KEY_PREFIX + uuid4().hex
+
+
+def normalize(text: str) -> str:
+    return " ".join(text.casefold().replace("’", "'").split())
+
+
+def resolve(
+    jobs: list[LinkedJob], *, ref: str | None = None, text: str | None = None
+) -> Resolution:
+    """Client-script contract, not product inference or an inbox endpoint."""
+    if ref is not None:
+        matches = [
+            job for job in jobs if ref in {job.key, str(job.task_id), str(job.conversation_id)}
+        ]
+    elif text is not None and normalize(text):
+        needle = normalize(text)
+        matches = (
+            list(jobs)
+            if needle == "how's that going?"
+            else [job for job in jobs if needle in normalize(job.text)]
+        )
+    else:
+        matches = []
+    if not matches:
+        return Resolution("missing")
+    if len(matches) > 1:
+        return Resolution("ambiguous", candidates=tuple(matches))
+    return Resolution("job", job=matches[0])
+
+
+def saved_state(s) -> tuple[str, bytes, bytes]:
+    """Detect SQL row creation and any durable H append/rewrite during lookup."""
+    counts = s.db.sql(
+        """SELECT (SELECT count(*) FROM public.conversations),
+                  (SELECT count(*) FROM public.messages),
+                  (SELECT count(*) FROM public.tasks),
+                  (SELECT count(*) FROM public.task_events),
+                  (SELECT count(*) FROM public.task_attempts),
+                  (SELECT count(*) FROM public.task_operations),
+                  (SELECT count(*) FROM public.task_history_projection)"""
+    )
+    return counts, (s.path / "LOG").read_bytes(), (s.path / "HEAD").read_bytes()
+
+
+async def seed_job(
+    s,
+    v,
+    account: UUID,
+    text: str,
+    *,
+    key: str | None = None,
+    with_history: bool = True,
+    with_projection: bool = True,
+) -> LinkedJob:
+    """Seed one queued job directly; no acceptance, claim or scheduling path."""
+    key = key or new_key()
+    task_id, conversation_id = uuid4(), uuid4()
+    user_message_id, result_message_id = uuid4(), uuid4()
+    async with s.db.connection() as conn:
+        generation = await conn.fetchval(
+            "SELECT content_generation FROM public.entitlement_accounts WHERE user_id=$1",
+            account,
+        )
+        if type(generation) is not int:
+            raise AssertionError("fixture account generation missing")
+        fingerprint = chat_request_fingerprint(
+            key=v.host._fingerprint_key,
+            conversation_id=None,
+            message=text,
+            attachments=None,
+            model="auto",
+            provider=None,
+            metadata=None,
+            disable_memory_write=True,
+        )
+        sealed = {
+            "message": text,
+            "provider": None,
+            "disable_memory_write": True,
+            "_history_text_only": True,
+            "auto_route": True,
+            "origin_account_id": str(account),
+            "origin_account_generation": generation,
+            "summary_origin_account_id": str(account),
+            "summary_origin_account_generation": generation,
+            "_inference_recovery_version": 1,
+            "_request": fingerprint.canonical,
+        }
+        title = text[:50] + ("..." if len(text) > 50 else "")
+        await conn.execute(
+            "INSERT INTO public.conversations"
+            "(id,user_id,pipeline,title,message_count,tokens_total) "
+            "VALUES($1,$2,'cloud',$3,2,0)",
+            conversation_id,
+            account,
+            title,
+        )
+        await conn.execute(
+            "INSERT INTO public.messages"
+            "(id,conversation_id,user_id,role,content,status,metadata,model,"
+            "tokens_in,tokens_out,created_at) "
+            "VALUES($1,$2,$3,'user',$4,'complete','{}'::jsonb,NULL,0,0,now())",
+            user_message_id,
+            conversation_id,
+            account,
+            s.enc.encrypt(text),
+        )
+        await conn.execute(
+            "INSERT INTO public.messages"
+            "(id,conversation_id,user_id,role,content,status,metadata,model,"
+            "tokens_in,tokens_out,created_at) "
+            "VALUES($1,$2,$3,'assistant',$4,'streaming','{}'::jsonb,NULL,0,0,"
+            "now()+interval '1 microsecond')",
+            result_message_id,
+            conversation_id,
+            account,
+            s.enc.encrypt(""),
+        )
+        await conn.execute(
+            "INSERT INTO public.tasks"
+            "(id,user_id,conversation_id,user_message_id,result_message_id,"
+            "input_ciphertext,input_version,idempotency_key,request_hash,event_seq) "
+            "VALUES($1,$2,$3,$4,$5,$6,1,$7,$8,1)",
+            task_id,
+            account,
+            conversation_id,
+            user_message_id,
+            result_message_id,
+            s.enc.encrypt(json.dumps(sealed)),
+            key,
+            fingerprint.digest,
+        )
+        await conn.execute(
+            "INSERT INTO public.task_inference_recovery"
+            "(task_id,account_id,account_generation,protocol_version) VALUES($1,$2,$3,1)",
+            task_id,
+            account,
+            generation,
+        )
+        await conn.execute(
+            "INSERT INTO public.task_events(task_id,seq,kind,payload_ciphertext) "
+            "VALUES($1,1,'accepted',NULL)",
+            task_id,
+        )
+    job = LinkedJob(key, text, task_id, conversation_id, user_message_id, result_message_id)
+    if not with_history:
+        return job
+    lookup, request = commitments(KEY, account, key, fingerprint.canonical.encode("utf-8"))
+    command = Command(
+        uuid4(),
+        AcceptPrepare(
+            account,
+            generation,
+            task_id,
+            conversation_id,
+            user_message_id,
+            result_message_id,
+            1,
+            1,
+            lookup,
+            request,
+            "chat-canonical-3715-v1",
+        ),
+    )
+    async with v.acceptance._history.operation(deadline=deadline()) as operation:
+        prepared = await operation.append(command)
+        if with_projection:
+            async with pool_connection(v.tasks._pool) as acceptor:
+                async with acceptor.transaction(isolation="read_committed"):
+                    await v.projection.stage(acceptor, prepared.entry, deadline=deadline())
+    return job
+
+
+RECOVERY = {"code": "restore_recovery_required", "task_id": None, "retry_safe": False}
+UNAVAILABLE = {"code": "history_unavailable", "task_id": None, "retry_safe": False}
+
+
+def job_count(s):
+    return s.db.sql("SELECT count(*) FROM public.tasks")
+
+
+def install_spies(monkeypatch):
+    accept = Mock(side_effect=AssertionError("lookup attempted acceptance"))
+    stage = Mock(side_effect=AssertionError("lookup attempted acceptance"))
+    claim = Mock(side_effect=AssertionError("lookup attempted a claim"))
+    create = Mock(side_effect=AssertionError("lookup attempted to create a conversation"))
+    schedule = Mock(side_effect=AssertionError("lookup attempted to schedule"))
+    enqueue = Mock(side_effect=AssertionError("lookup attempted to enqueue"))
+    monkeypatch.setattr(TaskStore, "accept", accept)
+    monkeypatch.setattr(TaskStore, "_accept_with_stage", stage)
+    monkeypatch.setattr(TaskStore, "claim", claim)
+    monkeypatch.setattr(MemoryStore, "create_conversation", create)
+    monkeypatch.setattr(
+        "orchestrator.services.restore_history.text_execution.HistoryTextExecution.schedule",
+        schedule,
+    )
+    monkeypatch.setattr("arq.connections.ArqRedis.enqueue_job", enqueue)
+    return accept, stage, claim, create, schedule, enqueue
+
+
+async def ui_get(s, path, headers):
+    """One real client read on a fresh host; a refusal blocks only that host."""
+    async with s.make() as v:
+        app = create_isolated_ui_app(v.host)
+        async with AsyncClient(
+            transport=ASGITransport(app), base_url="http://fixture.test"
+        ) as http:
+            return await http.get(path, headers=headers)
+
+
+async def read_job(http, headers, job):
+    return await http.get(f"/tasks/by-key/{job.key}", headers=headers)
+
+
+def assert_only_job(body, job):
+    assert body["id"] == str(job.task_id)
+    assert body["conversation_id"] == str(job.conversation_id)
+    assert body["result_message_id"] == str(job.result_message_id)
+    assert body["status"] == "queued"
+    assert body["terminal_code"] is None
+    assert body["attempt_count"] == 0
+    assert body["content_generation"] == 0
+    assert body["content_delta_seq"] == 0
+    assert body["content"] == ""
+    assert body["event_seq"] == 1
+    assert body["cancel_requested"] is False
+
+
+def assert_no_execution(s):
+    assert s.db.sql("SELECT count(*) FROM public.task_attempts") == "0"
+    assert s.db.sql("SELECT count(*) FROM public.task_operations") == "0"
+    assert (
+        s.db.sql("SELECT count(*) FROM public.tasks WHERE attempt_count<>0 OR wake_seq<>0") == "0"
+    )
+    assert s.db.sql("SELECT count(*) FROM public.task_events WHERE kind<>'accepted'") == "0"
+    assert (
+        s.db.sql("SELECT count(*) FROM public.task_inference_recovery WHERE may_have_dispatched")
+        == "0"
+    )
+
+
+async def test_prelinked_lookup_ui_guard_and_cross_account(terminal_host, monkeypatch):
+    s = terminal_host
+    async with s.make() as v:
+        async with s.db.connection() as conn:
+            s.foreign = await s.db.account(conn)
+        a1 = await seed_job(s, v, s.account, "Roof insulation")
+        a2 = await seed_job(s, v, s.account, "Wall insulation")
+        b1 = await seed_job(s, v, s.foreign, "Solar panels")
+        _, a1_headers = await device(s, s.account)
+        _, a2_headers = await device(s, s.account)
+        _, b_headers = await device(s, s.foreign)
+        app = create_isolated_ui_app(v.host)
+        spies = install_spies(monkeypatch)
+        before = saved_state(s)
+        # Close the first client before opening a new client with a distinct
+        # authenticated session; no response or task selection is carried over.
+        for headers in (a1_headers, a2_headers):
+            async with AsyncClient(
+                transport=ASGITransport(app), base_url="http://fixture.test"
+            ) as http:
+                for job, other in ((a1, a2), (a2, a1)):
+                    response = await read_job(http, headers, job)
+                    assert response.status_code == 200, response.text
+                    body = response.json()
+                    assert_only_job(body, job)
+                    assert body["id"] != str(other.task_id)
+                    assert body["conversation_id"] != str(other.conversation_id)
+
+        async with (
+            AsyncClient(transport=ASGITransport(app), base_url="http://fixture.test") as first,
+            AsyncClient(transport=ASGITransport(app), base_url="http://fixture.test") as foreign,
+        ):
+            # B's own single-job envelope and legitimate state are untouched.
+            own = await foreign.get(f"/tasks/{b1.task_id}", headers=b_headers)
+            assert own.status_code == 200, own.text
+            own_body = own.json()
+            assert own_body["id"] == str(b1.task_id)
+            listing = await foreign.get("/conversations", headers=b_headers)
+            assert listing.status_code == 200, listing.text
+            assert listing.json()["total"] == 1
+            assert [c["id"] for c in listing.json()["conversations"]] == [str(b1.conversation_id)]
+
+            # B's known A key is the same non-disclosure as a random key.
+            random = await foreign.get(f"/tasks/by-key/{new_key()}", headers=b_headers)
+            for job in (a1, a2):
+                known = await read_job(foreign, b_headers, job)
+                assert known.status_code == random.status_code == 404
+                assert known.json() == random.json() == {"detail": "Task not found"}
+
+            resolved = resolve([a1, a2], ref=str(a1.task_id))
+            assert resolved.kind == "job" and resolved.job == a1
+            response = await read_job(first, a1_headers, resolved.job)
+            assert response.status_code == 200, response.text
+            assert_only_job(response.json(), a1)
+            assert resolve([a1, a2], ref=a2.key).job == a2
+            assert resolve([a1, a2], text="Roof").job == a1
+            ambiguous = resolve([a1, a2], text="insulation")
+            assert ambiguous.kind == "ambiguous"
+            assert ambiguous.candidates == (a1, a2)
+            followup = resolve([a1, a2], text="How’s that going?")
+            assert followup.kind == "ambiguous" and followup.job is None
+            assert followup.candidates == (a1, a2)
+            assert resolve([a1, a2], ref=str(uuid4())).kind == "missing"
+
+            assert saved_state(s) == before
+            assert job_count(s) == "3"
+            assert_no_execution(s)
+
+        # B's known A task/conversation are indistinguishable from random refs.
+        pairs = (
+            (f"/tasks/{a1.task_id}", f"/tasks/{uuid4()}"),
+            (f"/tasks/{a2.task_id}", f"/tasks/{uuid4()}"),
+            (f"/conversations/{a1.conversation_id}", f"/conversations/{uuid4()}"),
+            (f"/conversations/{a2.conversation_id}", f"/conversations/{uuid4()}"),
+        )
+        for known_path, random_path in pairs:
+            known = await ui_get(s, known_path, b_headers)
+            random = await ui_get(s, random_path, b_headers)
+            assert known.status_code == random.status_code == 404
+            assert known.json() == random.json()
+
+        # The existing single-job envelope refuses two accepted jobs, unchanged.
+        for path in (
+            "/conversations",
+            f"/conversations/{a1.conversation_id}",
+            f"/tasks/{a1.task_id}",
+        ):
+            response = await ui_get(s, path, a1_headers)
+            assert response.status_code == 409, response.text
+            assert response.json() == {"detail": RECOVERY}
+            assert response.headers["cache-control"] == "no-store"
+
+        assert saved_state(s) == before
+        assert job_count(s) == "3"
+        assert_no_execution(s)
+        for spy in spies:
+            spy.assert_not_called()
+
+    # Reopen the physical host/pools too, with a newly issued real session.
+    _, fresh_headers = await device(s, s.account)
+    async with s.make() as restarted:
+        async with AsyncClient(
+            transport=ASGITransport(create_isolated_ui_app(restarted.host)),
+            base_url="http://fixture.test",
+        ) as fresh:
+            for job in (a1, a2):
+                response = await read_job(fresh, fresh_headers, job)
+                assert response.status_code == 200, response.text
+                assert_only_job(response.json(), job)
+    assert saved_state(s) == before
+    assert_no_execution(s)
+    for spy in spies:
+        spy.assert_not_called()
+
+
+async def test_sql_only_and_unknown_are_honest(terminal_host, monkeypatch):
+    s = terminal_host
+    async with s.make() as v:
+        normal = await seed_job(s, v, s.account, "Normal job")
+        sql_only = await seed_job(s, v, s.account, "SQL-only job", with_history=False)
+        _, headers = await device(s, s.account)
+        app = create_isolated_ui_app(v.host)
+        spies = install_spies(monkeypatch)
+        before = saved_state(s)
+        async with AsyncClient(
+            transport=ASGITransport(app), base_url="http://fixture.test"
+        ) as http:
+            response = await read_job(http, headers, normal)
+            assert response.status_code == 200, response.text
+            assert_only_job(response.json(), normal)
+
+            response = await read_job(http, headers, sql_only)
+            assert response.status_code == 409, response.text
+            assert response.json() == {"detail": RECOVERY}
+            assert "SQL-only" not in response.text
+
+            unknown = await http.get(f"/tasks/by-key/{new_key()}", headers=headers)
+            assert unknown.status_code == 404
+            assert unknown.json() == {"detail": "Task not found"}
+
+        # One accepted task but two conversations still hits the existing refusal.
+        response = await ui_get(s, f"/tasks/{normal.task_id}", headers)
+        assert response.status_code == 409, response.text
+        assert response.json() == {"detail": RECOVERY}
+
+        assert saved_state(s) == before
+        assert job_count(s) == "2"
+        assert_no_execution(s)
+        for spy in spies:
+            spy.assert_not_called()
+
+
+async def test_missing_projection_is_recovery(terminal_host, monkeypatch):
+    s = terminal_host
+    async with s.make() as v:
+        job = await seed_job(s, v, s.account, "Unprojected job", with_projection=False)
+        _, headers = await device(s, s.account)
+        app = create_isolated_ui_app(v.host)
+        spies = install_spies(monkeypatch)
+        before = saved_state(s)
+        async with AsyncClient(
+            transport=ASGITransport(app), base_url="http://fixture.test"
+        ) as http:
+            response = await read_job(http, headers, job)
+            assert response.status_code == 409, response.text
+            assert response.json() == {
+                "detail": {
+                    "code": "restore_recovery_required",
+                    "task_id": str(job.task_id),
+                    "retry_safe": False,
+                }
+            }
+            missing = await http.get(f"/tasks/by-key/{new_key()}", headers=headers)
+            assert missing.status_code == 503
+            assert missing.json() == {"detail": UNAVAILABLE}
+
+        assert saved_state(s) == before
+        assert job_count(s) == "1"
+        assert_no_execution(s)
+        for spy in spies:
+            spy.assert_not_called()

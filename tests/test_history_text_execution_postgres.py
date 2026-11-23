@@ -13,7 +13,7 @@ from uuid import uuid4
 
 import asyncpg
 from cryptography.fernet import Fernet
-from httpx import ASGITransport, AsyncClient
+from httpx import ASGITransport, AsyncClient, ReadError
 import pytest
 import pytest_asyncio
 
@@ -428,6 +428,76 @@ async def test_original_stream_partial_final_second_device_and_disconnect(text_h
         async with s.execution.history.operation(deadline=deadline()) as operation:
             entries = (await operation.verify()).entries
             assert type(entries[-1].command.data) is TerminalOutputPrepare
+
+
+@pytest.mark.asyncio
+async def test_confirmed_response_lost_recovers_running_original_by_key(text_host):
+    s = text_host
+    _, first = await device(s, s.account)
+    _, second = await device(s, s.account)
+    key = str(uuid4())
+    committed = []
+
+    async def lose_response(scope, receive, send):
+        disconnected = asyncio.Event()
+        body_complete = False
+
+        async def incoming():
+            nonlocal body_complete
+            if not body_complete:
+                message = await receive()
+                body_complete = not message.get("more_body", False)
+                return message
+            await disconnected.wait()
+            return {"type": "http.disconnect"}
+
+        async def drop(message):
+            if message["type"] == "http.response.start":
+                assert message["status"] == 200
+                committed.append(dict(message["headers"])[b"x-daemon-task-id"].decode())
+                disconnected.set()
+
+        await s.app(scope, incoming, drop)
+        raise ReadError("confirmed response did not reach the client")
+
+    async with s.make():
+        async with AsyncClient(
+            transport=ASGITransport(lose_response), base_url="http://fixture.test"
+        ) as client:
+            with pytest.raises(ReadError):
+                async with asyncio.timeout(10):
+                    await client.post(
+                        "/chat",
+                        headers={**first, "Idempotency-Key": key},
+                        json={"message": "synthetic text"},
+                    )
+        await asyncio.wait_for(s.entered.wait(), 5)  # synthetic dispatch is already in flight
+        assert len(committed) == 1
+        async with s.db.connection() as observer:
+            (row,) = await observer.fetch(
+                "SELECT id,conversation_id FROM tasks WHERE user_id=$1 AND idempotency_key=$2",
+                s.account,
+                key,
+            )
+        assert str(row["id"]) == committed[0]
+        async with AsyncClient(
+            transport=ASGITransport(s.app), base_url="http://fixture.test"
+        ) as reopened:
+            # Recovery retries the read by the original key; it needs no receipt or task ID.
+            for _ in range(2):
+                observed = await reopened.get(f"/tasks/by-key/{key}", headers=second)
+                assert observed.status_code == 200, observed.text
+                result = observed.json()
+                assert (result["id"], result["conversation_id"], result["status"]) == (
+                    str(row["id"]),
+                    str(row["conversation_id"]),
+                    "running",
+                )
+        s.release.set()
+        assert await jobs(s) == ["completed"]
+        assert len(s.calls) == 1
+        assert s.db.sql("SELECT count(*) FROM tasks") == "1"
+        assert s.db.sql("SELECT count(*) FROM task_attempts") == "1"
 
 
 @pytest.mark.asyncio
