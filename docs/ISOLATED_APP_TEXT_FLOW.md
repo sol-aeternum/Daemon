@@ -120,6 +120,31 @@ Scripted execution, terminal proof, completion and report delivery are later
 slices. Retention is the disposable fixture lifetime. There is no restore,
 retry, rollout, or `DURABLE_CHAT_ENABLED` clearance.
 
+### Single-request inbox-to-runner qualification
+
+`tests/history_inbox_runner_support.py` translates one synthetic inbox start
+into the isolated host's ordinary text `POST /chat`. Its stable
+`ibox1:<root UUID>:<request UUIDv4>` key uses canonical lowercase UUIDs and is
+retained before sending. The root is a locator, not a credential. In this
+disposable database only, an invoker trigger inserts the link from the native
+acceptor's original task and message IDs while the acceptor still holds its
+account-generation guard. A link failure rolls back the turn.
+This is a fixture binding, not an inbox writer installed by Daemon.
+
+Only the host's acknowledged, fresh acceptance can schedule the original
+runner. A committed task whose database acknowledgement was lost can be read,
+but that read cannot start it. If only the HTTP response was lost, the original
+may already be running. Reopen uses the real bearer-authenticated task lookup;
+the additional owner-scoped link check may refuse that result, never supply a
+replacement. Reopen leaves work records unchanged; real authentication can
+update session bookkeeping. The reader requires exactly one acceptance for the
+account; a second makes inbox reads unavailable rather than choosing a task.
+This fixture does not qualify multi-job UI or report delivery.
+
+Run `PYTHONPATH=. uv run pytest -q --compute-metadata-postgres tests/test_history_inbox_runner_postgres.py`
+inside the managed disposable runner. The other inbox and text-host modules are
+regressions; the integrated proof requires the new module to pass without skips.
+
 ## How partial text reaches the current page
 
 The isolated POST stream remains acceptance metadata only. It does not emit answer
