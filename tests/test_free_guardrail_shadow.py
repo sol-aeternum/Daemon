@@ -376,6 +376,7 @@ def test_replay(production_policy):
     rows = []
     samples = [
         ("short", MONTH, 400),
+        ("short_low_balance", 10000, 400),
         ("cheap_long", MONTH, 8000),
         ("deliberate", 10000, 11600),
         ("unconfirmed", 10000, 11600),
@@ -428,6 +429,10 @@ def test_replay(production_policy):
                 assert turn.notices == [(0, turn.quotes, balance, True)]
             if name == "unconfirmed" and shadow:
                 assert turn.notices and not turn.calls
+            if name == "short_low_balance" and shadow:
+                # Same prompt and preflight as the long unconfirmed case. The
+                # short realized answer is not information available at admission.
+                assert turn.notices == [(0, balance, balance, False)]
             if name == "cheap_long":
                 assert turn.useful == shadow
             if name == "reserve":

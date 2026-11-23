@@ -2,6 +2,8 @@
 # case policy useful truncated sum_call_quotes_uUSD settled_uUSD virtual_seconds upstream_calls reason outcome final_provider standard_finish
 short baseline 1 0 3634 380 3 1 provider_stop complete stop stop
 short candidate 1 0 26471 380 3 1 provider_stop complete stop stop
+short_low_balance baseline 1 0 3634 380 3 1 provider_stop complete stop stop
+short_low_balance candidate 0 0 0 0 0 0 await_spend_choice incomplete not_attempted -
 cheap_long baseline 0 1 2267 2058 12 1 provider_length incomplete length length
 cheap_long candidate 1 0 15831 3971 22 1 provider_stop complete stop stop
 deliberate baseline 0 1 3634 3429 12 1 provider_length incomplete length length
