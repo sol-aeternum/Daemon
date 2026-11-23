@@ -3881,6 +3881,58 @@ async def test_tool_round_limit_outside_an_account_scope_keeps_the_historic_limi
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("exact", [False, True], ids=["auto", "exact"])
+@pytest.mark.parametrize(
+    ("headroom", "ask", "remaining", "refusal"),
+    [
+        (64, None, 10000, None),
+        (64, 64, 10000, None),
+        (64, 65, 0, "context_limit"),
+        (0, None, 10000, "context_limit"),
+        (64, 64, 0, "budget_exceeded"),
+    ],
+)
+async def test_account_context_at_dispatch(
+    monkeypatch: pytest.MonkeyPatch,
+    exact: bool,
+    headroom: int,
+    ask: int | None,
+    remaining: int,
+    refusal: str | None,
+) -> None:
+    route = _route()
+    _qualified_policy(monkeypatch, route=route)
+    params: dict[str, Any] = {
+        "model": route.model if exact else "auto",
+        "messages": [{"role": "user", "content": "hi"}],
+    }
+    if ask is not None:
+        params["max_tokens"] = ask
+    size = runtime._request_bound(params)
+    service = _funded_service(max_context_tokens=size.estimate + headroom)
+    service.resolve.return_value.capabilities.add("premium_routing")
+    service.resolve.return_value.remaining_for = lambda premium: remaining
+    provider = AsyncMock(return_value={"choices": []})
+    monkeypatch.setattr(runtime.litellm, "acompletion", provider)
+    token = runtime._scope.set(
+        runtime.ComputeScope(uuid.uuid4(), cast(EntitlementService, service))
+    )
+    try:
+        if refusal is None:
+            await runtime.guarded_completion(**params)
+            assert provider.await_args is not None
+            assert provider.await_args.kwargs["max_tokens"] == headroom
+        else:
+            with pytest.raises(runtime.ComputeUnavailable) as caught:
+                await runtime.guarded_completion(**params)
+            assert caught.value.code == refusal
+            provider.assert_not_awaited()
+            service.reserve.assert_not_awaited()
+    finally:
+        runtime._scope.reset(token)
+
+
+@pytest.mark.asyncio
 async def test_uncapped_plan_input_beyond_every_route_is_a_context_error(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

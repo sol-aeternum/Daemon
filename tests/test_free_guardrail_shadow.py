@@ -170,8 +170,7 @@ class Turn:
         args = dict(PARAMS, max_tokens=ask) if ask is not None else PARAMS
         entries = rt._priced_candidates(policy, size, args, model, fit_to_budget=True)
         if self.shadow and model and ask is None:
-            # Unlike the auto group target, the current exact-model branch does
-            # not subtract input from account context when it chooses output.
+            # Keep the shadow's independent account-headroom bound.
             entries = [
                 (r.estimate_microusd(size.bound, min(n, room)), min(n, room), r, prem, pl)
                 for _, n, r, prem, pl in entries
@@ -465,7 +464,8 @@ def test_binding_and_protection(production_policy):
         choices = t.candidates()
         assert [e[2].route_id for e in choices] == [LUNA, GLM, DS]
         assert {e[1] for e in choices} == {32000 - SIZE.estimate if shadow else 4096}
-        assert {e[1] for e in t.candidates(size=rt.InputSize(90000, 30000))} == {2000}
+        near_limit = t.candidates(size=rt.InputSize(90000, 30000))
+        assert [(e[2].route_id, e[1]) for e in near_limit] == [(r, 2000) for r in (LUNA, GLM, DS)]
         assert all(e[1] == 512 for e in t.candidates(ask=512))
         print("routes", shadow, SIZE, [(r.route_id, n, q) for q, n, r, _, _ in choices])
     for winner in ("a", "b"):
@@ -505,25 +505,8 @@ def test_binding_and_protection(production_policy):
     assert expired.calls == expired.settled == expired.book.period.requests_in_window == 0
 
 
-class KnownExactContextMismatch(AssertionError):
-    """Only the observed #785 overrun is an expected failure."""
-
-
 @pytest.mark.usefixtures("_attested")
-@pytest.mark.parametrize(
-    "shadow",
-    [
-        pytest.param(
-            False,
-            marks=pytest.mark.xfail(
-                strict=True,
-                raises=KnownExactContextMismatch,
-                reason="#785: exact sizing omits account context headroom",
-            ),
-        ),
-        True,
-    ],
-)
+@pytest.mark.parametrize("shadow", [False, True])
 @pytest.mark.parametrize("ask", [None, 2001], ids=["automatic-output", "exact-output"])
 def test_exact_model_respects_account_context(production_policy, shadow, ask):
     turn = Turn(Book.with_balance(MONTH), shadow)
@@ -531,8 +514,6 @@ def test_exact_model_respects_account_context(production_policy, shadow, ask):
     model = production_policy.routes[LUNA].model
     assert turn.candidates(size=size, model=model, ask=2000)[0][1] == 2000
     entries = turn.candidates(size=size, model=model, ask=ask)
-    if not shadow and len(entries) == 1 and entries[0][1] == (4096 if ask is None else 2001):
-        raise KnownExactContextMismatch(f"sent allowance {entries[0][1]} exceeds 2000")
     if ask is None:
         assert entries[0][1] == 2000
     else:

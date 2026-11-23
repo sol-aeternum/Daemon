@@ -2145,7 +2145,7 @@ def _priced_candidates(
     request's budget, so a fallback is never a silent downgrade.
 
     ``exclusions``, when given, counts why routes the request could have used were
-    left out at full size (telemetry only; it never changes the result).
+    left out at full size (for telemetry and refusal diagnosis).
 
     ``fit_to_budget`` (optional work O2): when no route of a group fits the remaining
     budget at full size and the caller set no output limit, offer the group's routes
@@ -2254,13 +2254,14 @@ def _priced_candidates(
                 excluded("premium_not_allowed")
                 continue
         limits = policy.limits_for(premium)
-        if limits.max_context_tokens is not None and input_tokens > limits.max_context_tokens:
+        context = route.max_context_tokens
+        if limits.max_context_tokens is not None:
+            context = min(context, limits.max_context_tokens)
+        context_left = context - input_tokens
+        if context_left < (requested_output or 1):
             excluded("context")
             continue
-        available_output = min(
-            route.max_output_tokens,
-            route.max_context_tokens - input_tokens,
-        )
+        available_output = min(route.max_output_tokens, context_left)
         if limits.max_output_tokens is not None:
             available_output = min(available_output, limits.max_output_tokens)
         if available_output <= 0:
@@ -2790,6 +2791,10 @@ async def guarded_completion(
             raise ComputeUnavailable(
                 "budget_exceeded", "No qualified route fits the account budget"
             )
+        # Diagnose the windows of routes eligible for this request; an unrelated
+        # premium overlay can have a larger window than the selected model.
+        if exclusions.keys() - {"capability", "premium_not_allowed"} == {"context"}:
+            raise ComputeUnavailable("context_limit", "Context too large")
         ceilings = [policy.limits.max_context_tokens]
         if "premium_routing" in policy.capabilities:
             ceilings.append(policy.limits_for(True).max_context_tokens)
