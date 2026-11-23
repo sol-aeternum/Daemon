@@ -41,8 +41,8 @@ def economical_offer(turn, full, model, consent):
     return full if consent or small is None else small
 
 
-def extend_once(turn, cursor):
-    if cursor == 2 and turn.deadline == DEADLINE:
+def extend_once(turn, advance_streak):
+    if advance_streak == 2 and turn.deadline == DEADLINE:
         turn.deadline = DEADLINE + 30
 
 
@@ -123,6 +123,20 @@ def replay(policy, case, *, shadow, offer, progress):
             if offer:
                 assert t.calls == 1 and t.quotes <= balance // 4
     return (int(t.useful), int(t.truncated), t.quotes, t.settled, t.t, t.calls)
+
+
+@pytest.mark.usefixtures("_attested")
+@pytest.mark.parametrize("interruption", [1, 0, 3], ids=["unchanged", "regression", "gap"])
+def test_interruption_breaks_advance_streak(production_policy, interruption):
+    # All action IDs differ. Page 1 remains verified after the interruption;
+    # returning page 2 is a single fresh advance, not authority for more time.
+    trace = [(20, 1, 1), (20, interruption, 2), (20, 2, 3), (30, 3, 4)]
+    turn = Turn(Book.with_balance(MONTH), True)
+    walk(turn, "slow", trace=trace, reconnect=True, on_progress=extend_once)
+    turn.seal()
+    assert turn.deadline == DEADLINE
+    assert turn.rounds == 3 and turn.finish is not None
+    assert turn.finish.reason == "deadline_exceeded" and turn.finish.finish_reason is None
 
 
 @pytest.mark.usefixtures("_attested")

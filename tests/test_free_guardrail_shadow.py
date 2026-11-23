@@ -314,6 +314,7 @@ def walk(turn, mode, *, reconnect=False, consent=False, trace=None, on_progress=
     stop = None
     roots = {turn.key: turn}
     cursor = 0
+    advance_streak = 0
     for i in range(max_rounds):
         choices = turn.candidates(ask=1024)
         if not choices:
@@ -322,6 +323,7 @@ def walk(turn, mode, *, reconnect=False, consent=False, trace=None, on_progress=
         entry = choices[0]
         if mode == "retry":
             assert turn.call(entry, tokens=0, seconds=2, rejected=True) == "429"
+            advance_streak = 0
             if turn.shadow and turn.retries >= RETRIES:
                 stop = "retry_limit"
                 break
@@ -351,8 +353,11 @@ def walk(turn, mode, *, reconnect=False, consent=False, trace=None, on_progress=
         turn.seen[signature] = turn.seen.get(signature, 0) + 1
         if observed == cursor + 1:
             cursor = observed
+            advance_streak += 1
             if on_progress is not None:
-                on_progress(turn, cursor)
+                on_progress(turn, advance_streak)
+        else:
+            advance_streak = 0
         if mode == "slow" and cursor == 3:
             break  # fixture has obtained all three required observations
         if turn.shadow and turn.seen[signature] >= REPEAT:
