@@ -261,7 +261,9 @@ the routing event adds the `budget_fitted_output` reason code and the chat notes
 that the reply may stop early. An explicit model with no caller output limit is
 fitted the same way. The profile's `min_output_tokens` is a suitability floor,
 not the dispatched answer cap. Explicit caller output limits remain exact and
-still require route/account admission.
+still require route/account admission. For exact model selection as well as
+automatic routing, the estimated input and the allowed output must fit both
+the route's context window and the applicable account context window.
 
 Reasoning can consider its provisional premium candidates where profile
 and account capabilities permit them. Research retains its premium-capable flag,

@@ -161,23 +161,8 @@ class Turn:
                 period_spent_microusd=0,
                 period_reserved_microusd=0,
             )
-        # Candidate: keep account context headroom on exact calls as well.
-        context = policy.limits.max_context_tokens
-        assert context is not None  # these scenarios use the Free recurring pool
-        room = context - size.estimate
-        if self.shadow and ask is not None and ask > room:
-            return []
         args = dict(PARAMS, max_tokens=ask) if ask is not None else PARAMS
-        entries = rt._priced_candidates(policy, size, args, model, fit_to_budget=True)
-        if self.shadow and model and ask is None:
-            # Unlike the auto group target, the current exact-model branch does
-            # not subtract input from account context when it chooses output.
-            entries = [
-                (r.estimate_microusd(size.bound, min(n, room)), min(n, room), r, prem, pl)
-                for _, n, r, prem, pl in entries
-                if room > 0
-            ]
-        return entries
+        return rt._priced_candidates(policy, size, args, model, fit_to_budget=True)
 
     def protect(self, quote):
         if not self.shadow:
@@ -505,25 +490,8 @@ def test_binding_and_protection(production_policy):
     assert expired.calls == expired.settled == expired.book.period.requests_in_window == 0
 
 
-class KnownExactContextMismatch(AssertionError):
-    """Only the observed #785 overrun is an expected failure."""
-
-
 @pytest.mark.usefixtures("_attested")
-@pytest.mark.parametrize(
-    "shadow",
-    [
-        pytest.param(
-            False,
-            marks=pytest.mark.xfail(
-                strict=True,
-                raises=KnownExactContextMismatch,
-                reason="#785: exact sizing omits account context headroom",
-            ),
-        ),
-        True,
-    ],
-)
+@pytest.mark.parametrize("shadow", [False, True])
 @pytest.mark.parametrize("ask", [None, 2001], ids=["automatic-output", "exact-output"])
 def test_exact_model_respects_account_context(production_policy, shadow, ask):
     turn = Turn(Book.with_balance(MONTH), shadow)
@@ -531,8 +499,6 @@ def test_exact_model_respects_account_context(production_policy, shadow, ask):
     model = production_policy.routes[LUNA].model
     assert turn.candidates(size=size, model=model, ask=2000)[0][1] == 2000
     entries = turn.candidates(size=size, model=model, ask=ask)
-    if not shadow and len(entries) == 1 and entries[0][1] == (4096 if ask is None else 2001):
-        raise KnownExactContextMismatch(f"sent allowance {entries[0][1]} exceeds 2000")
     if ask is None:
         assert entries[0][1] == 2000
     else:
