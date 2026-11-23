@@ -2254,13 +2254,12 @@ def _priced_candidates(
                 excluded("premium_not_allowed")
                 continue
         limits = policy.limits_for(premium)
-        if limits.max_context_tokens is not None and input_tokens > limits.max_context_tokens:
-            excluded("context")
-            continue
         available_output = min(
             route.max_output_tokens,
             route.max_context_tokens - input_tokens,
         )
+        if limits.max_context_tokens is not None:
+            available_output = min(available_output, limits.max_context_tokens - input_tokens)
         if limits.max_output_tokens is not None:
             available_output = min(available_output, limits.max_output_tokens)
         if available_output <= 0:
