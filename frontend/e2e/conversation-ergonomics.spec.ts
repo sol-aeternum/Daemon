@@ -1,4 +1,5 @@
 import { expect, type Page } from '@playwright/test';
+import { checkBenchmarkBrowser } from './benchmark-browser';
 import { mockCacheClear, test } from './online-ui-fixture';
 import {
   historyFixtureConversationId,
@@ -180,8 +181,10 @@ test('the composer stays centered in the transcript when Contents changes visibi
 });
 
 test('a 100-message thread collapses long older messages and can expand them', async ({
+  browser,
   page,
 }, testInfo) => {
+  checkBenchmarkBrowser(browser);
   await page.setViewportSize({ width: 1440, height: 1000 });
   await page.goto(`/?id=${conversation.id}`);
   const messages = page.getByRole('main', { name: 'Conversation messages' });

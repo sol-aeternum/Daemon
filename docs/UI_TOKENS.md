@@ -60,6 +60,13 @@ families, PostScript names, custom-font flags and glyph counts from text nodes.
 The same font evidence is attached to `capture-surface.json`.
 The computed CSS stack and `document.fonts.ready` alone do not identify a face.
 
+The 100-message scroll benchmark checks the running Chromium version before
+navigation. A cache directory with the expected revision name is not proof of
+the binary inside. If the versions differ, run `npm ci` in `frontend/` and
+install `chromium --only-shell` with the local Playwright CLI in a fresh
+`PLAYWRIGHT_BROWSERS_PATH`; use that same path for a direct `test:browser`
+benchmark run. Combined qualification uses its normal browser cache.
+
 For owner-approved combined qualification, run from `frontend/`:
 `npm run test:browser:qualification -- /absolute/retained/output-root`.
 The command runs the intact DevTools runtime-observability case on an owned
