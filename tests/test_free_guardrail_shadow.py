@@ -119,6 +119,7 @@ class Turn:
     retries: int = 0
     seen: dict = field(default_factory=dict)
     notices: list = field(default_factory=list)
+    offers: list = field(default_factory=list)  # pre-dispatch full/economical choices
     finish: TurnFinish | None = None
     useful: bool = False
     truncated: bool = False
@@ -142,7 +143,7 @@ class Turn:
             self.permission = min(quote, free)
         return True
 
-    def candidates(self, *, final=False, ask=None, size=SIZE, model=None):
+    def candidates(self, *, final=False, ask=None, size=SIZE, model=None, offer_budget=None):
         p = self.book.period
         policy = replace(
             BASE,
@@ -150,10 +151,12 @@ class Turn:
             period_spent_microusd=p.spent_microusd,
             period_reserved_microusd=p.reserved_microusd - (self.escrow if final else 0),
         )
-        if self.permission is not None:
-            available = min(
-                policy.remaining_for(False), self.unallocated() + (self.escrow if final else 0)
-            )
+        if self.permission is not None or offer_budget is not None:
+            available = policy.remaining_for(False)
+            if self.permission is not None:
+                available = min(available, self.unallocated() + (self.escrow if final else 0))
+            if offer_budget is not None:
+                available = min(available, offer_budget)
             # Synthetic effective pool for the pure sizer; never mutate the ledger.
             policy = replace(
                 policy,
@@ -251,12 +254,14 @@ class Turn:
         assert self.book.period.reserved_microusd == self.book.period.open_reservations == 0
 
 
-def direct(turn, tokens, *, consent=False, model=None, competing=False):
+def direct(turn, tokens, *, consent=False, model=None, competing=False, choose_offer=None):
     entries = turn.candidates(final=True, model=model)
     if not entries:
         turn.finish = refused_finish("budget_exceeded", not_attempted=True)
         return
     first = entries[0]
+    if choose_offer is not None:
+        first = choose_offer(turn, first, model, consent)
     quote = first[0]
     # Fixture sensitivity point, not an adopted threshold. Notice precedes any hold.
     if not turn.preflight(quote, consent):
@@ -287,7 +292,7 @@ def direct(turn, tokens, *, consent=False, model=None, competing=False):
     turn.useful = turn.finish.finish_reason == "stop"
 
 
-def walk(turn, mode, *, reconnect=False, consent=False):
+def walk(turn, mode, *, reconnect=False, consent=False, trace=None, on_progress=None):
     # Fixed synthetic request shapes and token receipts per step, not a real LLM
     # transcript. A tool success here is an in-process lookup, no metered search.
     answer_quote = turn.candidates(final=True, ask=1200)[0][0]
@@ -308,9 +313,8 @@ def walk(turn, mode, *, reconnect=False, consent=False):
     assert turn.protect(answer_quote)
     stop = None
     roots = {turn.key: turn}
+    cursor = 0
     for i in range(max_rounds):
-        if mode == "slow" and i == 3:
-            break  # fixture has obtained all three required observations
         choices = turn.candidates(ask=1024)
         if not choices:
             stop = "budget_exceeded"
@@ -323,10 +327,19 @@ def walk(turn, mode, *, reconnect=False, consent=False):
                 break
             turn.retries += 1
             entry = choices[1]  # ordinary fallback after a proven pre-output rejection
+        seconds, observed, action = (
+            trace[i]
+            if trace is not None
+            else (
+                30 if mode == "slow" else 4,
+                0 if mode == "stuck" else i + 1,
+                0 if mode == "stuck" else i,
+            )
+        )
         outcome = turn.call(
             entry,
             tokens=160,
-            seconds=30 if mode == "slow" else 4,
+            seconds=seconds,
             reconnect=(lambda k: roots[k].observe()) if reconnect and i == 2 else None,
         )
         if outcome != "delivered":
@@ -334,8 +347,14 @@ def walk(turn, mode, *, reconnect=False, consent=False):
             break
         turn.rounds += 1
         # Same action, arguments AND unchanged result/cursor; changing evidence is progress.
-        signature = ("lookup", "same", "unchanged") if mode == "stuck" else ("lookup", i, i)
+        signature = ("lookup", action, observed)
         turn.seen[signature] = turn.seen.get(signature, 0) + 1
+        if observed == cursor + 1:
+            cursor = observed
+            if on_progress is not None:
+                on_progress(turn, cursor)
+        if mode == "slow" and cursor == 3:
+            break  # fixture has obtained all three required observations
         if turn.shadow and turn.seen[signature] >= REPEAT:
             stop = "no_progress"
             break
@@ -353,29 +372,31 @@ def walk(turn, mode, *, reconnect=False, consent=False):
     elif stop and turn.shadow:
         turn.local(stop)  # preserve synthesis provider stop, not a successful turn
     assert turn.finish is not None
-    turn.useful = mode == "slow" and turn.rounds == 3 and turn.finish.finish_reason == "stop"
+    turn.useful = mode == "slow" and cursor == 3 and turn.finish.finish_reason == "stop"
+
+
+SAMPLES = [
+    ("short", MONTH, 400),
+    ("short_low_balance", 10000, 400),
+    ("cheap_long", MONTH, 8000),
+    ("deliberate", 10000, 11600),
+    ("unconfirmed", 10000, 11600),
+    ("concurrent", 6000, 6350),
+    ("empty", 0, 400),
+    ("reserve", 1500, None),
+    ("retry", MONTH, None),
+    ("stuck", MONTH, None),
+    ("rounds", MONTH, None),
+    ("reconnect", MONTH, None),
+    ("zero", 0, 600),
+]
 
 
 @pytest.mark.usefixtures("_attested")
 def test_replay(production_policy):
     rows = []
-    samples = [
-        ("short", MONTH, 400),
-        ("short_low_balance", 10000, 400),
-        ("cheap_long", MONTH, 8000),
-        ("deliberate", 10000, 11600),
-        ("unconfirmed", 10000, 11600),
-        ("concurrent", 6000, 6350),
-        ("empty", 0, 400),
-        ("reserve", 1500, None),
-        ("retry", MONTH, None),
-        ("stuck", MONTH, None),
-        ("rounds", MONTH, None),
-        ("reconnect", MONTH, None),
-        ("zero", 0, 600),
-    ]
     zero = _route(model="openrouter/fixture/zero", input_price=0, output_price=0)
-    for name, balance, tokens in samples:
+    for name, balance, tokens in SAMPLES:
         for shadow in (False, True):
             turn = Turn(Book.with_balance(balance), shadow)
             if name == "zero":
