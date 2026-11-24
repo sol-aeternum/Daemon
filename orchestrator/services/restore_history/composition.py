@@ -22,6 +22,7 @@ from orchestrator.services.connection_cleanup import (
     retain_pool_cleanup,
 )
 from orchestrator.tasks._invocation import block
+from orchestrator.tasks.inputs import _INBOX_PILOT_PURPOSE, _is_inbox_pilot_request
 from orchestrator.tasks.store import AcceptedTask, IdempotencyConflict, TaskStore
 
 from .acceptance import AcceptanceProjection
@@ -69,7 +70,7 @@ class HistoryAcceptance:
             raise HistoryError("acceptance_composition_refused")
         projection.expected.verify_key(self._key)
 
-    def _request(self, options: dict[str, Any]) -> tuple[str, str]:
+    def _request(self, options: dict[str, Any], *, purpose: str | None = None) -> tuple[str, str]:
         account, key, canonical = (
             options.get("user_id"),
             options.get("idempotency_key"),
@@ -99,6 +100,15 @@ class HistoryAcceptance:
             "disable_memory_write",
             "content_parts",
         }
+        if purpose is not None:
+            if (
+                type(purpose) is not str
+                or purpose != _INBOX_PILOT_PURPOSE
+                or self._projection.profile != "terminal-v3"
+                or not _is_inbox_pilot_request(value)
+            ):
+                raise HistoryError("acceptance_request_refused")
+            required.add("purpose")
         if (
             not required
             <= set(value)
@@ -186,6 +196,8 @@ class HistoryAcceptance:
         options: dict[str, Any],
         lookup: str,
         request: str,
+        *,
+        purpose: str | None = None,
     ) -> AcceptedTask:
         """Private same-task join; result remains pending until the host releases H.
 
@@ -203,7 +215,7 @@ class HistoryAcceptance:
         ):
             raise HistoryError("acceptance_operation_refused")
         operation._check()
-        if self._request(options) != (lookup, request):
+        if self._request(options, purpose=purpose) != (lookup, request):
             raise HistoryError("acceptance_request_refused")
         state = await operation.verify()
         for entry in state.entries:

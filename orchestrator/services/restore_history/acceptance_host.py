@@ -22,6 +22,7 @@ from uuid import UUID
 import asyncpg
 from fastapi import FastAPI, HTTPException, Query, Request, Response
 from fastapi.responses import StreamingResponse
+from pydantic import BaseModel, ConfigDict, field_validator
 
 from orchestrator.auth import (
     AuthenticatedDevice,
@@ -65,13 +66,18 @@ from orchestrator.services.account_control.guard import (
 from orchestrator.services.connection_cleanup import pool_connection, retain_pool_cleanup
 from orchestrator.session_cleanup import lock_session_cleanup
 from orchestrator.tasks._invocation import block
-from orchestrator.tasks.inputs import chat_request_fingerprint
+from orchestrator.tasks.inputs import (
+    _INBOX_PILOT_PURPOSE,
+    _INBOX_PILOT_TEXT,
+    chat_request_fingerprint,
+)
 from orchestrator.tasks.observe import _Observation
 from orchestrator.tasks.store import (
     AcceptedTask,
     ConversationBusy,
     IdempotencyConflict,
     TaskNotFound,
+    TaskSnapshot,
     TaskStore,
     CancelAuthorizationExpectation,
     CancelOutcome,
@@ -107,6 +113,32 @@ class _Submission:
     auth: AuthenticatedDevice
 
 
+class _InboxPilotInput(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    text: str
+
+    @field_validator("text")
+    @classmethod
+    def _scripted_text(cls, value: str) -> str:
+        if value != _INBOX_PILOT_TEXT:
+            raise ValueError("unsupported inbox request")
+        return value
+
+
+class _InboxWithoutReport(BaseModel):
+    state: Literal["empty", "queued", "running", "cancelled"]
+
+
+class _InboxCompleted(BaseModel):
+    state: Literal["completed"] = "completed"
+    conversation_id: UUID
+
+
+_InboxStatus = _InboxWithoutReport | _InboxCompleted
+_UIReadKind = Literal["task", "conversation", "list", "inbox"]
+
+
 class IsolatedAcceptanceHost:
     """Inert, explicit construction; no dependency override or account parameter.
 
@@ -124,6 +156,7 @@ class IsolatedAcceptanceHost:
         max_body_bytes: int,
         keepalive_s: float,
         execution: HistoryTextExecution | None = None,
+        inbox_pilot: bool = False,
     ) -> None:
         if (
             type(acceptance) is not HistoryAcceptance
@@ -135,10 +168,12 @@ class IsolatedAcceptanceHost:
             or max_body_bytes < 1
             or not math.isfinite(keepalive_s)
             or keepalive_s <= 0
+            or type(inbox_pilot) is not bool
         ):
             raise HistoryError("isolated_host_refused")
         self._acceptance, self._reader = acceptance, observation
         self._execution = execution
+        self._inbox_pilot = inbox_pilot
         self._fingerprint_key = fingerprint_key
         self._max_body_bytes, self._keepalive_s = max_body_bytes, keepalive_s
         self._pid = os.getpid()
@@ -198,6 +233,8 @@ class IsolatedAcceptanceHost:
             raise HistoryError("isolated_host_refused")
         self._acceptance._projection.expected.verify_key(self._acceptance._key)
         execution = self._execution
+        if self._inbox_pilot and (execution is None or ap.profile != "terminal-v3"):
+            raise HistoryError("isolated_host_refused")
         if execution is not None and (
             type(execution) is not HistoryTextExecution
             or type(ap) not in TERMINAL_PROFILES
@@ -343,6 +380,19 @@ class IsolatedAcceptanceHost:
         _check_time(deadline)
         return AuthenticatedDevice(auth.user_id, auth.device_id, auth.session_id)
 
+    @staticmethod
+    def _submission_credentials(
+        authorization: str | None, client_key: str | None
+    ) -> tuple[str, str]:
+        token = _extract_bearer_token(authorization)
+        if token is None:
+            raise HTTPException(401, "Missing or invalid authorization header", headers=HEADERS)
+        if client_key is None or not IDEMPOTENCY_KEY_PATTERN.fullmatch(client_key):
+            raise HTTPException(
+                422, {"code": "invalid_idempotency_key", "message": "Invalid key"}, headers=HEADERS
+            )
+        return token, client_key
+
     async def submit(
         self,
         authorization: str | None,
@@ -353,13 +403,9 @@ class IsolatedAcceptanceHost:
     ) -> _Submission:
         """HTTP adapter only: no account, generation, task ID or callback input."""
         self._admit(deadline)
-        token = _extract_bearer_token(authorization)
-        if token is None:
-            raise HTTPException(401, "Missing or invalid authorization header", headers=HEADERS)
-        if client_key is None or not IDEMPOTENCY_KEY_PATTERN.fullmatch(client_key):
-            raise HTTPException(
-                422, {"code": "invalid_idempotency_key", "message": "Invalid key"}, headers=HEADERS
-            )
+        if self._inbox_pilot:
+            raise _unavailable()
+        token, key = self._submission_credentials(authorization, client_key)
         value = payload.model_copy(deep=True)
         if self._execution is not None:
             latest = next(
@@ -381,8 +427,30 @@ class IsolatedAcceptanceHost:
             or any(type(m.get("content")) is not str for m in value.messages or [])
         ):
             raise _unavailable()
+        return await self._submit_authenticated(token, key, value, deadline)
+
+    async def _submit_inbox_pilot(
+        self,
+        authorization: str | None,
+        client_key: str | None,
+        payload: _InboxPilotInput,
+        *,
+        deadline: float,
+    ) -> _InboxStatus:
+        self._admit(deadline)
+        if not self._inbox_pilot:
+            raise _unavailable()
+        token, key = self._submission_credentials(authorization, client_key)
+        receipt = await self._submit_authenticated(
+            token, key, ChatRequest(message=payload.text, disable_memory_write=True), deadline
+        )
+        return await self.ui_read(authorization, "inbox", None, deadline=deadline, _receipt=receipt)
+
+    async def _submit_authenticated(
+        self, token: str, client_key: str, payload: ChatRequest, deadline: float
+    ) -> _Submission:
         result = await self._run(
-            self._submit(token, client_key, value, deadline), deadline, writing=True
+            self._submit(token, client_key, payload, deadline), deadline, writing=True
         )
         if isinstance(result, HTTPException):
             raise result
@@ -425,6 +493,26 @@ class IsolatedAcceptanceHost:
                         captured = await capture_generation(conn, auth.user_id)
                     except WriteGuardRefusal:
                         return _unavailable()
+                    purpose = _INBOX_PILOT_PURPOSE if self._inbox_pilot else None
+                    if purpose is not None:
+                        # H is still exclusively held by this operation until
+                        # original A acceptance and both connections settle.
+                        # Any prepare counts, including old generations.
+                        state = await operation.verify()
+                        if any(
+                            type(entry.command.data) is AcceptPrepare
+                            and entry.command.data.account_id == auth.user_id
+                            for entry in state.entries
+                        ) or (
+                            await conn.fetchval(
+                                "SELECT EXISTS(SELECT 1 FROM public.tasks WHERE user_id=$1) "
+                                "OR EXISTS(SELECT 1 FROM public.conversations WHERE user_id=$1) "
+                                "OR EXISTS(SELECT 1 FROM public.messages WHERE user_id=$1)",
+                                auth.user_id,
+                            )
+                            is not False
+                        ):
+                            return self._ui_recovery()
                     # No W account SHARE is held. The original native A guard
                     # must reject any subsequent generation/lifecycle change.
                     if not message:
@@ -451,6 +539,7 @@ class IsolatedAcceptanceHost:
                         disable_memory_write=bool(payload.disable_memory_write),
                         answer_detail=payload.answer_detail,
                         research_effort=payload.research_effort,
+                        purpose=purpose,
                     )
                     task_input = {
                         "message": message,
@@ -476,9 +565,9 @@ class IsolatedAcceptanceHost:
                         assistant_model=None,
                         captured_generation=captured,
                     )
-                    lookup, request = self._acceptance._request(options)
+                    lookup, request = self._acceptance._request(options, purpose=purpose)
                     accepted = await self._acceptance._accept_owned(
-                        operation, deadline, options, lookup, request
+                        operation, deadline, options, lookup, request, purpose=purpose
                     )
             # W auth transaction and A's actual reset have settled; outer scope
             # still owns W holder reset, filesystem work and H release.
@@ -583,7 +672,7 @@ class IsolatedAcceptanceHost:
     async def ui_read(
         self,
         authorization: str | None,
-        kind: Literal["task", "conversation", "list"],
+        kind: _UIReadKind,
         ident: UUID | None,
         *,
         deadline: float,
@@ -593,16 +682,31 @@ class IsolatedAcceptanceHost:
         before: str | None = None,
         through: str | None = None,
         search: str | None = None,
+        _receipt: _Submission | None = None,
     ) -> Any:
         """Only the explicitly constructed UI app calls this bounded read."""
         self._admit(deadline)
+        if (kind == "inbox" and not self._inbox_pilot) or (
+            _receipt is not None and kind != "inbox"
+        ):
+            raise _unavailable()
         token = _extract_bearer_token(authorization)
         if token is None:
             raise HTTPException(401, "Missing or invalid authorization header", headers=HEADERS)
         try:
             result = await self._run(
                 self._ui_read(
-                    token, kind, ident, deadline, limit, offset, pagination, before, through, search
+                    token,
+                    kind,
+                    ident,
+                    deadline,
+                    limit,
+                    offset,
+                    pagination,
+                    before,
+                    through,
+                    search,
+                    receipt=_receipt,
                 ),
                 deadline,
                 writing=False,
@@ -620,7 +724,7 @@ class IsolatedAcceptanceHost:
     async def _ui_read(
         self,
         token: str,
-        kind: str,
+        kind: _UIReadKind,
         ident: UUID | None,
         deadline: float,
         limit: int,
@@ -629,6 +733,8 @@ class IsolatedAcceptanceHost:
         before: str | None,
         through: str | None,
         search: str | None,
+        *,
+        receipt: _Submission | None,
     ) -> Any:
         reader = self._reader
         async with reader._history.operation(deadline=deadline) as operation, retain_pool_cleanup():
@@ -637,7 +743,7 @@ class IsolatedAcceptanceHost:
                     raise HistoryError("auth_transaction_owner_refused")
                 async with conn.transaction(isolation="read_committed"):
                     auth = await self._auth(conn, token, deadline)
-                    if auth is None:
+                    if auth is None or (receipt is not None and auth != receipt.auth):
                         return HTTPException(
                             status_code=401,
                             detail="Invalid or expired access token",
@@ -737,7 +843,13 @@ class IsolatedAcceptanceHost:
                                         return self._ui_recovery()
                                 try:
                                     conv, messages = reader._text_values(
-                                        accepted, row, conversations[0], list(pair)
+                                        accepted,
+                                        row,
+                                        conversations[0],
+                                        list(pair),
+                                        expected_purpose=(
+                                            _INBOX_PILOT_PURPOSE if self._inbox_pilot else None
+                                        ),
                                     )
                                     if row["status"] == "cancelled":
                                         await reader._cancelled_owned(
@@ -762,6 +874,8 @@ class IsolatedAcceptanceHost:
                                     headers=HEADERS,
                                 )
                             await reader._check_owned(operation, conn, xid, deadline)
+                            if kind == "inbox":
+                                return self._inbox_status(accepted, snapshot, receipt)
                             return self._ui_response(
                                 auth,
                                 kind,
@@ -778,6 +892,34 @@ class IsolatedAcceptanceHost:
                             )
                     except WriteGuardRefusal:
                         return self._ui_recovery()
+
+    @staticmethod
+    def _inbox_status(
+        accepted: AcceptPrepare | None,
+        snapshot: TaskSnapshot | None,
+        receipt: _Submission | None,
+    ) -> _InboxStatus | HTTPException:
+        # Only called after the original singleton guard verifies both
+        # commitments, the native identity/pair and final bearer ownership.
+        if accepted is None and snapshot is None and receipt is None:
+            return _InboxWithoutReport(state="empty")
+        if accepted is None or snapshot is None:
+            return _unavailable()
+        if receipt is not None:
+            task = receipt.task
+            if (
+                accepted.task_id,
+                accepted.conversation_id,
+                accepted.user_message_id,
+                accepted.result_message_id,
+            ) != (task.task_id, task.conversation_id, task.user_message_id, task.result_message_id):
+                return _unavailable()
+        state = snapshot.status.value
+        if state == "completed":
+            return _InboxCompleted(conversation_id=accepted.conversation_id)
+        if state == "queued" or state == "running" or state == "cancelled":
+            return _InboxWithoutReport(state=state)
+        return _unavailable()
 
     @staticmethod
     def _ui_recovery() -> HTTPException:
@@ -1130,7 +1272,7 @@ def create_isolated_ui_app(host: IsolatedAcceptanceHost) -> FastAPI:
 
     async def read(
         request: Request,
-        kind: Literal["task", "conversation", "list"],
+        kind: _UIReadKind,
         ident: UUID | None,
         **bounds: Any,
     ) -> Any:
@@ -1146,6 +1288,26 @@ def create_isolated_ui_app(host: IsolatedAcceptanceHost) -> FastAPI:
             raise
         except Exception:
             raise _unavailable() from None
+
+    if host._inbox_pilot:
+
+        @app.get("/tasks/inbox-pilot")
+        async def inbox_status(request: Request) -> _InboxStatus:
+            return await read(request, "inbox", None)
+
+        @app.post("/tasks/inbox-pilot")
+        async def inbox_start(payload: _InboxPilotInput, request: Request) -> _InboxStatus:
+            try:
+                return await host._submit_inbox_pilot(
+                    request.headers.get("Authorization"),
+                    request.headers.get("Idempotency-Key"),
+                    payload,
+                    deadline=time.monotonic() + 10,
+                )
+            except HTTPException:
+                raise
+            except Exception:
+                raise _unavailable() from None
 
     @app.get("/tasks/{task_id}", response_model=TaskOut)
     async def task(task_id: UUID, request: Request) -> Any:

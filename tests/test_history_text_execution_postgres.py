@@ -199,10 +199,13 @@ async def text_host(projection_db, tmp_path, monkeypatch, request):
                         ]
                     }
                 else:
-                    yield {"choices": [{"delta": {"content": "original partial"}}]}
+                    first, last = getattr(
+                        state, "synthetic_deltas", ("original partial", " and final")
+                    )
+                    yield {"choices": [{"delta": {"content": first}}]}
                     # The original engine persists this first delta before waiting.
                     await state.release.wait()
-                    yield {"choices": [{"delta": {"content": " and final"}}]}
+                    yield {"choices": [{"delta": {"content": last}}]}
                 yield {
                     "choices": [{"delta": {}, "finish_reason": "stop"}],
                     "usage": {"prompt_tokens": 1, "completion_tokens": 1},
@@ -253,6 +256,7 @@ async def text_host(projection_db, tmp_path, monkeypatch, request):
                 max_body_bytes=4096,
                 keepalive_s=1,
                 execution=execution,
+                inbox_pilot=getattr(state, "inbox_pilot", False),
             )
             state.execution = execution
             state.host, state.app, state.w = host, create_isolated_acceptance_app(host), w

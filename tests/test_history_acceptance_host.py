@@ -259,7 +259,10 @@ def test_production_read_supervisor_refuses_terminal_before_owner_or_io(monkeypa
 
 
 def test_operation_owned_seam_is_exact_and_cannot_be_aliased_or_called_by_runtime():
-    source = "async def _submit(self):\n await self._acceptance._accept_owned(operation,deadline,options,lookup,request)"
+    source = (
+        "async def _submit(self):\n"
+        " await self._acceptance._accept_owned(operation,deadline,options,lookup,request,purpose=purpose)"
+    )
     assert HOST not in ADMITTED and COMPOSITION not in ADMITTED
     assert composition_violations({HOST: source}) == []
     for wrong in (
@@ -272,6 +275,8 @@ def test_operation_owned_seam_is_exact_and_cannot_be_aliased_or_called_by_runtim
     for changed in (
         source.replace("def _submit", "def activate"),
         source.replace("deadline,options", "deadline,replacement"),
+        source.replace("purpose=purpose", "purpose=payload.purpose"),
+        source.replace("purpose=purpose", "**options"),
         source.replace("self._acceptance._accept_owned(", "fn("),
     ):
         if "fn(" in changed:
