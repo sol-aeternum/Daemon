@@ -145,6 +145,77 @@ Run `PYTHONPATH=. uv run pytest -q --compute-metadata-postgres tests/test_histor
 inside the managed disposable runner. The other inbox and text-host modules are
 regressions; the integrated proof requires the new module to pass without skips.
 
+### Default-off desktop-to-phone inbox pilot
+
+The experimental `/inbox` page pairs the actual development frontend with
+the explicitly composed loopback text host. The original runner accepts
+one scripted research request; there is no general intent routing or research
+tool execution. The pilot's `POST /tasks/inbox-pilot` is not installed by
+ordinary startup, and the normal chat write path is excluded in this
+composition.
+
+The inbox is implicit for the authenticated account and its original content
+generation. The server adds an exact versioned purpose to the canonical
+request under the existing acceptance writer. The protected commitment
+binds that request and its stable key to the original task, conversation and
+two messages. The original H/native acceptance is the binding; no inbox
+table, fixture trigger, extra database privilege or additional writer is
+used. Non-empty or unresolved account state refuses new inbox work under
+the existing H operation. An uncertain acknowledgement never schedules a
+replacement. Only a confirmed new acceptance can schedule the original.
+
+Another authenticated device reads saved state through
+`GET /tasks/inbox-pilot`, without inheriting the desktop's key. A saved
+running state is not a liveness claim. The page says **Status unavailable**
+if it cannot verify the result. On the next follow-up or refresh after
+completion it offers one link to the original committed assistant text
+through the existing authenticated conversation view. This report is not a
+separate artifact, file or share link.
+
+For disposable qualification, install the locked frontend dependencies and
+Playwright Chromium. Run under the owned task wrapper:
+
+```sh
+PYTHONPATH=. uv run pytest -q --compute-metadata-postgres \
+  tests/test_history_inbox_ui_postgres.py tests/history_inbox_ui_browser_postgres.py
+```
+
+The browser scenarios exercise the real setup/enrollment, app UI, saved
+status and report reads. The lost-response case drops only the start
+response after the real backend confirms it. The backend receipts compare
+the task, attempt, result message and committed text before and after
+detach, independent reopen, refresh, explicit same-key retry and failed
+reads. Synthetic foreign credentials use a distinct persisted account and
+the normal bearer verifier. No report or status response is mocked.
+
+The 24 November 2026 owned run passed both browser scenarios (2 passed,
+0 skipped). At 390 × 844 the composer fit without horizontal overflow
+and its Send target was 44px high. Same-key retry returned 409 without
+replacing the original; SQL and the synthetic transport recorded one
+attempt and one dispatch per run. The other account's known task and
+conversation reads matched its unknown-ID refusals. Real SQL lock
+contention returned 503 and the UI removed the ready link. The opt-in
+backend negatives, including rollback versus lost database acknowledgement,
+are separate from the browser lost-response result.
+
+Every inbox request resolves its bearer through the existing authenticated
+refresh path, not the token captured when the view first rendered. An
+expired token can be refreshed using the existing session; a refused or
+superseded refresh cannot send the request under another account. Reopening
+after auth coordination remains a read only. Neither refresh, a 401 from
+the pilot endpoint, nor an uncertain POST response retries the start.
+The review regression advances the still-open phone page's client clock
+beyond the ordinary access-token lifetime and requires a real authenticated
+refresh response and use of its new bearer for the completed report read.
+
+To turn it off, stop the owned pilot fixture or omit its explicit inbox
+composition; ordinary startup is already off. Non-development Next builds
+render the not-found view instead of the inbox. This proves neither
+physical-phone or installed PWA acceptance, live research, generalized
+inbox persistence, nor deployed restore/runtime permissions. #477 and its
+production release gates remain separate. This slice addresses DEC04–DEC05
+and the bounded parts of AC03, AC09 and AC11 only.
+
 ## How partial text reaches the current page
 
 The isolated POST stream remains acceptance metadata only. It does not emit answer

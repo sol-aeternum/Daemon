@@ -926,9 +926,12 @@ def composition_violations(sources: dict[str, str]) -> list[str]:
                         "_submit",
                     ): "self._acceptance._accept_owned",
                 }.get((path, enclosing))
+                expected_keywords = (
+                    {"purpose": "purpose"} if expected == "self._acceptance._accept_owned" else {}
+                )
                 if (
                     ast.unparse(node.func) != expected
-                    or node.keywords
+                    or {k.arg: ast.unparse(k.value) for k in node.keywords} != expected_keywords
                     or [ast.unparse(arg) for arg in node.args]
                     != ["operation", "deadline", "options", "lookup", "request"]
                 ):

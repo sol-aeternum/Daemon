@@ -7,7 +7,7 @@ import hmac
 import json
 import uuid
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Final
 
 from orchestrator.answer_controls import AnswerDetail, ResearchEffort
 
@@ -15,11 +15,28 @@ from orchestrator.answer_controls import AnswerDetail, ResearchEffort
 CHAT_INPUT_VERSION = 1
 #: Domain separation for the request fingerprint HMAC.
 _REQUEST_HASH_DOMAIN = b"daemon.task.request.v1\n"
+_INBOX_PILOT_PURPOSE: Final = "isolated-inbox-research-v1"
+_INBOX_PILOT_TEXT: Final = "Do a deep dive on X."
 
 
 def canonical_json(value: Any) -> str:
     """Deterministic JSON: sorted keys, no insignificant whitespace, UTF-8 kept."""
     return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+
+
+def _is_inbox_pilot_request(value: dict[str, Any]) -> bool:
+    """The exact server-canonical input admitted by the isolated inbox pilot."""
+    return value.get("disable_memory_write") is True and value == {
+        "conversation_id": None,
+        "message": _INBOX_PILOT_TEXT,
+        "attachments": [],
+        "model": "auto",
+        "provider": None,
+        "metadata": {},
+        "disable_memory_write": True,
+        "content_parts": [],
+        "purpose": _INBOX_PILOT_PURPOSE,
+    }
 
 
 @dataclass(frozen=True, slots=True)
@@ -49,6 +66,7 @@ def chat_request_fingerprint(
     answer_detail: AnswerDetail | None = None,
     research_effort: ResearchEffort | None = None,
     temporal_scope: dict[str, Any] | None = None,
+    purpose: str | None = None,
 ) -> RequestFingerprint:
     """Keyed fingerprint of what a submission asks for (see ``chat_request_hash``)."""
     if not key:
@@ -72,6 +90,10 @@ def chat_request_fingerprint(
         accepted["research_effort"] = research_effort
     if temporal_scope is not None:
         accepted["temporal_scope"] = temporal_scope
+    if purpose is not None:
+        if type(purpose) is not str or purpose != _INBOX_PILOT_PURPOSE:
+            raise ValueError("unsupported request purpose")
+        accepted["purpose"] = purpose
     canonical = canonical_json(accepted)
     digest = hmac.new(
         key.encode("utf-8"),

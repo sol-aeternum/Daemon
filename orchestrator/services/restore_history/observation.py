@@ -26,7 +26,7 @@ from orchestrator.services.account_control.guard import (
 )
 from orchestrator.services.connection_cleanup import pool_connection, retain_pool_cleanup
 from orchestrator.tasks.store import TaskSnapshot, TaskStore
-from orchestrator.tasks.inputs import canonical_json
+from orchestrator.tasks.inputs import _INBOX_PILOT_PURPOSE, _is_inbox_pilot_request, canonical_json
 
 from .coordination import HistoryCoordinator, HistoryOperation
 from .effects_projection import HistoryProjection
@@ -414,7 +414,13 @@ class HistoryObservation:
         await self._check_owned(operation, conn, xid, deadline)
 
     def _text_values(
-        self, accepted: AcceptPrepare, row: dict[str, Any], conversation: Any, messages: list[Any]
+        self,
+        accepted: AcceptPrepare,
+        row: dict[str, Any],
+        conversation: Any,
+        messages: list[Any],
+        *,
+        expected_purpose: str | None = None,
     ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
         """Detached, narrow original-text values, not a general history decoder."""
         sealed = self._tasks._open(row["input_ciphertext"])
@@ -447,6 +453,16 @@ class HistoryObservation:
             "disable_memory_write",
             "content_parts",
         }
+        if expected_purpose is not None:
+            if (
+                type(expected_purpose) is not str
+                or expected_purpose != _INBOX_PILOT_PURPOSE
+                or self._projection.profile != "terminal-v3"
+                or type(request) is not dict
+                or not _is_inbox_pilot_request(request)
+            ):
+                raise ValueError("unsupported text purpose")
+            request_keys.add("purpose")
         if (
             type(request) is not dict
             or not request_keys <= request.keys()
@@ -594,9 +610,16 @@ class HistoryObservation:
                     "reasoning_duration_secs": None,
                 }
             )
-        if values[0]["created_at"] >= values[1]["created_at"] or values[1][
-            "content"
-        ] != self._tasks._enc.decrypt(row["result_content"]):
+        result_content = values[1]["content"]
+        if (
+            values[0]["created_at"] >= values[1]["created_at"]
+            or result_content != self._tasks._enc.decrypt(row["result_content"])
+            or (
+                expected_purpose is not None
+                and status == "completed"
+                and not result_content.strip()
+            )
+        ):
             raise ValueError("original result mismatch")
         conv = {
             name: conversation[name]
