@@ -198,6 +198,16 @@ contention returned 503 and the UI removed the ready link. The opt-in
 backend negatives, including rollback versus lost database acknowledgement,
 are separate from the browser lost-response result.
 
+Every inbox request resolves its bearer through the existing authenticated
+refresh path, not the token captured when the view first rendered. An
+expired token can be refreshed using the existing session; a refused or
+superseded refresh cannot send the request under another account. Reopening
+after auth coordination remains a read only. Neither refresh, a 401 from
+the pilot endpoint, nor an uncertain POST response retries the start.
+The review regression advances the still-open phone page's client clock
+beyond the ordinary access-token lifetime and requires a real authenticated
+refresh response and use of its new bearer for the completed report read.
+
 To turn it off, stop the owned pilot fixture or omit its explicit inbox
 composition; ordinary startup is already off. Non-development Next builds
 render the not-found view instead of the inbox. This proves neither

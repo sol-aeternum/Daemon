@@ -133,7 +133,6 @@ try {
   await second.getByRole("button", { name: "Complete Enrollment" }).click();
   const completedEnrollment = await enrolled;
   assert.equal(completedEnrollment.status(), 200);
-  const phoneToken = (await completedEnrollment.json()).access_token;
   await composer(second).waitFor(); // Normal setup navigation to chat.
   await second.goto(ui + "/inbox");
 
@@ -164,8 +163,25 @@ try {
   const foreignAuthorization = JSON.parse((await frames.next()).value).Authorization;
   assert.equal((await frames.next()).value, "report committed");
 
-  phase = "phone-report";
-  await ask(second, 200);
+  phase = "phone-report-after-access-expiry";
+  // Advance only the client clock, past the ordinary access-token lifetime.
+  // The real refresh cookie/session and native refresh handler are untouched.
+  // No auth/status responses are supplied by this fixture.
+  await second.clock.setFixedTime(new Date(Date.now() + 31 * 60 * 1000));
+  const refreshed = second.waitForResponse(
+    (r) => new URL(r.url()).pathname === "/api/v1/auth/refresh" && r.request().method() === "POST",
+  );
+  const statusAfterExpiry = await ask(second, 200);
+  const rotated = await refreshed;
+  assert.equal(rotated.status(), 200);
+  const phoneToken = (await rotated.json()).access_token;
+  assert.ok(phoneToken);
+  assert.ok(
+    (await statusAfterExpiry.request().headerValue("authorization")) ===
+      "Bearer " + phoneToken,
+  );
+  await second.clock.setFixedTime(new Date());
+  assert.equal(sendCount, 1);
   const reportLink = link(second);
   await reportLink.waitFor();
   assert.equal(await reportLink.count(), 1);
@@ -247,7 +263,7 @@ try {
     masked: true,
   });
   await foreign.context.close();
-  receipt("report", { task, conversation, message, replay, foreign: access.codes });
+  receipt("report", { task, conversation, message, replay, refreshed: true, foreign: access.codes });
   assert.equal((await frames.next()).value, "original locked");
 
   phase = "unavailable-status";

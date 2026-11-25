@@ -5,7 +5,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import type { FormEvent } from 'react';
 import { useAuth } from '@/components/AuthProvider';
 import { useAuthGeneration } from '@/hooks/useAuthGeneration';
-import { getAuthGeneration } from '@/lib/auth';
+import { ensureAuthHeader, getAuthGeneration } from '@/lib/auth';
 
 const PROMPT = 'Do a deep dive on X.';
 const FOLLOWUP = 'How’s that going?';
@@ -45,10 +45,18 @@ function parseSnapshot(value: unknown): Snapshot {
 
 async function fetchSnapshot(
   endpoint: string,
-  authorization: string,
+  generation: number,
   signal: AbortSignal,
   key?: string,
 ) {
+  const current = () => {
+    if (signal.aborted || getAuthGeneration() !== generation)
+      throw Error('Inbox request superseded');
+  };
+  current();
+  const authorization = await ensureAuthHeader();
+  current();
+  if (!authorization) throw Error('Inbox authorization unavailable');
   const response = await fetch(endpoint, {
     method: key ? 'POST' : 'GET',
     headers: key
@@ -72,16 +80,15 @@ async function fetchSnapshot(
 
 export function InboxPilot({ endpoint }: { endpoint: string }) {
   const generation = useAuthGeneration();
-  const { isAuthenticated, authHeader } = useAuth();
+  const { isAuthenticated } = useAuth();
   return (
     <main className="mx-auto flex min-h-dvh w-full max-w-lg flex-col gap-4 px-4 py-6">
       <h1 className="text-xl font-semibold">Inbox</h1>
-      {isAuthenticated && authHeader ? (
+      {isAuthenticated ? (
         <InboxSession
           key={generation}
           endpoint={endpoint}
           generation={generation}
-          authorization={authHeader}
         />
       ) : (
         <p>Sign in to use the inbox.</p>
@@ -93,11 +100,9 @@ export function InboxPilot({ endpoint }: { endpoint: string }) {
 function InboxSession({
   endpoint,
   generation,
-  authorization,
 }: {
   endpoint: string;
   generation: number;
-  authorization: string;
 }) {
   const [input, setInput] = useState('');
   const [status, setStatus] = useState<
@@ -117,7 +122,7 @@ function InboxSession({
       const deadline = setTimeout(() => controller.abort(), 12_000);
       const ownsView = () =>
         work.current === controller && getAuthGeneration() === generation;
-      void fetchSnapshot(endpoint, authorization, controller.signal, key)
+      void fetchSnapshot(endpoint, generation, controller.signal, key)
         .then(
           (snapshot) => {
             if (!ownsView()) return;
@@ -141,7 +146,7 @@ function InboxSession({
           if (work.current === controller) work.current = null;
         });
     },
-    [authorization, endpoint, generation],
+    [endpoint, generation],
   );
 
   useEffect(() => {
