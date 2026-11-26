@@ -22,7 +22,7 @@ from orchestrator.services.connection_cleanup import (
     retain_pool_cleanup,
 )
 from orchestrator.tasks._invocation import block
-from orchestrator.tasks.inputs import _INBOX_PILOT_PURPOSE, _is_inbox_pilot_request
+from orchestrator.tasks.inputs import _is_inbox_pilot_request
 from orchestrator.tasks.store import AcceptedTask, IdempotencyConflict, TaskStore
 
 from .acceptance import AcceptanceProjection
@@ -103,9 +103,8 @@ class HistoryAcceptance:
         if purpose is not None:
             if (
                 type(purpose) is not str
-                or purpose != _INBOX_PILOT_PURPOSE
                 or self._projection.profile != "terminal-v3"
-                or not _is_inbox_pilot_request(value)
+                or not _is_inbox_pilot_request(value, purpose)
             ):
                 raise HistoryError("acceptance_request_refused")
             required.add("purpose")

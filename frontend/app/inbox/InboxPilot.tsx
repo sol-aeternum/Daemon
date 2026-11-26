@@ -7,8 +7,19 @@ import { useAuth } from '@/components/AuthProvider';
 import { useAuthGeneration } from '@/hooks/useAuthGeneration';
 import { ensureAuthHeader, getAuthGeneration } from '@/lib/auth';
 
+const TOPICS = ['X', 'Y'] as const;
+type Topic = (typeof TOPICS)[number];
+
 const PROMPT = 'Do a deep dive on X.';
+const PROMPTS: Record<Topic, string> = {
+  X: PROMPT,
+  Y: 'Do a deep dive on Y.',
+};
 const FOLLOWUP = 'How’s that going?';
+const TOPIC_FOLLOWUPS: Record<Topic, string> = {
+  X: 'How’s X going?',
+  Y: 'How’s Y going?',
+};
 const COPY = {
   empty: 'No research request yet.',
   queued: 'Last saved as queued.',
@@ -16,39 +27,214 @@ const COPY = {
   completed: 'Your report is ready.',
   cancelled: 'The request was cancelled.',
 } as const;
-type Snapshot =
-  | { state: Exclude<keyof typeof COPY, 'completed'> }
-  | { state: 'completed'; conversation_id: string };
+const UUID = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/;
 
-function parseSnapshot(value: unknown): Snapshot {
-  if (!value || typeof value !== 'object' || !('state' in value))
+type SingleSnapshot =
+  | { kind: 'single'; state: Exclude<keyof typeof COPY, 'completed'> }
+  | { kind: 'single'; state: 'completed'; conversation_id: string };
+type MultiSnapshot =
+  | { kind: 'multi'; state: 'empty'; can_start: Topic[] }
+  | { kind: 'multi'; state: 'missing'; topic: Topic; can_start: Topic[] }
+  | {
+      kind: 'multi';
+      state: 'ambiguous';
+      choices: Topic[];
+      can_start: Topic[];
+    }
+  | {
+      kind: 'multi';
+      state: 'queued' | 'running' | 'cancelled';
+      topic: Topic;
+      can_start: Topic[];
+    }
+  | {
+      kind: 'multi';
+      state: 'completed';
+      topic: Topic;
+      conversation_id: string;
+      can_start: Topic[];
+    };
+type Snapshot = SingleSnapshot | MultiSnapshot;
+type RequestOptions = {
+  key?: string;
+  topic?: Topic;
+  requireMulti?: boolean;
+};
+
+function isTopic(value: unknown): value is Topic {
+  return value === 'X' || value === 'Y';
+}
+
+function parseTopics(value: unknown): Topic[] {
+  if (!Array.isArray(value)) throw Error('Invalid inbox state');
+  const topics: Topic[] = [];
+  for (const item of value) {
+    if (!isTopic(item) || topics.includes(item))
+      throw Error('Invalid inbox state');
+    topics.push(item);
+  }
+  return topics;
+}
+
+function parseSnapshot(value: unknown, selectedTopic?: Topic): Snapshot {
+  if (!value || typeof value !== 'object' || Array.isArray(value))
     throw Error('Invalid inbox state');
-  const { state } = value;
+  const record = value as Record<string, unknown>;
+  if ('can_start' in record || 'topic' in record || 'choices' in record) {
+    return parseMulti(record, selectedTopic);
+  }
+  return parseSingle(record);
+}
+
+function parseSingle(record: Record<string, unknown>): SingleSnapshot {
+  const { state } = record;
   if (
     state === 'empty' ||
     state === 'queued' ||
     state === 'running' ||
     state === 'cancelled'
   ) {
-    return { state };
+    return { kind: 'single', state };
   }
   if (
     state === 'completed' &&
-    'conversation_id' in value &&
-    typeof value.conversation_id === 'string' &&
-    /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/.test(value.conversation_id)
+    typeof record.conversation_id === 'string' &&
+    UUID.test(record.conversation_id)
   ) {
-    return { state, conversation_id: value.conversation_id };
+    return {
+      kind: 'single',
+      state,
+      conversation_id: record.conversation_id,
+    };
   }
   throw Error('Invalid inbox state');
+}
+
+function parseMulti(
+  record: Record<string, unknown>,
+  selectedTopic?: Topic,
+): MultiSnapshot {
+  const can_start = parseTopics(record.can_start);
+  const { state } = record;
+  if (state === 'ambiguous') {
+    const choices = parseTopics(record.choices);
+    if (choices.length !== 2 || can_start.length !== 0)
+      throw Error('Invalid inbox state');
+    if ('topic' in record || 'conversation_id' in record)
+      throw Error('Invalid inbox state');
+    return { kind: 'multi', state, choices, can_start: [] };
+  }
+  if (state === 'missing') {
+    if (
+      !selectedTopic ||
+      'topic' in record ||
+      'choices' in record ||
+      'conversation_id' in record
+    ) {
+      throw Error('Invalid inbox state');
+    }
+    return { kind: 'multi', state, topic: selectedTopic, can_start };
+  }
+  if (state === 'empty') {
+    if ('topic' in record || 'choices' in record || 'conversation_id' in record)
+      throw Error('Invalid inbox state');
+    return { kind: 'multi', state, can_start };
+  }
+  if (
+    state !== 'queued' &&
+    state !== 'running' &&
+    state !== 'completed' &&
+    state !== 'cancelled'
+  ) {
+    throw Error('Invalid inbox state');
+  }
+  if ('choices' in record || !isTopic(record.topic))
+    throw Error('Invalid inbox state');
+  const topic = record.topic;
+  if (
+    (selectedTopic !== undefined && topic !== selectedTopic) ||
+    can_start.includes(topic) ||
+    (state !== 'completed' && can_start.length !== 0)
+  )
+    throw Error('Invalid inbox state');
+  if (state === 'completed') {
+    if (
+      typeof record.conversation_id !== 'string' ||
+      !UUID.test(record.conversation_id)
+    ) {
+      throw Error('Invalid inbox state');
+    }
+    return {
+      kind: 'multi',
+      state,
+      topic,
+      conversation_id: record.conversation_id,
+      can_start,
+    };
+  }
+  if ('conversation_id' in record) throw Error('Invalid inbox state');
+  return { kind: 'multi', state, topic, can_start };
+}
+
+function statusText(snapshot: Snapshot, acknowledged: boolean): string {
+  if (snapshot.kind === 'multi') {
+    if (acknowledged && 'topic' in snapshot)
+      return `${snapshot.topic}: Accepted.`;
+    if (snapshot.state === 'empty') return COPY.empty;
+    if (snapshot.state === 'missing')
+      return `No ${snapshot.topic} research request yet.`;
+    if (snapshot.state === 'ambiguous') return 'Do you mean research X or Y?';
+    return `${snapshot.topic}: ${COPY[snapshot.state]}`;
+  }
+  return acknowledged ? 'Accepted.' : COPY[snapshot.state];
+}
+
+function reportId(snapshot: Snapshot): string | null {
+  return snapshot.state === 'completed' ? snapshot.conversation_id : null;
+}
+
+function canStart(
+  snapshot: Snapshot,
+  topic: Topic,
+  keys: Partial<Record<Topic, string>>,
+): boolean {
+  if (keys[topic]) return false;
+  return snapshot.kind === 'multi'
+    ? snapshot.can_start.includes(topic)
+    : topic === 'X' && snapshot.state === 'empty';
+}
+
+function placeholderFor(snapshot: Snapshot | null): string {
+  if (!snapshot) return FOLLOWUP;
+  if (snapshot.kind === 'single')
+    return snapshot.state === 'empty' ? PROMPT : FOLLOWUP;
+  if (snapshot.state === 'empty' || snapshot.state === 'missing') {
+    const topic =
+      snapshot.state === 'missing' ? snapshot.topic : snapshot.can_start[0];
+    return topic && snapshot.can_start.includes(topic)
+      ? PROMPTS[topic]
+      : FOLLOWUP;
+  }
+  if (snapshot.state === 'ambiguous') return 'X or Y';
+  const topic = snapshot.can_start[0];
+  return topic ? PROMPTS[topic] : FOLLOWUP;
+}
+
+function unsupportedHint(snapshot: Snapshot | null): string {
+  return snapshot?.kind === 'multi'
+    ? `Try “Do a deep dive on X.”, “Do a deep dive on Y.”, “X”, “Y”, or “${FOLLOWUP}”`
+    : `Try “${PROMPT}” or “${FOLLOWUP}”`;
 }
 
 async function fetchSnapshot(
   endpoint: string,
   generation: number,
   signal: AbortSignal,
-  key?: string,
+  options: RequestOptions,
 ) {
+  const { key, topic } = options;
+  const requireMulti = options.requireMulti ?? (!key && topic !== undefined);
+  if (key && topic === undefined) throw Error('Invalid inbox request');
   const current = () => {
     if (signal.aborted || getAuthGeneration() !== generation)
       throw Error('Inbox request superseded');
@@ -57,7 +243,15 @@ async function fetchSnapshot(
   const authorization = await ensureAuthHeader();
   current();
   if (!authorization) throw Error('Inbox authorization unavailable');
-  const response = await fetch(endpoint, {
+  const url =
+    !key && topic !== undefined
+      ? `${endpoint}?topic=${encodeURIComponent(topic)}`
+      : endpoint;
+  const body =
+    key && topic !== undefined
+      ? JSON.stringify({ text: PROMPTS[topic] })
+      : undefined;
+  const response = await fetch(url, {
     method: key ? 'POST' : 'GET',
     headers: key
       ? {
@@ -66,15 +260,35 @@ async function fetchSnapshot(
           'Idempotency-Key': key,
         }
       : { Authorization: authorization },
-    ...(key ? { body: JSON.stringify({ text: PROMPT }) } : {}),
+    ...(body !== undefined ? { body } : {}),
     cache: 'no-store',
     credentials: 'omit',
     redirect: 'error',
     signal,
   });
   if (!response.ok) throw Error('Unverified inbox response');
-  const snapshot = parseSnapshot(await response.json());
-  if (key && snapshot.state === 'empty') throw Error('Unverified acceptance');
+  const snapshot = parseSnapshot(await response.json(), topic);
+  if (requireMulti && snapshot.kind !== 'multi')
+    throw Error('Unverified inbox response');
+  if (key) {
+    if (
+      snapshot.state === 'empty' ||
+      snapshot.state === 'missing' ||
+      snapshot.state === 'ambiguous'
+    ) {
+      throw Error('Unverified acceptance');
+    }
+  } else if (topic !== undefined) {
+    if (
+      snapshot.kind !== 'multi' ||
+      snapshot.state === 'empty' ||
+      snapshot.state === 'ambiguous'
+    ) {
+      throw Error('Unverified inbox response');
+    }
+  } else if (snapshot.state === 'missing') {
+    throw Error('Unverified inbox response');
+  }
   return snapshot;
 }
 
@@ -112,29 +326,37 @@ function InboxSession({
   const [canAsk, setCanAsk] = useState(false);
   const [hint, setHint] = useState('');
   const work = useRef<AbortController | null>(null);
-  const startKey = useRef<string | null>(null);
+  const startKeys = useRef<Partial<Record<Topic, string>>>({});
+  const mode = useRef<Snapshot['kind'] | null>(null);
 
   const request = useCallback(
-    (key?: string) => {
+    (options: RequestOptions = {}) => {
       if (work.current || getAuthGeneration() !== generation) return;
       const controller = new AbortController();
       work.current = controller;
       const deadline = setTimeout(() => controller.abort(), 12_000);
       const ownsView = () =>
         work.current === controller && getAuthGeneration() === generation;
-      void fetchSnapshot(endpoint, generation, controller.signal, key)
+      void fetchSnapshot(endpoint, generation, controller.signal, {
+        ...options,
+        requireMulti: mode.current === 'multi' || options.requireMulti,
+      })
         .then(
           (snapshot) => {
             if (!ownsView()) return;
-            if (controller.signal.aborted) {
+            if (
+              controller.signal.aborted ||
+              (mode.current !== null && mode.current !== snapshot.kind)
+            ) {
               setStatus({ kind: 'unavailable' });
               return;
             }
+            mode.current = snapshot.kind;
             setCanAsk(true);
             setStatus({
               kind: 'saved',
               snapshot,
-              acknowledged: key !== undefined,
+              acknowledged: options.key !== undefined,
             });
           },
           () => {
@@ -158,34 +380,51 @@ function InboxSession({
     };
   }, [request]);
 
+  function begin(options: RequestOptions) {
+    setInput('');
+    setHint('');
+    setStatus({ kind: 'checking' });
+    request(options);
+  }
+
   function send(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (work.current || getAuthGeneration() !== generation) return;
     const text = input.trim().replaceAll("'", '’');
-    const starts = text === PROMPT;
-    if (starts) {
-      if (
-        startKey.current !== null ||
-        status.kind !== 'saved' ||
-        status.snapshot.state !== 'empty'
-      ) {
+    const saved = status.kind === 'saved' ? status.snapshot : null;
+    const startTopic = TOPICS.find((topic) => PROMPTS[topic] === text);
+    if (startTopic !== undefined) {
+      if (!saved || !canStart(saved, startTopic, startKeys.current)) {
         setHint(`Ask “${FOLLOWUP}” to check the saved request.`);
         return;
       }
-      // Keep the key before fetch. An uncertain response never generates a
-      // replacement or auto-resends; the next supported message reads only.
-      startKey.current = crypto.randomUUID();
-    } else if (text !== FOLLOWUP) {
-      setHint(`Try “${PROMPT}” or “${FOLLOWUP}”`);
+      // Keep each topic's key before fetch. An uncertain response never
+      // generates a replacement or auto-resends; the next supported message
+      // reads only, and the retained key is never replayed.
+      const key = crypto.randomUUID();
+      startKeys.current[startTopic] = key;
+      begin({
+        key,
+        topic: startTopic,
+        requireMulti: saved.kind === 'multi',
+      });
       return;
     }
-    setInput('');
-    setHint('');
-    setStatus({ kind: 'checking' });
-    request(starts ? (startKey.current ?? undefined) : undefined);
+    const topic = isTopic(text)
+      ? text
+      : TOPICS.find((item) => TOPIC_FOLLOWUPS[item] === text);
+    if (
+      (topic === undefined && text !== FOLLOWUP) ||
+      (topic !== undefined && mode.current !== 'multi')
+    ) {
+      setHint(unsupportedHint(saved));
+      return;
+    }
+    begin(topic === undefined ? {} : { topic });
   }
 
   const saved = status.kind === 'saved' ? status.snapshot : null;
+  const report = saved ? reportId(saved) : null;
   return (
     <>
       <div
@@ -195,13 +434,11 @@ function InboxSession({
         {status.kind === 'checking' && <p>Checking saved status…</p>}
         {status.kind === 'unavailable' && <p>Status unavailable</p>}
         {status.kind === 'saved' && (
-          <p>
-            {status.acknowledged ? 'Accepted.' : COPY[status.snapshot.state]}
-          </p>
+          <p>{statusText(status.snapshot, status.acknowledged)}</p>
         )}
-        {saved?.state === 'completed' && (
+        {report && (
           <Link
-            href={`/?id=${saved.conversation_id}`}
+            href={`/?id=${report}`}
             prefetch={false}
             className="inline-flex min-h-11 items-center underline"
           >
@@ -218,7 +455,7 @@ function InboxSession({
             <input
               id="inbox-pilot-message"
               className="min-h-11 min-w-0 flex-1 rounded-md border border-[var(--color-border)] bg-transparent px-3"
-              placeholder={saved?.state === 'empty' ? PROMPT : FOLLOWUP}
+              placeholder={placeholderFor(saved)}
               maxLength={128}
               value={input}
               onChange={(event) => setInput(event.target.value)}

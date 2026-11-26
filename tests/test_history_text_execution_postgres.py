@@ -145,8 +145,9 @@ async def text_host(projection_db, tmp_path, monkeypatch, request):
 
     async def provider(**kwargs):
         scope = runtime.current_scope()
+        identity = scope.inference_identity
         assert scope.history_binding is not None
-        state.calls.append(scope.inference_identity)
+        state.calls.append(identity)
         assert kwargs["num_retries"] == 0 and not kwargs.get("tools")
         assert scope.history_binding.effects is state.execution.effects
         operation = state.execution.history._operation
@@ -158,21 +159,44 @@ async def text_host(projection_db, tmp_path, monkeypatch, request):
             or operation._task.get_coro().__qualname__ == "HistoryEffects._heartbeat"
         )
         async with database.connection() as conn:
-            assert (
-                await conn.fetchval("SELECT may_have_dispatched FROM task_inference_recovery")
-                is True
-            )
-            assert await conn.fetchval("SELECT count(*) FROM compute_reservation_metadata") == 1
+            if getattr(state, "inbox_two_jobs", False):
+                assert identity is not None
+                assert (
+                    await conn.fetchval(
+                        "SELECT may_have_dispatched FROM task_inference_recovery WHERE task_id=$1",
+                        identity.task_id,
+                    )
+                    is True
+                )
+                assert (
+                    await conn.fetchval(
+                        "SELECT count(*) FROM entitlement_reservations WHERE scope_id=$1 AND status='open'",
+                        identity.financial_scope_id,
+                    )
+                    == 1
+                )
+                assert await conn.fetchval(
+                    "SELECT count(*) FROM compute_reservation_metadata"
+                ) == len(state.calls)
+            else:
+                assert (
+                    await conn.fetchval("SELECT may_have_dispatched FROM task_inference_recovery")
+                    is True
+                )
+                assert await conn.fetchval("SELECT count(*) FROM compute_reservation_metadata") == 1
+                assert await conn.fetchval("SELECT count(*) FROM task_history_projection") == 2
             assert (
                 await conn.fetchval(
                     "SELECT count(*) FROM entitlement_reservations WHERE status='open'"
                 )
                 == 1
             )
-            assert await conn.fetchval("SELECT count(*) FROM task_history_projection") == 2
         async with state.execution.history.operation(deadline=deadline()) as operation:
             entries = (await operation.verify()).entries
             assert type(entries[-1].command.data) is SendPossible
+            if getattr(state, "inbox_two_jobs", False):
+                assert identity is not None
+                assert entries[-1].command.data.task_id == identity.task_id
         hook = getattr(state, "provider_check", None)
         if hook is not None:
             await hook(scope)
@@ -257,6 +281,7 @@ async def text_host(projection_db, tmp_path, monkeypatch, request):
                 keepalive_s=1,
                 execution=execution,
                 inbox_pilot=getattr(state, "inbox_pilot", False),
+                inbox_two_jobs=getattr(state, "inbox_two_jobs", False),
             )
             state.execution = execution
             state.host, state.app, state.w = host, create_isolated_acceptance_app(host), w
