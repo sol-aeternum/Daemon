@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import AsyncIterator, Coroutine
 from dataclasses import dataclass
+import hmac
 import math
 import os
 import time
@@ -69,6 +70,8 @@ from orchestrator.tasks._invocation import block
 from orchestrator.tasks.inputs import (
     _INBOX_PILOT_PURPOSE,
     _INBOX_PILOT_TEXT,
+    _INBOX_TWO_JOB_PURPOSE,
+    _INBOX_TWO_JOB_TEXTS,
     chat_request_fingerprint,
 )
 from orchestrator.tasks.observe import _Observation
@@ -85,7 +88,7 @@ from orchestrator.tasks.store import (
 from orchestrator.services.account_control.transaction import ObservationBlocked
 
 from .composition import HistoryAcceptance
-from .coordination import HistoryCoordinator
+from .coordination import HistoryCoordinator, HistoryOperation
 from .effects_projection import HistoryProjection
 from .model import HistoryError
 from .observation import HistoricalObservation, HistoryObservation
@@ -93,7 +96,7 @@ from .read_supervisor import _observe, qualify_read_history
 from .store import _check_time
 from .terminal_projection import TERMINAL_PROFILES, TerminalHistoryProjection
 from .text_execution import HistoryTextExecution
-from .model import AcceptPrepare, StopIntent
+from .model import AcceptPrepare, StopIntent, commitments
 
 T = TypeVar("T")
 HEADERS = {"Cache-Control": "no-store"}
@@ -124,6 +127,33 @@ class _InboxPilotInput(BaseModel):
         if value != _INBOX_PILOT_TEXT:
             raise ValueError("unsupported inbox request")
         return value
+
+
+class _InboxTwoJobInput(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    text: Literal["Do a deep dive on X.", "Do a deep dive on Y."]
+
+
+_Topic = Literal["X", "Y"]
+_TOPICS: tuple[_Topic, ...] = ("X", "Y")
+
+
+def _inbox_topic(message: str) -> _Topic:
+    if message == _INBOX_TWO_JOB_TEXTS[0]:
+        return "X"
+    if message == _INBOX_TWO_JOB_TEXTS[1]:
+        return "Y"
+    raise ValueError("unsupported inbox topic")
+
+
+@dataclass(frozen=True)
+class _InboxOriginal:
+    accepted: AcceptPrepare
+    topic: _Topic
+    conv: dict[str, Any]
+    messages: list[dict[str, Any]]
+    snapshot: TaskSnapshot
 
 
 class _InboxWithoutReport(BaseModel):
@@ -157,6 +187,7 @@ class IsolatedAcceptanceHost:
         keepalive_s: float,
         execution: HistoryTextExecution | None = None,
         inbox_pilot: bool = False,
+        inbox_two_jobs: bool = False,
     ) -> None:
         if (
             type(acceptance) is not HistoryAcceptance
@@ -169,11 +200,23 @@ class IsolatedAcceptanceHost:
             or not math.isfinite(keepalive_s)
             or keepalive_s <= 0
             or type(inbox_pilot) is not bool
+            or type(inbox_two_jobs) is not bool
+            or (inbox_two_jobs and not inbox_pilot)
         ):
             raise HistoryError("isolated_host_refused")
         self._acceptance, self._reader = acceptance, observation
         self._execution = execution
         self._inbox_pilot = inbox_pilot
+        self._inbox_two_jobs = inbox_two_jobs
+        # A separate inert reader, bound to the exact acceptor H owner and
+        # existing W store. Only the private admission precheck uses it.
+        self._inbox_admission_reader = (
+            HistoryObservation(
+                observation._tasks, acceptance._history, observation._projection, observation._key
+            )
+            if inbox_two_jobs
+            else None
+        )
         self._fingerprint_key = fingerprint_key
         self._max_body_bytes, self._keepalive_s = max_body_bytes, keepalive_s
         self._pid = os.getpid()
@@ -234,6 +277,16 @@ class IsolatedAcceptanceHost:
         self._acceptance._projection.expected.verify_key(self._acceptance._key)
         execution = self._execution
         if self._inbox_pilot and (execution is None or ap.profile != "terminal-v3"):
+            raise HistoryError("isolated_host_refused")
+        admission_reader = self._inbox_admission_reader
+        if self._inbox_two_jobs and (
+            not self._inbox_pilot
+            or type(admission_reader) is not HistoryObservation
+            or admission_reader._tasks is not w
+            or admission_reader._history is not acceptance._history
+            or admission_reader._projection is not wp
+            or admission_reader._key != observation._key
+        ):
             raise HistoryError("isolated_host_refused")
         if execution is not None and (
             type(execution) is not HistoryTextExecution
@@ -433,18 +486,23 @@ class IsolatedAcceptanceHost:
         self,
         authorization: str | None,
         client_key: str | None,
-        payload: _InboxPilotInput,
+        payload: _InboxPilotInput | _InboxTwoJobInput,
         *,
         deadline: float,
-    ) -> _InboxStatus:
+    ) -> Any:
         self._admit(deadline)
-        if not self._inbox_pilot:
+        if not self._inbox_pilot or type(payload) is not (
+            _InboxTwoJobInput if self._inbox_two_jobs else _InboxPilotInput
+        ):
             raise _unavailable()
         token, key = self._submission_credentials(authorization, client_key)
         receipt = await self._submit_authenticated(
             token, key, ChatRequest(message=payload.text, disable_memory_write=True), deadline
         )
-        return await self.ui_read(authorization, "inbox", None, deadline=deadline, _receipt=receipt)
+        topic = _inbox_topic(payload.text) if self._inbox_two_jobs else None
+        return await self.ui_read(
+            authorization, "inbox", None, deadline=deadline, topic=topic, _receipt=receipt
+        )
 
     async def _submit_authenticated(
         self, token: str, client_key: str, payload: ChatRequest, deadline: float
@@ -469,6 +527,14 @@ class IsolatedAcceptanceHost:
             self._acceptance._history.operation(deadline=deadline) as operation,
             retain_pool_cleanup(),
         ):
+            admission: tuple[AuthenticatedDevice, CapturedGeneration] | None = None
+            if self._inbox_two_jobs:
+                checked = await self._inbox_precheck(
+                    operation, token, client_key, payload.message, deadline
+                )
+                if isinstance(checked, HTTPException):
+                    return checked
+                admission = checked
             async with pool_connection(self._reader._tasks._pool) as conn:
                 if conn.is_in_transaction():
                     raise HistoryError("auth_transaction_owner_refused")
@@ -480,6 +546,8 @@ class IsolatedAcceptanceHost:
                             detail="Invalid or expired access token",
                             headers=HEADERS,
                         )
+                    if admission is not None and auth != admission[0]:
+                        return HTTPException(401, "Authorization changed", headers=HEADERS)
                     latest = next(
                         (m for m in reversed(payload.messages or []) if m.get("role") == "user"),
                         None,
@@ -493,8 +561,18 @@ class IsolatedAcceptanceHost:
                         captured = await capture_generation(conn, auth.user_id)
                     except WriteGuardRefusal:
                         return _unavailable()
-                    purpose = _INBOX_PILOT_PURPOSE if self._inbox_pilot else None
-                    if purpose is not None:
+                    if admission is not None and captured != admission[1]:
+                        return self._ui_recovery()
+                    if admission is not None:
+                        captured = admission[1]
+                    purpose = (
+                        _INBOX_TWO_JOB_PURPOSE
+                        if self._inbox_two_jobs
+                        else _INBOX_PILOT_PURPOSE
+                        if self._inbox_pilot
+                        else None
+                    )
+                    if purpose is not None and admission is None:
                         # H is still exclusively held by this operation until
                         # original A acceptance and both connections settle.
                         # Any prepare counts, including old generations.
@@ -566,12 +644,208 @@ class IsolatedAcceptanceHost:
                         captured_generation=captured,
                     )
                     lookup, request = self._acceptance._request(options, purpose=purpose)
+                    if self._inbox_two_jobs and self._reader._history._blocked:
+                        return _unavailable()
                     accepted = await self._acceptance._accept_owned(
                         operation, deadline, options, lookup, request, purpose=purpose
                     )
             # W auth transaction and A's actual reset have settled; outer scope
             # still owns W holder reset, filesystem work and H release.
         return _Submission(accepted, auth)
+
+    async def _inbox_precheck(
+        self,
+        operation: HistoryOperation,
+        token: str,
+        client_key: str,
+        message: str,
+        deadline: float,
+    ) -> tuple[AuthenticatedDevice, CapturedGeneration] | HTTPException:
+        """Negative admission check under the original acceptor H operation.
+
+        W's account/content locks and physical holder must be released before
+        native A acquires its own account guard. H remains held across both.
+        """
+        reader = self._inbox_admission_reader
+        if reader is None or self._acceptance._blocked or self._reader._history._blocked:
+            return _unavailable()
+        async with pool_connection(reader._tasks._pool) as conn:
+            if conn.is_in_transaction():
+                raise HistoryError("auth_transaction_owner_refused")
+            async with conn.transaction(isolation="read_committed"):
+                auth = await self._auth(conn, token, deadline)
+                if auth is None:
+                    return HTTPException(401, "Invalid or expired access token", headers=HEADERS)
+                xid = await conn.fetchval("SELECT txid_current()")
+                checked = await self._inbox_originals(reader, operation, conn, xid, auth, deadline)
+                if isinstance(checked, HTTPException):
+                    return checked
+                current, originals = checked
+                allowed = await self._inbox_can_start(conn, auth, originals)
+                if message not in _INBOX_TWO_JOB_TEXTS or not any(
+                    message == f"Do a deep dive on {topic}." for topic in allowed
+                ):
+                    return self._ui_recovery()
+                lookup, _ = commitments(reader._key, auth.user_id, client_key, b"")
+                if any(hmac.compare_digest(lookup, o.accepted.key_commitment) for o in originals):
+                    return self._ui_recovery()
+                if await self._auth(conn, token, deadline) != auth:
+                    return HTTPException(401, "Authorization changed", headers=HEADERS)
+                await reader._check_owned(operation, conn, xid, deadline)
+        # No read receipt or content lock travels into A. The next transaction
+        # must prove the same bearer and capture; A rechecks that capture.
+        return auth, current
+
+    async def _inbox_originals(
+        self,
+        reader: HistoryObservation,
+        operation: HistoryOperation,
+        conn: Any,
+        xid: int,
+        auth: AuthenticatedDevice,
+        deadline: float,
+    ) -> tuple[CapturedGeneration, list[_InboxOriginal]] | HTTPException:
+        """Closed two-job envelope, validated in full before selecting a topic."""
+        state = await operation.verify()
+        if not await reader._parity_owned(operation, conn, xid, state, deadline):
+            return _unavailable()
+        accepted = [
+            e.command.data
+            for e in state.entries
+            if type(e.command.data) is AcceptPrepare and e.command.data.account_id == auth.user_id
+        ]
+        if len(accepted) > 2:
+            return self._ui_recovery()
+        try:
+            current = (
+                CapturedGeneration(auth.user_id, accepted[0].account_generation)
+                if accepted
+                else await capture_generation(conn, auth.user_id)
+            )
+            if any(a.account_generation != current.generation for a in accepted):
+                return self._ui_recovery()
+            conversations = [a.conversation_id for a in accepted]
+            task_ids = [a.task_id for a in accepted]
+            message_ids = [m for a in accepted for m in (a.user_message_id, a.result_message_id)]
+            if len(set(conversations + task_ids + message_ids)) != 4 * len(accepted):
+                return self._ui_recovery()
+            async with guard_content_write(conn, current):
+                convs = await conn.fetch(
+                    "SELECT * FROM public.conversations WHERE user_id=$1 OR id=ANY($2::uuid[]) "
+                    "ORDER BY id FOR SHARE",
+                    auth.user_id,
+                    conversations,
+                )
+                tasks = await conn.fetch(
+                    "SELECT id FROM public.tasks WHERE user_id=$1 OR conversation_id=ANY($2::uuid[]) "
+                    "OR id=ANY($3::uuid[]) ORDER BY id FOR SHARE",
+                    auth.user_id,
+                    conversations,
+                    task_ids,
+                )
+                messages = await conn.fetch(
+                    "SELECT * FROM public.messages WHERE user_id=$1 OR conversation_id=ANY($2::uuid[]) "
+                    "OR id=ANY($3::uuid[]) ORDER BY created_at,id FOR SHARE",
+                    auth.user_id,
+                    conversations,
+                    message_ids,
+                )
+                if (
+                    {c["id"] for c in convs} != set(conversations)
+                    or {t["id"] for t in tasks} != set(task_ids)
+                    or {m["id"] for m in messages} != set(message_ids)
+                ):
+                    return self._ui_recovery()
+                originals: list[_InboxOriginal] = []
+                for a in accepted:
+                    row = await reader._task_owned(
+                        operation, conn, xid, auth, a, None, state, deadline
+                    )
+                    if row is None or await conn.fetchval(
+                        "SELECT EXISTS(SELECT 1 FROM public.task_operations WHERE task_id=$1) "
+                        "OR (SELECT count(*) FROM public.task_attempts WHERE task_id=$1)>1",
+                        a.task_id,
+                    ):
+                        return self._ui_recovery()
+                    if row["status"] == "cancelled":
+                        execution = self._execution
+                        if execution is None or execution.worker is None:
+                            return self._ui_recovery()
+                        execution.validate_worker(execution.context(), execution.worker)
+                        if a.task_id not in execution._scheduled or not any(
+                            type(e.command.data) is StopIntent
+                            and (
+                                e.command.data.account_id,
+                                e.command.data.account_generation,
+                                e.command.data.task_id,
+                            )
+                            == (auth.user_id, current.generation, a.task_id)
+                            for e in state.entries
+                        ):
+                            return self._ui_recovery()
+                    try:
+                        conv, pair = reader._text_values(
+                            a,
+                            row,
+                            next(c for c in convs if c["id"] == a.conversation_id),
+                            [m for m in messages if m["conversation_id"] == a.conversation_id],
+                            expected_purpose=_INBOX_TWO_JOB_PURPOSE,
+                        )
+                        if row["status"] == "cancelled":
+                            await reader._cancelled_owned(
+                                operation, conn, xid, a, row, state, pair[-1]["metadata"], deadline
+                            )
+                        snapshot = reader._tasks._snapshot_from(row)
+                        topic = _inbox_topic(pair[0]["content"])
+                    except Exception:
+                        return self._ui_recovery()
+                    if any(o.topic == topic for o in originals):
+                        return self._ui_recovery()
+                    originals.append(_InboxOriginal(a, topic, conv, pair, snapshot))
+                await reader._check_owned(operation, conn, xid, deadline)
+                return current, originals
+        except WriteGuardRefusal:
+            return self._ui_recovery()
+
+    async def _inbox_can_start(
+        self, conn: Any, auth: AuthenticatedDevice, originals: list[_InboxOriginal]
+    ) -> list[_Topic]:
+        execution = self._execution
+        if (
+            execution is None
+            or execution.worker is None
+            or execution._blocked
+            or execution.history._blocked
+            or self._acceptance._blocked
+            or self._acceptance._history._blocked
+            or self._reader._history._blocked
+            or len(originals) >= 2
+        ):
+            return []
+        try:
+            execution.validate_worker(execution.context(), execution.worker)
+        except HistoryError:
+            return []
+        if originals:
+            original = originals[0]
+            task = original.accepted.task_id
+            if (
+                original.snapshot.status.value != "completed"
+                or execution._outcomes.get(task) != "completed"
+                or not any(
+                    job.done() and ident == task for job, ident in execution._job_tasks.items()
+                )
+            ):
+                return []
+        if (
+            await conn.fetchval(
+                "SELECT EXISTS(SELECT 1 FROM public.entitlement_reservations WHERE user_id=$1 AND status='open')",
+                auth.user_id,
+            )
+            is not False
+        ):
+            return []
+        return [t for t in _TOPICS if not any(o.topic == t for o in originals)]
 
     async def cancel(
         self, authorization: str | None, task: UUID, *, deadline: float
@@ -682,12 +956,15 @@ class IsolatedAcceptanceHost:
         before: str | None = None,
         through: str | None = None,
         search: str | None = None,
+        topic: _Topic | None = None,
         _receipt: _Submission | None = None,
     ) -> Any:
         """Only the explicitly constructed UI app calls this bounded read."""
         self._admit(deadline)
-        if (kind == "inbox" and not self._inbox_pilot) or (
-            _receipt is not None and kind != "inbox"
+        if (
+            (kind == "inbox" and not self._inbox_pilot)
+            or (_receipt is not None and kind != "inbox")
+            or (topic is not None and (not self._inbox_two_jobs or kind != "inbox"))
         ):
             raise _unavailable()
         token = _extract_bearer_token(authorization)
@@ -706,6 +983,7 @@ class IsolatedAcceptanceHost:
                     before,
                     through,
                     search,
+                    topic=topic,
                     receipt=_receipt,
                 ),
                 deadline,
@@ -734,6 +1012,7 @@ class IsolatedAcceptanceHost:
         through: str | None,
         search: str | None,
         *,
+        topic: _Topic | None,
         receipt: _Submission | None,
     ) -> Any:
         reader = self._reader
@@ -748,6 +1027,44 @@ class IsolatedAcceptanceHost:
                             status_code=401,
                             detail="Invalid or expired access token",
                             headers=HEADERS,
+                        )
+                    if self._inbox_two_jobs:
+                        xid = await conn.fetchval("SELECT txid_current()")
+                        checked = await self._inbox_originals(
+                            reader, operation, conn, xid, auth, deadline
+                        )
+                        if isinstance(checked, HTTPException):
+                            return checked
+                        _, originals = checked
+                        can_start = await self._inbox_can_start(conn, auth, originals)
+                        if await self._auth(conn, token, deadline) != auth:
+                            return HTTPException(401, "Authorization changed", headers=HEADERS)
+                        await reader._check_owned(operation, conn, xid, deadline)
+                        if kind == "inbox":
+                            return self._two_job_status(originals, can_start, topic, receipt)
+                        selected = next(
+                            (
+                                o
+                                for o in originals
+                                if (kind == "task" and o.accepted.task_id == ident)
+                                or (kind == "conversation" and o.accepted.conversation_id == ident)
+                            ),
+                            None,
+                        )
+                        return self._ui_response(
+                            auth,
+                            kind,
+                            ident,
+                            selected.conv if selected else None,
+                            selected.messages if selected else [],
+                            selected.snapshot if selected else None,
+                            limit,
+                            offset,
+                            pagination,
+                            before,
+                            through,
+                            search,
+                            list_values=[o.conv for o in originals],
                         )
                     xid = await conn.fetchval("SELECT txid_current()")
                     state = await operation.verify()
@@ -894,6 +1211,40 @@ class IsolatedAcceptanceHost:
                         return self._ui_recovery()
 
     @staticmethod
+    def _two_job_status(
+        originals: list[_InboxOriginal],
+        can_start: list[_Topic],
+        topic: _Topic | None,
+        receipt: _Submission | None,
+    ) -> Any:
+        if receipt is not None:
+            selected = next(
+                (o for o in originals if o.accepted.task_id == receipt.task.task_id), None
+            )
+            if selected is None or selected.topic != topic:
+                return _unavailable()
+        elif topic is not None:
+            selected = next((o for o in originals if o.topic == topic), None)
+            if selected is None:
+                return {"state": "missing", "can_start": can_start}
+        elif not originals:
+            return {"state": "empty", "can_start": can_start}
+        elif len(originals) == 2:
+            return {"state": "ambiguous", "choices": list(_TOPICS), "can_start": []}
+        else:
+            selected = originals[0]
+        response = IsolatedAcceptanceHost._inbox_status(
+            selected.accepted, selected.snapshot, receipt
+        )
+        if isinstance(response, HTTPException):
+            return response
+        return {
+            **response.model_dump(mode="json"),
+            "topic": selected.topic,
+            "can_start": can_start,
+        }
+
+    @staticmethod
     def _inbox_status(
         accepted: AcceptPrepare | None,
         snapshot: TaskSnapshot | None,
@@ -943,6 +1294,8 @@ class IsolatedAcceptanceHost:
         before: str | None,
         through: str | None,
         search: str | None,
+        *,
+        list_values: list[dict[str, Any]] | None = None,
     ) -> Any:
         if kind == "task":
             return (
@@ -983,7 +1336,18 @@ class IsolatedAcceptanceHost:
                 return HTTPException(
                     400, "Search is unsupported by the isolated text fixture", headers=HEADERS
                 )
-            rows = [] if conv is None else [conv]
+            rows = (
+                ([] if conv is None else [conv])
+                if list_values is None
+                else sorted(
+                    (
+                        ConversationOut.model_validate(_normalize_conversation(dict(c)))
+                        for c in list_values
+                    ),
+                    key=lambda c: (c.pinned, c.last_activity_at, c.id),
+                    reverse=True,
+                )
+            )
             total = len(rows)
             if upper is not None:
                 rows = [
@@ -991,17 +1355,20 @@ class IsolatedAcceptanceHost:
                     for c in rows
                     if (c.pinned, c.last_activity_at, c.id) < (upper.pinned, upper.at, upper.id)
                 ]
+            has_more = len(rows) > offset + limit
             rows = rows[offset : offset + limit]
-            boundaries = [
-                encode_cursor(
-                    HistoryBoundary(c.last_activity_at, c.id, c.pinned), user_id=auth.user_id
+            boundaries = []
+            for c in rows:
+                activity = c.last_activity_at
+                if activity is None:
+                    return IsolatedAcceptanceHost._ui_recovery()
+                boundaries.append(
+                    encode_cursor(HistoryBoundary(activity, c.id, c.pinned), user_id=auth.user_id)
                 )
-                for c in rows
-            ]
             page = (
                 {
-                    "has_more": False,
-                    "next_cursor": None,
+                    "has_more": has_more,
+                    "next_cursor": boundaries[-1] if boundaries and has_more else None,
                     "start_cursor": boundaries[0] if boundaries else None,
                     "end_cursor": boundaries[-1] if boundaries else None,
                 }
@@ -1289,7 +1656,27 @@ def create_isolated_ui_app(host: IsolatedAcceptanceHost) -> FastAPI:
         except Exception:
             raise _unavailable() from None
 
-    if host._inbox_pilot:
+    if host._inbox_two_jobs:
+
+        @app.get("/tasks/inbox-pilot", response_model=None)
+        async def two_job_status(request: Request, topic: _Topic | None = None) -> Any:
+            return await read(request, "inbox", None, topic=topic)
+
+        @app.post("/tasks/inbox-pilot", response_model=None)
+        async def two_job_start(payload: _InboxTwoJobInput, request: Request) -> Any:
+            try:
+                return await host._submit_inbox_pilot(
+                    request.headers.get("Authorization"),
+                    request.headers.get("Idempotency-Key"),
+                    payload,
+                    deadline=time.monotonic() + 10,
+                )
+            except HTTPException:
+                raise
+            except Exception:
+                raise _unavailable() from None
+
+    elif host._inbox_pilot:
 
         @app.get("/tasks/inbox-pilot")
         async def inbox_status(request: Request) -> _InboxStatus:

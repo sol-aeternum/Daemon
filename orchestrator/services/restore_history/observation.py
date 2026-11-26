@@ -26,7 +26,7 @@ from orchestrator.services.account_control.guard import (
 )
 from orchestrator.services.connection_cleanup import pool_connection, retain_pool_cleanup
 from orchestrator.tasks.store import TaskSnapshot, TaskStore
-from orchestrator.tasks.inputs import _INBOX_PILOT_PURPOSE, _is_inbox_pilot_request, canonical_json
+from orchestrator.tasks.inputs import _is_inbox_pilot_request, canonical_json
 
 from .coordination import HistoryCoordinator, HistoryOperation
 from .effects_projection import HistoryProjection
@@ -456,10 +456,9 @@ class HistoryObservation:
         if expected_purpose is not None:
             if (
                 type(expected_purpose) is not str
-                or expected_purpose != _INBOX_PILOT_PURPOSE
                 or self._projection.profile != "terminal-v3"
                 or type(request) is not dict
-                or not _is_inbox_pilot_request(request)
+                or not _is_inbox_pilot_request(request, expected_purpose)
             ):
                 raise ValueError("unsupported text purpose")
             request_keys.add("purpose")

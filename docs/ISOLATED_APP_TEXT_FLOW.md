@@ -216,6 +216,85 @@ inbox persistence, nor deployed restore/runtime permissions. #477 and its
 production release gates remain separate. This slice addresses DEC04–DEC05
 and the bounded parts of AC03, AC09 and AC11 only.
 
+### Explicit two-job inbox extension
+
+The `inbox_pilot=True, inbox_two_jobs=True` isolated construction is a
+separate closed terminal-v3 fixture. The existing one-job construction,
+ordinary app bridge and default-off startup are unchanged. The v2 canonical
+purpose admits exactly `Do a deep dive on X.` and `Do a deep dive on Y.`,
+each at most once, in distinct original native conversations. There is no
+new table, grant, production selector, runner, queue or global admission rule.
+This is scripted research text, not general research or intent routing.
+
+The second explicit start requires the first original to have a qualified
+completed report AND the original same-host runner job to have finished with
+its completed outcome and no open account reservation. It is refused while
+the first is active or unresolved; reads never enqueue it later. A restart
+can preserve readable saved state but does not reconstruct the current-host
+runner outcome needed for another acceptance. No simultaneous provider
+execution or automatic recovery is claimed.
+
+The acceptor holds its original exclusive H operation throughout two W
+transactions and the original A acceptance. A fixed private observation
+collaborator borrowing the acceptor H and actual W store checks the complete
+prior envelope under original-generation and content locks. Its W transaction
+and physical holder release finish before the second W transaction starts.
+The latter re-authenticates the same device/session/account and checks the
+same generation without retaining W account/content SHARE locks across A.
+The native A transaction alone authorizes the new acceptance. Keeping H
+throughout serializes cooperating isolated acceptors/effects; it is not a
+new general SQL concurrency authority. No read receipt or failed cleanup
+permits dispatch. A blocked observation owner also refuses new admission in
+this mode; the separate acceptor cannot treat an unusable read owner as a
+reason to start another job. A later read failure does not revoke an already
+admitted native A transaction or promote its readback to a dispatch receipt.
+
+Both acceptance and UI reads check all account H prepares (including earlier
+generations), global H/SQL parity, distinct task/conversation/message IDs,
+the exact union of account and attached native rows, per-original canonical
+commitments and text/state evidence before selection. An unsupported or
+inconsistent job makes the envelope unavailable, including the other
+report: terminal-v3 does not qualify failed/needs_attention content. Current-host
+confirmed cancellation follows the existing restriction. No mixed history,
+truncation, recency guess or fallback. Native conversation detail selects its
+exact authorized original; the on-demand list has both and correct cursors.
+
+Example (after X completes and Y is separately accepted and saved as running):
+
+> **You:** How’s that going?
+>
+> **Daemon:** Do you mean research X or Y?
+>
+> **You:** Y
+>
+> **Daemon:** Y: Last saved as running.
+>
+> **You:** X
+>
+> **Daemon:** X: Your report is ready. [Open report]
+
+Only the selected completed original has a link; it opens the existing
+authenticated conversation containing the committed assistant text. The
+clarification and topic selections are GETs, not accepted turns. No internal
+IDs are rendered in the inbox, and no dashboard is required. The UI uses
+the original fresh bearer, generation and abort fences and no-store requests.
+The global auth coordination gate can unmount a protected view during token
+refresh; reopening reads the saved inbox generically, without guessing or
+carrying an interrupted selection past that gate. Explicit selection after
+the refresh uses the new bearer. Lost acknowledgements never replay a start.
+The exact-head qualification record, including any failures, belongs in the
+associated PR.
+
+Run the new and retained pilot cases inside the managed disposable runner:
+
+```sh
+PYTHONPATH=. uv run pytest -q --compute-metadata-postgres \
+  tests/test_history_inbox_two_jobs_postgres.py \
+  tests/history_inbox_two_jobs_browser_postgres.py \
+  tests/test_history_inbox_ui_postgres.py \
+  tests/history_inbox_ui_browser_postgres.py
+```
+
 ## How partial text reaches the current page
 
 The isolated POST stream remains acceptance metadata only. It does not emit answer

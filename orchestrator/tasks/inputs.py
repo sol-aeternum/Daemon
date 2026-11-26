@@ -17,6 +17,8 @@ CHAT_INPUT_VERSION = 1
 _REQUEST_HASH_DOMAIN = b"daemon.task.request.v1\n"
 _INBOX_PILOT_PURPOSE: Final = "isolated-inbox-research-v1"
 _INBOX_PILOT_TEXT: Final = "Do a deep dive on X."
+_INBOX_TWO_JOB_PURPOSE: Final = "isolated-inbox-research-v2"
+_INBOX_TWO_JOB_TEXTS: Final = (_INBOX_PILOT_TEXT, "Do a deep dive on Y.")
 
 
 def canonical_json(value: Any) -> str:
@@ -24,18 +26,27 @@ def canonical_json(value: Any) -> str:
     return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
 
 
-def _is_inbox_pilot_request(value: dict[str, Any]) -> bool:
+def _is_inbox_pilot_request(value: dict[str, Any], purpose: str = _INBOX_PILOT_PURPOSE) -> bool:
     """The exact server-canonical input admitted by the isolated inbox pilot."""
+    message = value.get("message")
+    if purpose == _INBOX_PILOT_PURPOSE:
+        if message != _INBOX_PILOT_TEXT:
+            return False
+    elif purpose == _INBOX_TWO_JOB_PURPOSE:
+        if message not in _INBOX_TWO_JOB_TEXTS:
+            return False
+    else:
+        return False
     return value.get("disable_memory_write") is True and value == {
         "conversation_id": None,
-        "message": _INBOX_PILOT_TEXT,
+        "message": message,
         "attachments": [],
         "model": "auto",
         "provider": None,
         "metadata": {},
         "disable_memory_write": True,
         "content_parts": [],
-        "purpose": _INBOX_PILOT_PURPOSE,
+        "purpose": purpose,
     }
 
 
@@ -91,7 +102,10 @@ def chat_request_fingerprint(
     if temporal_scope is not None:
         accepted["temporal_scope"] = temporal_scope
     if purpose is not None:
-        if type(purpose) is not str or purpose != _INBOX_PILOT_PURPOSE:
+        if type(purpose) is not str or purpose not in (
+            _INBOX_PILOT_PURPOSE,
+            _INBOX_TWO_JOB_PURPOSE,
+        ):
             raise ValueError("unsupported request purpose")
         accepted["purpose"] = purpose
     canonical = canonical_json(accepted)
