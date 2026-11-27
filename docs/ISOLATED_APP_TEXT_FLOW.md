@@ -295,6 +295,161 @@ PYTHONPATH=. uv run pytest -q --compute-metadata-postgres \
   tests/history_inbox_ui_browser_postgres.py
 ```
 
+### Managed clean restart: one original X and one successor
+
+Source checkpoint: `03086f50e7020c3b8df5a5547ab12f218630471a` (merged #798).
+The owner approved the following extension for #761/#477 on create-new,
+disposable local persistence only. DEC04–DEC06 and AC03/AC09 still require
+truthful interruption. Nothing selects this profile in production.
+
+The existing durable evidence is sufficient to observe surviving completed X,
+but insufficient to admit a subsequent Y under the approved two-job contract.
+
+| Existing evidence | What it establishes | Missing evidence |
+| --- | --- | --- |
+| H acceptance and terminal-v3 projection, with the whole native envelope (`acceptance_host.py`, `_inbox_originals`; `observation.py`, `_task_owned` / `_terminal_owned`) | Original account/generation, committed request and surviving result identity/state, subject to the existing qualified reads | Original runner return and final cleanup |
+| Native task, attempt, result and finished event (`tasks/store.py`, `_stage_completed_body`, `_end_attempt`) | Terminal publication, ended attempt and closed lifecycle admission | Acknowledged publication return, compute/stream/heartbeat cleanup and runner outcome |
+| Original account reservation ledger (`entitlements/service.py`, `_finish`) | Durable financial disposition, amounts and original accounting period; open holds remain independently checkable | Local producer cleanup or acknowledgement of settlement by its original owner |
+| Original runner job (`text_execution.py`, `_finished`; `tasks/runner.py`, `_run_chat_task`) | Current-process returned outcome after the runner's retained cleanup paths | Persistence across process loss |
+
+`AttemptSink._complete` publishes inside `_execute`, while its `account_compute`
+context is still open. Scope exit and the runner's `finally` drain stream,
+settlement and heartbeat owners later. In particular, a terminal commit can
+survive a lost acknowledgement or release failure. Closing the attempt lifecycle
+in that commit fences cooperating admission; it does not certify whole-call
+cessation (see [ATTEMPT_LIFECYCLE.md](ATTEMPT_LIFECYCLE.md)). Acquiring H in another
+process only establishes current H ownership. H is not held for the entire
+runner or around provider work. Neither elapsed time, an ended lease, a missing
+process, empty new-host job maps, closed lifecycle nor zero open reservations
+can establish the missing successful return.
+
+The existing discriminating regressions are
+`test_completed_sql_is_not_second_start_authority_until_runner_returns` and
+`test_reconstructed_host_reads_first_but_cannot_admit_second` in
+`tests/test_history_inbox_two_jobs_postgres.py`. The first holds the job after
+actual runner completion but before its return to the scheduling owner; even
+with committed output the second admission is refused. The latter reconstructs
+the host in-process and observes X without Y admission. The separate
+`tests/test_history_ui_process_postgres.py` exercises a genuine new interpreter
+over surviving ordinary text. The checkpoint extends this diagnostic to the
+unchanged two-job HTTP adapters with a separate authenticated device: completed
+or interrupted original readback and explicit Y refusal, with original durable
+rows unchanged. It is an ASGI process diagnostic, not a loopback browser restart
+qualification.
+
+The independent review also identified a further proof obligation: `_resolve`
+can retain an acknowledged `state.result` as its returned status even when the
+invocation has become blocked, and the runner's cleanup loop retrieves owner
+exceptions. A returned `completed` string alone is therefore not a certificate
+that every cleanup succeeded. The same-host admission predicate also checks
+owner latches and the durable reservation ledger, but does not explicitly
+inspect the original invocation's uncertainty. Whether a post-terminal
+settlement/cleanup error with zero open reservations can reach same-host Y
+admission needs a discriminating fault test, not assumed clearance or a
+silent change to the existing guard. The new handoff requires positive
+cleanup evidence, including that no such uncertainty remains.
+
+**Minimum handoff:** retain evidence from the original execution owner
+that the exact original scheduled job returned `completed`, its required local
+cleanup finished successfully, and its execution authority was not poisoned.
+Bind that evidence to the existing H identity/profile and acceptance record,
+account and original content generation, task, attempt epoch/lifecycle and
+financial scope, and the original terminal/report identity. Prove the original
+owner's cessation for the supported clean-restart scenario. Recheck the
+qualified surviving whole H/SQL envelope, exact native completion and
+account-wide absence of open reservations at new admission. Terminal-v3's
+legacy metadata branch does not perform all of terminal-v4's native attempt/event
+checks; the exact original attempt and scope must be explicitly validated for
+the new handoff, not assumed from the report projection. The handoff must
+be immutable, narrowly scoped, bounded and independently qualified against
+the same owned persistence. It must not contain a reusable dispatch receipt,
+credential, report content or a general resume permission. Old records with
+no such evidence remain readable where qualified but cannot authorize Y.
+
+**Approved disposable pilot:** the original
+execution owner publishes the protected handoff. The launcher establishes the
+order of process lifetimes; it does not issue a durable completion certificate.
+The implementation uses the following contract:
+
+1. **Check before retiring.** On the original event loop, require exactly one
+   already completed X, no pending submission or schedule, healthy owners, an
+   acknowledged terminal publish, and successful cleanup and settlement by
+   that exact invocation. Refuse an active X without cancelling it. Once
+   eligible, latch ingress and scheduling closed without an intervening await.
+   Drain and revalidate. A failure after the latch leaves the producer closed.
+2. **Publish once.** In a separate opt-in profile derived from terminal-v3,
+   `inbox-retired-v1`, append one worker-authored `INBOX_ORIGINAL_RETIRED` fact referencing the
+   terminal and sole completion Send record IDs in the same H chain. The former
+   binds the acceptance, generation, task, epoch and report; the latter binds
+   the producer, lifecycle, scopes and reservation. Revalidate the sealed X
+   request, completed native attempt/event/result and exact original settlement.
+   The stager checks the closed lifecycle and compute metadata under row locks.
+   Refuse extra Sends, attempts, a Stop anywhere in X's history, a restore
+   interval or conflicting evidence. Under exclusive H, append the fact and
+   stage its immutable projection in a guarded W transaction. The SQL
+   change is limited to the fixture: private decoder, direct-W-only staging,
+   bounded complete mixed-history A/W read and exact privilege qualification.
+   No backfill or publication retry.
+3. **Require acknowledged retirement and exit.** One launcher exclusively
+   creates and owns the disposable persistence for both processes. It may start
+   one successor only after receiving a private acknowledgement of the handoff
+   commit, releases and host/pool closure, and successfully reaping the exact
+   old process. A fresh private Unix socket binds that successor to this fixture
+   and handoff. At provisioning, the Linux kernel cookie for the launcher's
+   loopback listening socket, the boot ID and the private root inode bind the
+   fixture's history identity. Reopening the same port or copying the H and SQL
+   does not recreate that socket. The launcher holds the private root's
+   exclusive lock throughout; children never inherit that lock. There is no
+   attach-existing path after launcher loss. Even matching H
+   and SQL cannot admit Y after a lost handoff acknowledgement, failed shutdown
+   or uncertain exit. H/SQL divergence refuses the entire envelope. Loss of the
+   launcher closes admission and starts shutdown. A stalled transport read
+   can outlive that transition; its exit is never counted as clean retirement.
+
+Only a subsequent explicit, distinct request may enter the existing two-phase
+W precheck and A acceptance under the exclusive H operation. The new evidence
+only satisfies the prior-original restriction in that precheck; all existing
+whole-envelope, generation, fresh bearer, key, owner, reservation, physical
+release and original NEW acceptance requirements remain. The successor checks
+the protected history, current native report/attempt/event and original settled
+reservation. The lifecycle and dispatch-metadata checks are attested at staging
+on the exclusively owned fixture. A status check or report
+open creates no task, attempt, reservation or dispatch. No scheduling on startup,
+replay of X, inferred completion of interrupted X, or settlement by observation.
+The UI continues short status, explicit ambiguity clarification and a single
+authorized report link; unsupported evidence refuses truthfully.
+
+Qualification uses owned PostgreSQL/Redis, actual process exit and fresh
+owners/pools, loopback Next/Chromium, separately issued devices and the original
+runner with a synthetic transport:
+
+- Successful X: capture exact task, attempt, conversation, report and reservation
+  identities and committed text; observe acknowledged job return and cleanup;
+  cleanly retire the host. Reopen X on the second device after restart with no
+  dispatch, then submit distinct Y with a fresh key. Require one new original
+  and exactly one synthetic dispatch for each of X and Y, unchanged X and
+  reconciled original-period charges/holds.
+- Kill or interrupt before terminal commit, after commit before original
+  acknowledgement/cleanup, during financial cleanup, and at handoff publication
+  boundaries. Missing, conflicting or uncertain evidence refuses Y without
+  replay/settlement. Include a real settlement commit followed by loss of its
+  acknowledgement, including when the ledger already shows zero open holds.
+  Cover Stop and cancelled X, lost database and HTTP
+  acknowledgements, bearer refresh/revocation, account generation change, and
+  foreign account/identity or key mismatch.
+- Keep single/two-job same-host, ambiguity, report authorization and physical
+  cleanup regressions. Compare protected history and durable row counts,
+  per-attempt reservation and period ledger before/after each read, refusal and
+  accepted request. Run unchanged project gates and independent source review.
+
+Run `tests/test_history_inbox_restart_postgres.py` and
+`tests/test_inbox_retired_projection_postgres.py` with `--compute-metadata-postgres`,
+and `tests/test_inbox_retired_projection.py` for codec/chain refusal. The
+fixture SQL is `tests/fixtures/inbox_retired_v1.sql`, outside the migration
+chain. See the draft PR for exact-head results. This does not qualify a
+production browser/backend, crash recovery, remote provider shutdown or
+another successor.
+
 ## How partial text reaches the current page
 
 The isolated POST stream remains acceptance metadata only. It does not emit answer

@@ -19,11 +19,13 @@ from tests.test_history_text_execution_postgres import (
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("completed", [False, True])
+@pytest.mark.parametrize("inbox_two_jobs", [False, True])
 async def test_fresh_process_ui_bridge_reads_surviving_sql_without_repeating_work(
-    text_host, tmp_path, completed
+    text_host, tmp_path, completed, inbox_two_jobs
 ):
     s = text_host
     _, headers = await device(s, s.account)
+    _, second_headers = await device(s, s.account)
     packet = dict(
         socket=str(s.db.host),
         database=s.db.name,
@@ -34,6 +36,7 @@ async def test_fresh_process_ui_bridge_reads_surviving_sql_without_repeating_wor
         history_id=str(s.identity.history_id),
         key_check=s.identity.key_check,
         authorization=headers["Authorization"],
+        inbox_two_jobs=inbox_two_jobs,
     )
     environment = {
         "PATH": "/usr/bin:/bin",
@@ -62,10 +65,12 @@ async def test_fresh_process_ui_bridge_reads_surviving_sql_without_repeating_wor
         return child
 
     first = await start("complete" if completed else "start")
+    assert first.stderr is not None
+    errors = asyncio.create_task(first.stderr.read())
     try:
         assert first.stdout is not None
         line = await asyncio.wait_for(first.stdout.readline(), 30)
-        assert line
+        assert line, (await errors).decode()
         witness = json.loads(line)
         assert witness["calls"] == 1
         packet["task"] = witness["task"]
@@ -75,7 +80,24 @@ async def test_fresh_process_ui_bridge_reads_surviving_sql_without_repeating_wor
         if first.returncode is None:
             first.kill()
         await asyncio.wait_for(first.wait(), 10)
-    assert first.returncode == (0 if completed else -9)
+        diagnostics = await errors
+    assert first.returncode == (0 if completed else -9), diagnostics.decode()
+    async with s.db.connection() as conn:
+        original = await conn.fetchrow("SELECT * FROM tasks")
+        attempt = await conn.fetchrow("SELECT * FROM task_attempts")
+        reservation = await conn.fetchrow("SELECT * FROM entitlement_reservations")
+        messages = await conn.fetch("SELECT * FROM messages ORDER BY id")
+        conversations = await conn.fetch("SELECT * FROM conversations ORDER BY id")
+        usage = await conn.fetch(
+            "SELECT * FROM entitlement_usage_periods ORDER BY user_id,period_key"
+        )
+        accounts = await conn.fetch("SELECT * FROM entitlement_accounts ORDER BY user_id")
+        events = await conn.fetch("SELECT * FROM task_events ORDER BY task_id,seq")
+        recovery = await conn.fetch("SELECT * FROM task_inference_recovery ORDER BY task_id")
+    assert str(original["id"]) == witness["task"]
+    assert reservation["status"] == ("settled" if completed else "open")
+    history = {name: (s.path / name).read_bytes() for name in ("LOG", "HEAD")}
+    packet["authorization"] = second_headers["Authorization"]
     second = await start("ui-reopen")
     try:
         stdout, stderr = await asyncio.wait_for(second.communicate(), 30)
@@ -90,6 +112,27 @@ async def test_fresh_process_ui_bridge_reads_surviving_sql_without_repeating_wor
         assert s.db.sql("SELECT count(*) FROM tasks") == "1"
         assert s.db.sql("SELECT count(*) FROM task_attempts") == "1"
         assert s.db.sql("SELECT count(*) FROM entitlement_reservations") == "1"
+        assert {name: (s.path / name).read_bytes() for name in history} == history
+        async with s.db.connection() as conn:
+            assert await conn.fetchrow("SELECT * FROM tasks") == original
+            assert await conn.fetchrow("SELECT * FROM task_attempts") == attempt
+            assert await conn.fetchrow("SELECT * FROM entitlement_reservations") == reservation
+            assert await conn.fetch("SELECT * FROM messages ORDER BY id") == messages
+            assert await conn.fetch("SELECT * FROM conversations ORDER BY id") == conversations
+            assert await conn.fetch("SELECT * FROM task_events ORDER BY task_id,seq") == events
+            assert (
+                await conn.fetch("SELECT * FROM task_inference_recovery ORDER BY task_id")
+                == recovery
+            )
+            assert (
+                await conn.fetch(
+                    "SELECT * FROM entitlement_usage_periods ORDER BY user_id,period_key"
+                )
+                == usage
+            )
+            assert (
+                await conn.fetch("SELECT * FROM entitlement_accounts ORDER BY user_id") == accounts
+            )
     finally:
         if second.returncode is None:
             second.kill()

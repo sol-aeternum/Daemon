@@ -4,6 +4,7 @@ import asyncio
 import json
 import os
 from pathlib import Path
+import socket
 import sys
 import time
 from types import SimpleNamespace
@@ -11,6 +12,7 @@ from typing import Any, cast
 from uuid import UUID
 
 import asyncpg
+import httpx
 import pytest
 
 from orchestrator import compute_runtime as runtime
@@ -18,13 +20,20 @@ from orchestrator.config import Settings
 from orchestrator.memory.encryption import ContentEncryption
 from orchestrator.memory.store import MemoryStore
 from orchestrator.models import ChatRequest
-from orchestrator.services.restore_history.acceptance_host import IsolatedAcceptanceHost
+from orchestrator.services.restore_history.acceptance_host import (
+    IsolatedAcceptanceHost,
+    create_isolated_ui_app,
+)
 from orchestrator.services.restore_history.composition import HistoryAcceptance
 from orchestrator.services.restore_history.coordination import HistoryCoordinator
+from orchestrator.services.restore_history.inbox_lineage import InboxChild
 from orchestrator.services.restore_history.model import Identity
 from orchestrator.services.restore_history.observation import HistoryObservation
 from orchestrator.services.restore_history.store import Ownership
-from orchestrator.services.restore_history.terminal_projection import TerminalHistoryProjection
+from orchestrator.services.restore_history.terminal_projection import (
+    InboxRetiredHistoryProjection,
+    TerminalHistoryProjection,
+)
 from orchestrator.services.restore_history.text_execution import HistoryTextExecution
 from orchestrator.tasks.runner import run_chat_task
 from orchestrator.tasks.store import TaskStore
@@ -37,6 +46,8 @@ def deadline():
 
 
 async def main(packet, mode):
+    if mode not in {"start", "complete", "ui-reopen", "reopen", "managed"}:
+        raise ValueError("unknown fixture mode")
     settings = cast(Any, Settings)(
         _env_file=None,
         durable_chat_enabled=True,
@@ -68,11 +79,19 @@ async def main(packet, mode):
             )
         )
     a, w = pools
-    projection = TerminalHistoryProjection(
+    channel = lineage = None
+    release = asyncio.Event()
+    entered = asyncio.get_running_loop().create_future()
+    if mode == "managed":
+        channel = socket.socket(fileno=packet["control_fd"])
+        channel.set_inheritable(False)
+        with socket.fromfd(packet["listener_fd"], socket.AF_INET, socket.SOCK_STREAM) as listener:
+            lineage = InboxChild(channel, listener, Path(packet["path"]), identity.history_id)
+    projection = (InboxRetiredHistoryProjection if lineage else TerminalHistoryProjection)(
         identity, acceptor="md_acceptor", worker="md_app", publisher="reserved_p"
     )
     histories = [
-        HistoryCoordinator(Path(packet["path"]), identity, ownership, profile="terminal-v3")
+        HistoryCoordinator(Path(packet["path"]), identity, ownership, profile=projection.profile)
         for _ in range(3)
     ]
     execution = HistoryTextExecution(w, encryption, settings, histories[2], projection)
@@ -90,6 +109,9 @@ async def main(packet, mode):
         max_body_bytes=4096,
         keepalive_s=1,
         execution=execution,
+        inbox_pilot=packet.get("inbox_two_jobs", False),
+        inbox_two_jobs=packet.get("inbox_two_jobs", False),
+        _inbox_child=lineage,
     )
     calls = 0
     observations = {}
@@ -98,19 +120,29 @@ async def main(packet, mode):
     async def provider(**kwargs):
         nonlocal calls
         calls += 1
-        assert mode in ("start", "complete") and calls == 1
+        assert mode in ("start", "complete", "managed") and calls == 1
         scope = runtime.current_scope()
         identity = scope.inference_identity
         assert identity is not None
         # W retains its denied direct marker-table access. The parent performs
         # independent committed SQL inspection after this child's H witness.
         async with execution.history.operation(deadline=deadline()) as operation:
-            assert len((await operation.verify()).entries) == 2
+            assert len((await operation.verify()).entries) == (
+                6 if lineage and lineage.handoff else 2
+            )
 
         raw_finish = SimpleNamespace(result={"state": "missing"})
 
         async def stream():
-            yield {"choices": [{"delta": {"content": "process original partial"}}]}
+            first = "process original partial"
+            last = " and final"
+            if lineage:
+                first, last = (
+                    ("Synthetic report Y.", " Second fixture.")
+                    if lineage.handoff
+                    else ("Synthetic report X.", " First fixture.")
+                )
+            yield {"choices": [{"delta": {"content": first}}]}
             row = await w.fetchrow(
                 "SELECT id,result_message_id FROM tasks WHERE id=$1",
                 identity.task_id,
@@ -119,9 +151,12 @@ async def main(packet, mode):
                 "SELECT content FROM messages WHERE id=$1", row["result_message_id"]
             )
             partial = encryption.decrypt(content)
-            assert partial == "process original partial"
-            if mode == "complete":
-                yield {"choices": [{"delta": {"content": " and final"}}]}
+            assert partial == first
+            if lineage:
+                entered.set_result(str(identity.task_id))
+                await release.wait()
+            if mode in ("complete", "managed"):
+                yield {"choices": [{"delta": {"content": last}}]}
                 yield {
                     "choices": [{"delta": {}, "finish_reason": "stop"}],
                     "usage": {"prompt_tokens": 1, "completion_tokens": 1},
@@ -138,12 +173,83 @@ async def main(packet, mode):
             await asyncio.Future()
 
         response = stream()
+        if lineage and packet.get("fault") == "transport":
+            from tests.history_restart_faults import FailedTransportClose
+
+            response = FailedTransportClose(response)
         observations[response] = raw_finish
         return response
 
     patch.setattr(runtime.litellm, "acompletion", provider)
+    retired = False
     try:
         await host.open(deadline=deadline())
+        if lineage:
+            assert channel is not None
+            from tests.history_restart_faults import install
+            from tests.history_restart_server import serve
+
+            install(
+                patch, host, execution, packet.get("fault"), successor=lineage.handoff is not None
+            )
+            retired = await serve(
+                host,
+                execution,
+                settings,
+                w,
+                packet,
+                patch,
+                channel,
+                release,
+                entered,
+                lambda: calls,
+            )
+            return
+        if packet.get("inbox_two_jobs") and mode == "ui-reopen":
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=create_isolated_ui_app(host)),
+                base_url="http://isolated",
+                headers={"Authorization": packet["authorization"]},
+            ) as http:
+                observed = await http.get("/tasks/inbox-pilot", params={"topic": "X"})
+                assert observed.status_code == 200
+                status = observed.json()
+                assert status["can_start"] == []
+                response = await http.get(f"/tasks/{packet['task']}")
+                assert response.status_code == 200
+                task = response.json()
+                conversation = await http.get(
+                    f"/conversations/{task['conversation_id']}", params={"pagination": "cursor"}
+                )
+                assert conversation.status_code == 200
+                detail = conversation.json()
+                assert detail["latest_task"]["id"] == packet["task"]
+                assert detail["messages"][-1]["content"] == task["content"]
+                assert status["state"] == task["status"]
+                if task["status"] == "completed":
+                    assert status["conversation_id"] == task["conversation_id"]
+                else:
+                    assert "conversation_id" not in status
+                refused = await http.post(
+                    "/tasks/inbox-pilot",
+                    headers={"Idempotency-Key": "independent-y"},
+                    json={"text": "Do a deep dive on Y."},
+                )
+                assert refused.status_code == 409
+                assert not execution._scheduled and not execution._jobs
+                print(
+                    json.dumps(
+                        {
+                            "task": task["id"],
+                            "partial": task["content"],
+                            "status": task["status"],
+                            "calls": calls,
+                            "ui_bridge": True,
+                        }
+                    ),
+                    flush=True,
+                )
+            return
         if mode == "ui-reopen":
             # Fresh exec-only read of the new bridge, not the old by-key runner
             # recovery test and never a repeated claim or transport invocation.
@@ -162,6 +268,7 @@ async def main(packet, mode):
             )
             assert len(conversation.messages) == 2 and listing.total == 1
             assert conversation.messages[-1].content == task.content
+            assert not execution._jobs and not execution._scheduled
             print(
                 json.dumps(
                     {
@@ -176,12 +283,29 @@ async def main(packet, mode):
             )
             return
         if mode in ("start", "complete"):
-            accepted = await host.submit(
-                packet["authorization"],
-                "stable",
-                ChatRequest(message="synthetic process text"),
-                deadline=deadline(),
-            )
+            if packet.get("inbox_two_jobs"):
+                async with httpx.AsyncClient(
+                    transport=httpx.ASGITransport(app=create_isolated_ui_app(host)),
+                    base_url="http://isolated",
+                ) as http:
+                    response = await http.post(
+                        "/tasks/inbox-pilot",
+                        headers={
+                            "Authorization": packet["authorization"],
+                            "Idempotency-Key": "stable",
+                        },
+                        json={"text": "Do a deep dive on X."},
+                    )
+                    assert response.status_code == 200
+                task_id = next(iter(execution._scheduled))
+            else:
+                accepted = await host.submit(
+                    packet["authorization"],
+                    "stable",
+                    ChatRequest(message="synthetic process text"),
+                    deadline=deadline(),
+                )
+                task_id = accepted.task.task_id
             results = await asyncio.gather(*execution._jobs)
             if mode == "start":
                 raise AssertionError("original process unexpectedly finished")
@@ -192,7 +316,7 @@ async def main(packet, mode):
             print(
                 json.dumps(
                     {
-                        "task": str(accepted.task.task_id),
+                        "task": str(task_id),
                         "partial": observed.snapshot.content,
                         "calls": calls,
                     }
@@ -219,8 +343,18 @@ async def main(packet, mode):
     finally:
         await host.aclose(deadline=deadline())
         for pool in pools:
+            if retired and pool.is_closing():
+                raise RuntimeError("retiring pool was already closing")
             await pool.close()
+        if retired and packet.get("fault") == "pool-close":
+            raise ConnectionError("synthetic pool close acknowledgement lost")
+        if retired and packet.get("fault") != "retirement-ack":
+            host.acknowledge_retirement()
+        if channel is not None:
+            channel.close()
         patch.undo()
+        if retired and packet.get("fault") == "nonzero-exit":
+            raise RuntimeError("synthetic exit failure after retirement acknowledgement")
 
 
 if __name__ == "__main__":

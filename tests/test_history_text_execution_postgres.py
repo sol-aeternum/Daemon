@@ -37,6 +37,7 @@ from orchestrator.services.restore_history.model import (
 )
 from orchestrator.services.restore_history.observation import HistoryObservation
 from orchestrator.services.restore_history.terminal_projection import (
+    InboxRetiredHistoryProjection,
     TerminalHistoryProjection,
     TerminalV4HistoryProjection,
 )
@@ -63,21 +64,28 @@ from tests.test_restore_history_store import owned
 @pytest_asyncio.fixture
 async def text_host(projection_db, tmp_path, monkeypatch, request):
     database = projection_db
-    install(database)
-    install_terminal(database)
+    restart = getattr(request, "param", None) == "managed-restart"
+    if restart:
+        # Only the create-new launcher fixture supplies this directory.
+        tmp_path = database.cluster.resource
+        from tests.test_inbox_retired_projection_postgres import install_retired
+
+        install_retired(database)
+    else:
+        install(database)
+        install_terminal(database)
     v4 = getattr(request, "param", None) == "terminal-v4"
     if v4:
         from tests.test_terminal_v4_postgres import SQL
 
         database.sql("BEGIN;" + SQL.read_text() + "COMMIT;")
-    profile = "terminal-v4" if v4 else "terminal-v3"
     # The shared inference fixture installs memory revisions and grants W's exact
     # map before this composition; do not reapply migration 066 or add grants.
     journal = tmp_path / "j1"
     journal_id = uuid4()
     initialize(journal, journal_id)
     async with database.connection() as conn:
-        if getattr(request, "param", None) == "self-hosted-ui":
+        if restart or getattr(request, "param", None) == "self-hosted-ui":
             from orchestrator.routes.auth_setup import SINGLETON_USER_ID
 
             # Initial disposable fixture data only, never runtime identity repair.
@@ -110,7 +118,14 @@ async def text_host(projection_db, tmp_path, monkeypatch, request):
     _qualified_policy(monkeypatch, route=route)
     monkeypatch.setattr(runtime, "get_settings", lambda: settings)
     path = tmp_path / "h"
-    identity, ownership = owned(path)
+    if restart:
+        from tests.restore_history_support import initialize_test_directory
+        from orchestrator.services.restore_history.store import Ownership
+
+        identity = initialize_test_directory(path, history_id=database.cluster.inbox_history_id)
+        ownership = Ownership(os.geteuid(), frozenset({os.geteuid()}), os.getegid())
+    else:
+        identity, ownership = owned(path)
     state = SimpleNamespace(
         db=database,
         account=account,
@@ -262,12 +277,18 @@ async def text_host(projection_db, tmp_path, monkeypatch, request):
                 max_size=2,
             )
             projection_type = TerminalV4HistoryProjection if v4 else TerminalHistoryProjection
+            if restart:
+                projection_type = InboxRetiredHistoryProjection
             projection = projection_type(
                 identity, acceptor="md_acceptor", worker="md_app", publisher="reserved_p"
             )
-            history = HistoryCoordinator(path, identity, ownership, profile=profile)
-            reader_history = HistoryCoordinator(path, identity, ownership, profile=profile)
-            worker_history = HistoryCoordinator(path, identity, ownership, profile=profile)
+            history = HistoryCoordinator(path, identity, ownership, profile=projection.profile)
+            reader_history = HistoryCoordinator(
+                path, identity, ownership, profile=projection.profile
+            )
+            worker_history = HistoryCoordinator(
+                path, identity, ownership, profile=projection.profile
+            )
             tasks = TaskStore(a, enc, MemoryStore(a, enc), cover_new_inference=True)
             reader = HistoryObservation(
                 TaskStore(w, enc, MemoryStore(w, enc)), reader_history, projection, KEY
@@ -279,14 +300,18 @@ async def text_host(projection_db, tmp_path, monkeypatch, request):
                 fingerprint_key="synthetic-pepper",
                 max_body_bytes=4096,
                 keepalive_s=1,
-                execution=execution,
-                inbox_pilot=getattr(state, "inbox_pilot", False),
-                inbox_two_jobs=getattr(state, "inbox_two_jobs", False),
+                execution=None if restart else execution,
+                inbox_pilot=restart or getattr(state, "inbox_pilot", False),
+                inbox_two_jobs=restart or getattr(state, "inbox_two_jobs", False),
             )
             state.execution = execution
             state.host, state.app, state.w = host, create_isolated_acceptance_app(host), w
             try:
                 await host.open(deadline=deadline())
+                if restart:
+                    assert not execution._started
+                    yield state
+                    return
                 assert execution.effects is not None
                 native_run = execution.effects._run
 

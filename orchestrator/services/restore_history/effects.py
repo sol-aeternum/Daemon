@@ -1038,7 +1038,7 @@ class HistoryEffects:
                             if isinstance(metadata, dict) and "turn_finish" in metadata:
                                 if returned_finish(metadata["turn_finish"]).outcome != "complete":
                                     raise HistoryError("terminal_finish_invalid")
-                                if type(projection) is TerminalHistoryProjection:
+                                if projection.profile in ("terminal-v3", "inbox-retired-v1"):
                                     # Retain only the legacy completed contract. This
                                     # does not make provider evidence durable in v3.
                                     fields["metadata"] = {

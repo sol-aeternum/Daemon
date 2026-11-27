@@ -18,7 +18,7 @@ import math
 import os
 import time
 from typing import Any, Literal, TypeVar
-from uuid import UUID
+from uuid import UUID, uuid4
 
 import asyncpg
 from fastapi import FastAPI, HTTPException, Query, Request, Response
@@ -90,13 +90,26 @@ from orchestrator.services.account_control.transaction import ObservationBlocked
 from .composition import HistoryAcceptance
 from .coordination import HistoryCoordinator, HistoryOperation
 from .effects_projection import HistoryProjection
+from .inbox_lineage import InboxChild
 from .model import HistoryError
 from .observation import HistoricalObservation, HistoryObservation
 from .read_supervisor import _observe, qualify_read_history
 from .store import _check_time
-from .terminal_projection import TERMINAL_PROFILES, TerminalHistoryProjection
+from .terminal_projection import (
+    TERMINAL_PROFILES,
+    InboxRetiredHistoryProjection,
+    TerminalHistoryProjection,
+)
 from .text_execution import HistoryTextExecution
-from .model import AcceptPrepare, StopIntent, commitments
+from .model import (
+    AcceptPrepare,
+    Command,
+    InboxOriginalRetired,
+    SendPossible,
+    StopIntent,
+    TerminalOutputPrepare,
+    commitments,
+)
 
 T = TypeVar("T")
 HEADERS = {"Cache-Control": "no-store"}
@@ -154,6 +167,7 @@ class _InboxOriginal:
     conv: dict[str, Any]
     messages: list[dict[str, Any]]
     snapshot: TaskSnapshot
+    handoff: UUID | None = None
 
 
 class _InboxWithoutReport(BaseModel):
@@ -188,6 +202,7 @@ class IsolatedAcceptanceHost:
         execution: HistoryTextExecution | None = None,
         inbox_pilot: bool = False,
         inbox_two_jobs: bool = False,
+        _inbox_child: InboxChild | None = None,
     ) -> None:
         if (
             type(acceptance) is not HistoryAcceptance
@@ -208,6 +223,10 @@ class IsolatedAcceptanceHost:
         self._execution = execution
         self._inbox_pilot = inbox_pilot
         self._inbox_two_jobs = inbox_two_jobs
+        self._inbox_child = _inbox_child
+        self._original_receipt: _Submission | None = None
+        self._retired_record: UUID | None = None
+        self._pending_submissions = 0
         # A separate inert reader, bound to the exact acceptor H owner and
         # existing W store. Only the private admission precheck uses it.
         self._inbox_admission_reader = (
@@ -225,6 +244,12 @@ class IsolatedAcceptanceHost:
         self._active: set[asyncio.Task[Any]] = set()
         self._streams: set[asyncio.Task[Any]] = set()
         self._shutdown_task: asyncio.Task[None] | None = None
+        if _inbox_child is not None:
+            if type(_inbox_child) is not InboxChild:
+                raise HistoryError("inbox_launcher_required")
+            _inbox_child.bind(
+                self, acceptance._history._path, acceptance._projection.expected.history_id
+            )
         self._validate()
 
     def _validate(self) -> None:
@@ -276,7 +301,21 @@ class IsolatedAcceptanceHost:
             raise HistoryError("isolated_host_refused")
         self._acceptance._projection.expected.verify_key(self._acceptance._key)
         execution = self._execution
-        if self._inbox_pilot and (execution is None or ap.profile != "terminal-v3"):
+        retired_profile = type(ap) is InboxRetiredHistoryProjection
+        retired_observer = retired_profile and execution is None and self._inbox_child is None
+        if (
+            (retired_profile and not self._inbox_two_jobs)
+            or (self._inbox_child is not None and not retired_profile)
+            or (retired_profile and execution is not None and self._inbox_child is None)
+        ):
+            raise HistoryError("inbox_launcher_required")
+        if self._inbox_child is not None:
+            self._inbox_child.check(self)
+        if (
+            self._inbox_pilot
+            and not retired_observer
+            and (execution is None or ap.profile not in ("terminal-v3", "inbox-retired-v1"))
+        ):
             raise HistoryError("isolated_host_refused")
         admission_reader = self._inbox_admission_reader
         if self._inbox_two_jobs and (
@@ -491,14 +530,21 @@ class IsolatedAcceptanceHost:
         deadline: float,
     ) -> Any:
         self._admit(deadline)
-        if not self._inbox_pilot or type(payload) is not (
-            _InboxTwoJobInput if self._inbox_two_jobs else _InboxPilotInput
+        if (
+            self._execution is None
+            or not self._inbox_pilot
+            or type(payload)
+            is not (_InboxTwoJobInput if self._inbox_two_jobs else _InboxPilotInput)
         ):
             raise _unavailable()
         token, key = self._submission_credentials(authorization, client_key)
-        receipt = await self._submit_authenticated(
-            token, key, ChatRequest(message=payload.text, disable_memory_write=True), deadline
-        )
+        self._pending_submissions += 1
+        try:
+            receipt = await self._submit_authenticated(
+                token, key, ChatRequest(message=payload.text, disable_memory_write=True), deadline
+            )
+        finally:
+            self._pending_submissions -= 1
         topic = _inbox_topic(payload.text) if self._inbox_two_jobs else None
         return await self.ui_read(
             authorization, "inbox", None, deadline=deadline, topic=topic, _receipt=receipt
@@ -517,7 +563,13 @@ class IsolatedAcceptanceHost:
             raise _unavailable()
         if self._execution is not None and result.task.created:
             # Only the original NEW receipt, after native/auth/reset/H cleanup.
+            if self._inbox_child is not None:
+                self._inbox_child.check(self)
+                if self._closing or self._reader._history._blocked:
+                    raise _unavailable()
             self._execution.schedule(result.task.task_id)
+            if self._inbox_child is not None and self._inbox_child.handoff is None:
+                self._original_receipt = result
         return result
 
     async def _submit(
@@ -681,7 +733,7 @@ class IsolatedAcceptanceHost:
                 if isinstance(checked, HTTPException):
                     return checked
                 current, originals = checked
-                allowed = await self._inbox_can_start(conn, auth, originals)
+                allowed = await self._inbox_can_start(operation, conn, auth, originals)
                 if message not in _INBOX_TWO_JOB_TEXTS or not any(
                     message == f"Do a deep dive on {topic}." for topic in allowed
                 ):
@@ -801,14 +853,28 @@ class IsolatedAcceptanceHost:
                         return self._ui_recovery()
                     if any(o.topic == topic for o in originals):
                         return self._ui_recovery()
-                    originals.append(_InboxOriginal(a, topic, conv, pair, snapshot))
+                    handoff = None
+                    if self._inbox_child is not None and topic == "X":
+                        handoff = next(
+                            (
+                                e.command.record_id
+                                for e in state.entries
+                                if type(e.command.data) is InboxOriginalRetired
+                            ),
+                            None,
+                        )
+                    originals.append(_InboxOriginal(a, topic, conv, pair, snapshot, handoff))
                 await reader._check_owned(operation, conn, xid, deadline)
                 return current, originals
         except WriteGuardRefusal:
             return self._ui_recovery()
 
     async def _inbox_can_start(
-        self, conn: Any, auth: AuthenticatedDevice, originals: list[_InboxOriginal]
+        self,
+        operation: HistoryOperation,
+        conn: Any,
+        auth: AuthenticatedDevice,
+        originals: list[_InboxOriginal],
     ) -> list[_Topic]:
         execution = self._execution
         if (
@@ -826,17 +892,39 @@ class IsolatedAcceptanceHost:
             execution.validate_worker(execution.context(), execution.worker)
         except HistoryError:
             return []
+        entries = (await operation.verify()).entries if self._inbox_child is not None else ()
         if originals:
             original = originals[0]
             task = original.accepted.task_id
-            if (
-                original.snapshot.status.value != "completed"
-                or execution._outcomes.get(task) != "completed"
-                or not any(
-                    job.done() and ident == task for job, ident in execution._job_tasks.items()
-                )
+            if original.snapshot.status.value != "completed":
+                return []
+            if self._inbox_child is not None:
+                self._inbox_child.check(self)
+                if (
+                    original.topic != "X"
+                    or original.handoff is None
+                    or original.handoff != self._inbox_child.handoff
+                    or len(entries) != 4
+                    or execution._scheduled
+                    or execution._job_tasks
+                ):
+                    return []
+                sent = entries[1].command.data
+                if type(sent) is not SendPossible or not await conn.fetchval(
+                    "SELECT count(*)=1 AND bool_and(id=$2 AND scope_id=$3 AND status='settled' "
+                    "AND actual_microusd BETWEEN 0 AND reserved_microusd AND overage_microusd=0) "
+                    "FROM public.entitlement_reservations WHERE user_id=$1",
+                    auth.user_id,
+                    sent.reservation_id,
+                    sent.financial_scope_id,
+                ):
+                    return []
+            elif execution._outcomes.get(task) != "completed" or not any(
+                job.done() and ident == task for job, ident in execution._job_tasks.items()
             ):
                 return []
+        elif self._inbox_child is not None and (self._inbox_child.handoff is not None or entries):
+            return []
         if (
             await conn.fetchval(
                 "SELECT EXISTS(SELECT 1 FROM public.entitlement_reservations WHERE user_id=$1 AND status='open')",
@@ -845,6 +933,8 @@ class IsolatedAcceptanceHost:
             is not False
         ):
             return []
+        if not originals and self._inbox_child is not None:
+            return ["X"]
         return [t for t in _TOPICS if not any(o.topic == t for o in originals)]
 
     async def cancel(
@@ -1036,7 +1126,7 @@ class IsolatedAcceptanceHost:
                         if isinstance(checked, HTTPException):
                             return checked
                         _, originals = checked
-                        can_start = await self._inbox_can_start(conn, auth, originals)
+                        can_start = await self._inbox_can_start(operation, conn, auth, originals)
                         if await self._auth(conn, token, deadline) != auth:
                             return HTTPException(401, "Authorization changed", headers=HEADERS)
                         await reader._check_owned(operation, conn, xid, deadline)
@@ -1459,6 +1549,140 @@ class IsolatedAcceptanceHost:
         except Exception:
             return  # Transport ends; the original key still requires observation.
 
+    async def retire_original(self, *, deadline: float) -> None:
+        """Single trusted launcher operation, never an HTTP route or a replay."""
+        self._admit(deadline)
+        execution, receipt = self._execution, self._original_receipt
+        reader = self._inbox_admission_reader
+        projection = self._acceptance._projection
+        if (
+            self._inbox_child is None
+            or self._inbox_child.handoff is not None
+            or type(projection) is not InboxRetiredHistoryProjection
+            or reader is None
+            or execution is None
+            or receipt is None
+            or not receipt.task.created
+            or self._active
+            or self._streams
+            or self._pending_submissions
+            or self._reader._history._blocked
+            or self._acceptance._blocked
+            or self._acceptance._history._blocked
+        ):
+            raise HistoryError("inbox_retirement_refused")
+        proof = execution.original_cleanup(receipt.task.task_id)
+        # No yield between checking every entrant/physical job and closing
+        # both entry points. A later failure may dispose, never undo this latch.
+        self._closing = execution._closing = True
+        self._ready = execution._ready = False
+        record = uuid4()
+        async with reader._history.operation(deadline=deadline) as operation, retain_pool_cleanup():
+            async with pool_connection(execution.pool) as conn:
+                if conn.is_in_transaction():
+                    raise HistoryError("inbox_retirement_refused")
+                async with conn.transaction(isolation="read_committed"):
+                    await projection.qualify(conn, writing=False, deadline=deadline)
+                    xid = await conn.fetchval("SELECT txid_current()")
+                    originals = await self._inbox_originals(
+                        reader, operation, conn, xid, receipt.auth, deadline
+                    )
+                    if isinstance(originals, HTTPException) or len(originals[1]) != 1:
+                        raise HistoryError("inbox_retirement_refused")
+                    (x,) = originals[1]
+                    accepted = x.accepted
+                    if x.topic != "X" or (
+                        accepted.task_id,
+                        accepted.conversation_id,
+                        accepted.user_message_id,
+                        accepted.result_message_id,
+                    ) != (
+                        receipt.task.task_id,
+                        receipt.task.conversation_id,
+                        receipt.task.user_message_id,
+                        receipt.task.result_message_id,
+                    ):
+                        raise HistoryError("inbox_retirement_refused")
+                    entries = (await operation.verify()).entries
+                    if len(entries) != 3:
+                        raise HistoryError("inbox_retirement_refused")
+                    _, sent, terminal = entries
+                    send = sent.command.data
+                    identity, settlement = proof.binding.identity, proof.settlement
+                    if (
+                        type(send) is not SendPossible
+                        or sent.command.record_id != proof.send_record
+                        or type(terminal.command.data) is not TerminalOutputPrepare
+                        or send.reservation_id != settlement.reservation.id
+                        or (
+                            send.account_id,
+                            send.account_generation,
+                            send.task_id,
+                            send.epoch,
+                            send.lifecycle_id,
+                            send.producer_instance_id,
+                            send.financial_scope_id,
+                            send.metadata_scope_id,
+                        )
+                        != (
+                            identity.account_id,
+                            identity.generation,
+                            identity.task_id,
+                            identity.epoch,
+                            identity.lifecycle_id,
+                            identity.producer_instance_id,
+                            identity.financial_scope_id,
+                            identity.metadata_scope_id,
+                        )
+                    ):
+                        raise HistoryError("inbox_retirement_refused")
+                    matches = await conn.fetchval(
+                        "SELECT count(*)=1 AND bool_and(id=$2 AND user_id=$3 AND period_key=$4 "
+                        "AND status='settled' AND actual_microusd=$5 AND overage_microusd=0) "
+                        "FROM public.entitlement_reservations WHERE scope_id=$1",
+                        identity.financial_scope_id,
+                        send.reservation_id,
+                        identity.account_id,
+                        settlement.period_key,
+                        settlement.actual_microusd,
+                    )
+                    if matches is not True:
+                        raise HistoryError("inbox_retirement_refused")
+                    self._inbox_child.check(self)
+                    prepared = await operation.append(
+                        Command(
+                            record,
+                            InboxOriginalRetired(terminal.command.record_id, proof.send_record),
+                        )
+                    )
+                    if (
+                        not prepared.created
+                        or not (
+                            await projection.stage_retired(conn, prepared.entry, deadline=deadline)
+                        ).inserted
+                    ):
+                        raise HistoryError("inbox_retirement_uncertain")
+        _check_time(deadline)
+        self._retired_record = record
+
+    def acknowledge_retirement(self) -> None:
+        """Called by the pool owner only after both normal close awaits returned."""
+        if (
+            self._retired_record is None
+            or self._inbox_child is None
+            or not self._closed
+            or self._execution is None
+            or self._execution._blocked
+            or self._execution.history._blocked
+            or self._reader._history._blocked
+            or self._acceptance._blocked
+            or self._acceptance._history._blocked
+            or not self._reader._tasks._pool._closed
+            or not self._acceptance._tasks._pool._closed
+        ):
+            raise HistoryError("inbox_retirement_uncertain")
+        self._inbox_child._acknowledge(self, self._retired_record)
+
     async def _shutdown(self, deadline: float) -> None:
         first: BaseException | None = None
         # Stream cancellation owns/drains its pending qualified read first.
@@ -1517,8 +1741,15 @@ class IsolatedAcceptanceHost:
                     original.add_note(
                         "Unstarted isolated shutdown cleanup: " + type(cleanup).__name__
                     )
+                self._retired_record = None
                 raise
-        await _observe(self._shutdown_task, deadline, cancel_body=False)
+        try:
+            await _observe(self._shutdown_task, deadline, cancel_body=False)
+        except BaseException:
+            # Physical shutdown may finish later. That cannot repair the
+            # original owner's missing acknowledgement of this retirement.
+            self._retired_record = None
+            raise
 
 
 def create_isolated_acceptance_app(host: IsolatedAcceptanceHost) -> FastAPI:

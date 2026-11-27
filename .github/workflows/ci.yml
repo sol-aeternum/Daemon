@@ -302,6 +302,7 @@ jobs:
           # the mixed modules also contain backend-only cases worth running.
           browser_cases=(
             tests/test_b1_browser_bootstrap_postgres.py::test_b1_actual_https_production_browser_empty_history
+            tests/test_history_inbox_restart_postgres.py::test_clean_process_replacement_explicit_phone_y
             tests/test_history_ui_browser_postgres.py::test_actual_page_saved_partial_second_issued_device_and_terminal
             tests/test_resource_history_postgres.py::test_native_components_real_browser_sessions_proxy_and_history
             tests/test_resource_http_postgres.py::test_actual_browser_contexts_and_fresh_composition_restart

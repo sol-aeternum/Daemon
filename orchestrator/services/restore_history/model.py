@@ -24,7 +24,8 @@ DOMAIN = b"daemon.restore-history.frame.v1\n"
 ARTIFACT_DOMAIN = b"daemon.restore-history.frame.v2\n"
 TERMINAL_DOMAIN = b"daemon.restore-history.frame.v3\n"
 NONSUCCESS_DOMAIN = b"daemon.restore-history.frame.v4\n"
-Profile = Literal["h1", "artifact-v2", "terminal-v3", "terminal-v4"]
+INBOX_RETIRED_DOMAIN = b"daemon.restore-history.frame.v5\n"
+Profile = Literal["h1", "artifact-v2", "terminal-v3", "terminal-v4", "inbox-retired-v1"]
 
 # These codes can describe a returned terminal answer, not a retry/Stop policy.
 NONSUCCESS_LOCAL_LIMIT_KINDS = {
@@ -55,6 +56,7 @@ def check_profile(profile: Profile) -> Profile:
         "artifact-v2",
         "terminal-v3",
         "terminal-v4",
+        "inbox-retired-v1",
     ):
         raise HistoryError("invalid_profile")
     return profile
@@ -256,6 +258,12 @@ class NonsuccessOutputPrepare:
     reason: str
 
 
+@dataclass(frozen=True, slots=True)
+class InboxOriginalRetired:
+    terminal_record_id: UUID
+    send_record_id: UUID
+
+
 TERMINAL_KINDS = (TerminalOutputPrepare, NonsuccessOutputPrepare)
 
 
@@ -268,6 +276,7 @@ RecordData = (
     | ArtifactPrepare
     | TerminalOutputPrepare
     | NonsuccessOutputPrepare
+    | InboxOriginalRetired
 )
 _KINDS = {
     AcceptPrepare: ("ACCEPT_PREPARE", "backend"),
@@ -278,10 +287,14 @@ _KINDS = {
     ArtifactPrepare: ("ARTIFACT_PREPARE", "backend"),
     TerminalOutputPrepare: ("TERMINAL_OUTPUT_PREPARE", "worker"),
     NonsuccessOutputPrepare: ("NONSUCCESS_OUTPUT_PREPARE", "worker"),
+    InboxOriginalRetired: ("INBOX_ORIGINAL_RETIRED", "worker"),
 }
 
 
 def _data(kind: str, raw: Any) -> RecordData:
+    if kind == "INBOX_ORIGINAL_RETIRED":
+        d = _keys(raw, "terminal_record_id send_record_id")
+        return InboxOriginalRetired(_uuid(d["terminal_record_id"]), _uuid(d["send_record_id"]))
     if kind == "NONSUCCESS_OUTPUT_PREPARE":
         d = _keys(
             raw,
@@ -480,9 +493,14 @@ def encode_entry(
 
 
 _FRAME_VERSIONS: dict[type[Any], tuple[int, bytes, tuple[Profile, ...]]] = {
-    ArtifactPrepare: (2, ARTIFACT_DOMAIN, ("artifact-v2", "terminal-v3", "terminal-v4")),
-    TerminalOutputPrepare: (3, TERMINAL_DOMAIN, ("terminal-v3", "terminal-v4")),
+    ArtifactPrepare: (
+        2,
+        ARTIFACT_DOMAIN,
+        ("artifact-v2", "terminal-v3", "terminal-v4", "inbox-retired-v1"),
+    ),
+    TerminalOutputPrepare: (3, TERMINAL_DOMAIN, ("terminal-v3", "terminal-v4", "inbox-retired-v1")),
     NonsuccessOutputPrepare: (4, NONSUCCESS_DOMAIN, ("terminal-v4",)),
+    InboxOriginalRetired: (5, INBOX_RETIRED_DOMAIN, ("inbox-retired-v1",)),
 }
 _WIRE_VERSIONS = {_KINDS[kind][0]: shape for kind, shape in _FRAME_VERSIONS.items()}
 
@@ -508,13 +526,19 @@ def decode_entry(frame: bytes, *, profile: Profile = "h1") -> Entry:
         raise HistoryError("invalid_record")
     data = _data(d["kind"], d["data"])
     seq = _number(d["seq"], 1)
-    if d["actor"] != _KINDS[type(data)][1] or (version == 4 and seq > MAX_RECORDS):
+    if d["actor"] != _KINDS[type(data)][1] or (version in (4, 5) and seq > MAX_RECORDS):
+        raise HistoryError("invalid_record")
+    record_id = _uuid(d["record_id"])
+    if (
+        isinstance(data, InboxOriginalRetired)
+        and len({record_id, data.terminal_record_id, data.send_record_id}) != 3
+    ):
         raise HistoryError("invalid_record")
     return Entry(
         _uuid(d["history_id"]),
         seq,
         bytes.fromhex(_hex(d["prev_digest"])),
-        Command(_uuid(d["record_id"]), data),
+        Command(record_id, data),
         frame[-32:],
     )
 
@@ -547,6 +571,7 @@ def validate_chain(
     keys: set[tuple[UUID, int, str]] = set()
     sent: set[tuple[UUID, UUID, UUID]] = set()
     open_restore: tuple[UUID, UUID] | None = None
+    retirement_task: UUID | None = None
     if len(entries) > MAX_RECORDS:
         raise HistoryError("capacity")
     for seq, e in enumerate(entries, 1):
@@ -568,6 +593,27 @@ def validate_chain(
             raise HistoryError("chain_mismatch")
         operations.add(e.command.record_id)
         d = e.command.data
+        if profile == "inbox-retired-v1":
+            if isinstance(d, (RestoreBegin, RestoreAssessed, ArtifactPrepare)):
+                raise HistoryError("unsupported_inbox_history")
+            if isinstance(d, AcceptPrepare) and accepted:
+                prior = accepted.get(retirement_task) if retirement_task is not None else None
+                if (
+                    prior is None
+                    or len(accepted) != 1
+                    or (prior.account_id, prior.account_generation)
+                    != (d.account_id, d.account_generation)
+                ):
+                    raise HistoryError("unsupported_inbox_history")
+            if isinstance(d, SendPossible) and (d.effect_kind != "completion" or seq not in (2, 6)):
+                raise HistoryError("unsupported_inbox_history")
+            if isinstance(d, TerminalOutputPrepare):
+                prior_send = entries[seq - 2].command.data if seq in (3, 7) else None
+                if not isinstance(prior_send, SendPossible) or (
+                    prior_send.task_id,
+                    prior_send.epoch,
+                ) != (d.task_id, d.epoch):
+                    raise HistoryError("ancestor_mismatch")
         if isinstance(d, AcceptPrepare):
             if open_restore is not None:
                 raise HistoryError("restore_mismatch")
@@ -593,6 +639,22 @@ def validate_chain(
             terminal_tasks.add(d.task_id)
             if isinstance(d, NonsuccessOutputPrepare):
                 nonsuccess_tasks.add(d.task_id)
+        elif isinstance(d, InboxOriginalRetired):
+            # Fixed fourth position makes the whole prefix unambiguous, and
+            # needs no new indexes/retained objects in any legacy profile.
+            if seq != 4:
+                raise HistoryError("ancestor_mismatch")
+            send_cmd, terminal_cmd = entries[1].command, entries[2].command
+            send, terminal = send_cmd.data, terminal_cmd.data
+            if (
+                not isinstance(send, SendPossible)
+                or not isinstance(terminal, TerminalOutputPrepare)
+                or send_cmd.record_id != d.send_record_id
+                or terminal_cmd.record_id != d.terminal_record_id
+                or (send.task_id, send.epoch) != (terminal.task_id, terminal.epoch)
+            ):
+                raise HistoryError("ancestor_mismatch")
+            retirement_task = terminal.task_id
         elif isinstance(d, ArtifactPrepare):
             a = accepted.get(d.task_id)
             if (
@@ -616,7 +678,7 @@ def validate_chain(
             if isinstance(d, StopIntent):
                 # Preserve historical v1-v3 bytes (which permitted a negative
                 # Stop after COMPLETE); a v4 publication cannot be overwritten.
-                if d.task_id in nonsuccess_tasks:
+                if d.task_id in nonsuccess_tasks or d.task_id == retirement_task:
                     raise HistoryError("effect_stopped")
                 stopped.add(d.task_id)
             if isinstance(d, SendPossible):

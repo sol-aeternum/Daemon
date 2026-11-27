@@ -99,14 +99,14 @@ def assessed(
     )
 
 
-def initialize_test_directory(path: Path):
+def initialize_test_directory(path: Path, *, history_id: UUID = HISTORY):
     """Only test code can create the store; existing directories are refused."""
     path.mkdir(mode=0o2770)
     path.chmod(0o2770)
-    identity = Identity(HISTORY, key_check(KEY, HISTORY))
+    identity = Identity(history_id, key_check(KEY, history_id))
     content = {
         "IDENTITY": canonical(identity.wire()),
-        "HEAD": canonical({"v": 1, "history_id": str(HISTORY), "seq": 0, "digest": ZERO.hex()}),
+        "HEAD": canonical({"v": 1, "history_id": str(history_id), "seq": 0, "digest": ZERO.hex()}),
         "LOG": b"",
         "OP_LOCK": b"",
         "APPEND_LOCK": b"",
