@@ -103,7 +103,7 @@ class HistoryAcceptance:
         if purpose is not None:
             if (
                 type(purpose) is not str
-                or self._projection.profile != "terminal-v3"
+                or self._projection.profile not in ("terminal-v3", "inbox-retired-v1")
                 or not _is_inbox_pilot_request(value, purpose)
             ):
                 raise HistoryError("acceptance_request_refused")

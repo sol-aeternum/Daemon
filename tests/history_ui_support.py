@@ -32,7 +32,7 @@ UI_READ_ROUTES = {
 }
 
 
-async def actual_auth_app(s, monkeypatch, redis, origin):
+async def actual_auth_app(s, monkeypatch, redis, origin, *, initialize_setup=True):
     settings = s.settings
     settings.daemon_environment = "development"
     settings.daemon_deployment_mode = "self_hosted"
@@ -47,8 +47,9 @@ async def actual_auth_app(s, monkeypatch, redis, origin):
     for module in (auth_setup, auth_config, rate_limit_dep):
         monkeypatch.setattr(module, "get_settings", lambda: settings)
     bootstrap = "synthetic-disposable-ui-setup"
-    async with s.db.connection() as conn:
-        await set_runtime_value(conn, SETUP_TOKEN_HASH_KEY, hash_token(bootstrap))
+    if initialize_setup:
+        async with s.db.connection() as conn:
+            await set_runtime_value(conn, SETUP_TOKEN_HASH_KEY, hash_token(bootstrap))
     app = create_isolated_ui_app(s.host)
     # Same borrowed W pool and cipher the explicit text composition already owns;
     # this adds no resource owner, grant or settings-mutation surface.

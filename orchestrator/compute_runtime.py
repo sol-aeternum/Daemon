@@ -388,6 +388,9 @@ class ComputeScope:
     history_requirement: Any = None
     history_binding: ComputeHistoryBinding | None = None
     cleanup_owners: set[asyncio.Task[Any]] = field(default_factory=set)
+    # Only an original managed-restart runner requests retention. Observation
+    # of a hold never settles it or prolongs its financial lifetime.
+    retirement_holds: list[ReservationHold] | None = None
 
     async def close_stream(self, hold: ReservationHold) -> None:
         """Close acquired transport even when its iterator was never advanced."""
@@ -418,6 +421,8 @@ class ComputeScope:
         if extended_run and (not pending_commit or hold.extended_counted):
             self.extended_started = True
         self.outstanding[_hold_key(reservation)] = hold
+        if self.retirement_holds is not None:
+            self.retirement_holds.append(hold)
         return hold
 
     def discard_uncommitted_hold(self, reservation: Any) -> None:
@@ -917,7 +922,8 @@ class _MeteredStream(AsyncIterator[Any]):
     async def _close_iterator(self) -> None:
         # Call only after the pull has unwound. Concurrent explicit close and
         # pull-finally must join one generator finalizer, including its settlement.
-        if self.control().cleanup_fenced():
+        control = self.control()
+        if control.cleanup_fenced():
             # Existing finalizer ownership/callback remains; uncertainty is not
             # permission to initiate another (potentially indefinite) join.
             return
@@ -928,6 +934,8 @@ class _MeteredStream(AsyncIterator[Any]):
                     await self.iterator.aclose()
 
             self.closing = asyncio.create_task(close_iterator())
+            if control.scope.retirement_holds is not None:
+                control.scope.cleanup_owners.add(self.closing)
             self.closing.add_done_callback(_consume_close_result)
         await asyncio.shield(self.closing)
 

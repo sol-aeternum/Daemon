@@ -5,15 +5,20 @@ from __future__ import annotations
 import asyncio
 import os
 import time
+from dataclasses import dataclass
 from typing import Any
+from uuid import UUID
 
 import asyncpg
 
 from orchestrator.config import Settings
+from orchestrator.attempt_lifecycle import AttemptIdentity
+from orchestrator.entitlements.models import ReservationStatus, Settlement
 from orchestrator.memory.encryption import ContentEncryption
 from orchestrator.services.connection_cleanup import pool_connection, retain_pool_cleanup
 from orchestrator.tasks.composition import WorkerComposition, qualify_worker_composition
-from orchestrator.tasks.runner import run_chat_task
+from orchestrator.tasks.runner import AttemptState, run_chat_task
+from orchestrator.tasks.states import TaskStatus
 from orchestrator.tasks._invocation import InferenceInvocation
 
 from .coordination import HistoryCoordinator
@@ -22,6 +27,19 @@ from .model import HistoryError
 from .read_supervisor import _observe, qualify_read_history
 from .store import _check_time
 from .terminal_projection import TERMINAL_PROFILES, TerminalHistoryProjection
+
+
+@dataclass(frozen=True, slots=True)
+class OriginalCleanup:
+    identity: AttemptIdentity
+    send_record: UUID
+    settlement: Settlement
+
+
+def _successful(owner: asyncio.Task[Any] | None) -> bool:
+    return (
+        owner is not None and owner.done() and not owner.cancelled() and owner.exception() is None
+    )
 
 
 class HistoryTextExecution:
@@ -57,6 +75,7 @@ class HistoryTextExecution:
         self._scheduled: set[Any] = set()
         self._outcomes: dict[Any, str] = {}
         self._job_tasks: dict[asyncio.Task[Any], Any] = {}
+        self._original_attempts: dict[asyncio.Task[Any], AttemptState] = {}
         self._shutdown_task: asyncio.Task[None] | None = None
 
     def _bind(self) -> None:
@@ -148,6 +167,102 @@ class HistoryTextExecution:
         # Strong identity references; no clearing of failed/uncertain invocation state.
         if not any(value is shared for value in self._invocations):
             self._invocations.append(shared)
+
+    def retain_original_attempt(self, state: AttemptState) -> None:
+        child = asyncio.current_task()
+        if (
+            self.projection.profile != "inbox-retired-v1"
+            or child is None
+            or self._job_tasks.get(child) != state.claim.task_id
+            or child in self._original_attempts
+        ):
+            raise HistoryError("original_attempt_refused")
+        self._original_attempts[child] = state
+
+    def original_cleanup(self, task: UUID) -> OriginalCleanup:
+        """Inspect the original physical owners. Never initiate or finish cleanup here."""
+        self._bind()
+        if (
+            self.worker is None
+            or self.effects is None
+            or self.projection.profile != "inbox-retired-v1"
+            or self._scheduled != {task}
+            or len(self._original_attempts) != 1
+            or self._outcomes != {task: "completed"}
+        ):
+            raise HistoryError("original_cleanup_unavailable")
+        self.validate_worker(self.context(), self.worker)
+        ((child, state),) = self._original_attempts.items()
+        binding = state.history_binding
+        scope = state.compute_scope
+        beat = state.heartbeat
+        if (
+            self._jobs != {child}
+            or self._job_tasks != {child: task}
+            or not _successful(child)
+            or child.result() != "completed"
+            or not _successful(state.execution)
+            or beat is None
+            or not (_successful(beat) or (beat.cancelled() and state.heartbeat_stop_requested))
+            or state.claim.task_id != task
+            or state.result is not TaskStatus.COMPLETED
+            or not state.own_completion_acknowledged
+            or state.stopping
+            or state.interrupted
+            or state.error is not None
+            or state.requested_terminal is not None
+            or binding is None
+            or binding.effects is not self.effects
+            or binding.composition is not self.worker
+            or len(self._invocations) != 1
+            or binding.state is not self._invocations[0]
+            or binding.state.call_failed
+            or binding.state.uncertainty is not None
+            or scope is None
+            or scope.history_binding is not binding
+            or scope.inference_identity is not binding.identity
+            or not scope.closed
+            or scope.outstanding
+            or scope.streams
+            or not all(_successful(owner) for owner in scope.cleanup_owners)
+            or len(scope.retirement_holds or ()) != 1
+        ):
+            raise HistoryError("original_cleanup_unavailable")
+        (hold,) = scope.retirement_holds
+        stream = hold.stream
+        if (
+            hold.settlement not in scope.cleanup_owners
+            or not _successful(hold.settlement)
+            or stream is None
+            or stream.invocation is not binding.state
+            or stream.state != "eof"
+            or stream.cleanup_blocked
+            or stream.cleanup_outcome != "close_returned"
+            or not _successful(stream.closer)
+            or not _successful(stream.closing)
+            or stream.reading is None
+            or not stream.reading.done()
+            or stream.reading.cancelled()
+            or not isinstance(stream.reading.exception(), StopAsyncIteration)
+        ):
+            raise HistoryError("original_cleanup_unavailable")
+        result = hold.settlement.result()
+        owned = self.effects._owned_sends.get(id(binding.state))
+        if (
+            type(result) is not Settlement
+            or not result.applied
+            or result.status is not ReservationStatus.SETTLED
+            or result.overage_microusd
+            or result.reservation.id != hold.reservation.id
+            or result.reservation.user_id != binding.identity.account_id
+            or result.period_key != hold.reservation.period_key
+            or scope.settled != {result.reservation.id: result.actual_microusd}
+            or owned is None
+            or owned[0] is not binding.state
+            or len(owned[1]) != 1
+        ):
+            raise HistoryError("original_cleanup_unavailable")
+        return OriginalCleanup(binding.identity, next(iter(owned[1])), result)
 
     def block(self) -> None:
         self._blocked = True

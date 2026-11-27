@@ -49,12 +49,13 @@ async def projection_db(db, request):
     install_c1(db)
     db.sql("BEGIN;" + CANDIDATE.read_text() + "COMMIT;")
     if getattr(request, "param", True):
+        history_id = getattr(db.cluster, "inbox_history_id", HISTORY)
         async with db.connection() as conn:
             await conn.execute(
                 "INSERT INTO task_history_binding(history_id,version,key_id,key_check,request_schema) "
                 "VALUES($1,1,1,$2,'chat-canonical-3715-v1')",
-                HISTORY,
-                key_check(KEY, HISTORY),
+                history_id,
+                key_check(KEY, history_id),
             )
     db.sql(
         "GRANT EXECUTE ON FUNCTION public.task_history_acceptance_project(bytea) TO md_acceptor;"

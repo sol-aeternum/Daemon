@@ -150,6 +150,8 @@ class AttemptState:
     phase: str = "idle"
     history_binding: ComputeHistoryBinding | None = None
     compute_scope: Any = None
+    own_completion_acknowledged: bool = False
+    heartbeat_stop_requested: bool = False
 
     @property
     def stopping(self) -> bool:
@@ -397,6 +399,7 @@ class AttemptSink:
                     binding=state.claim,
                     deadline=_h_deadline(state),
                 )
+                state.own_completion_acknowledged = status is TaskStatus.COMPLETED
             elif non_success:
                 status = await self._store.publish_non_success(
                     state.claim.task_id,
@@ -961,6 +964,11 @@ async def _execute(ctx: dict[str, Any], store: TaskStore, state: AttemptState) -
         original_capture(memory, claim.user_id) if memory is not None else contextlib.nullcontext(),
     ):
         state.compute_scope = current_scope()
+        if (
+            state.history_binding is not None
+            and state.history_binding.effects._projection.profile == "inbox-retired-v1"
+        ):
+            state.compute_scope.retirement_holds = []
         scope_id = current_scope().scope_id
         try:
             if not claim.inference_covered:
@@ -1358,6 +1366,8 @@ async def _run_chat_task(ctx: dict[str, Any], task_id: str) -> str:
         # now. Nothing has executed, so nothing counts against the attempts.
         return "fenced"
     state = AttemptState(claim=claim, lease_deadline=lease_deadline)
+    if effects is not None and effects._projection.profile == "inbox-retired-v1":
+        ctx["history_text_execution"].retain_original_attempt(state)
     execution = asyncio.create_task(_execute(ctx, store, state))
     state.execution = execution
     heartbeat = asyncio.create_task(_heartbeat(store, state, execution))
@@ -1389,7 +1399,11 @@ async def _run_chat_task(ctx: dict[str, Any], task_id: str) -> str:
         if compute_error(exc) is None:
             logger.exception("Durable chat task attempt failed (task_id=%s)", claim.task_id)
     finally:
-        heartbeat.cancel()
+        if effects is not None and effects._projection.profile == "inbox-retired-v1":
+            stopping_heartbeat = heartbeat.cancelling() == 0
+            state.heartbeat_stop_requested = heartbeat.cancel() and stopping_heartbeat
+        else:
+            heartbeat.cancel()
         if required_history.get() is not None:
             # Repeated cancellation cannot detach native/H/financial cleanup and
             # then reset the independent execution requirement underneath it.

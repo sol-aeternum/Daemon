@@ -247,10 +247,13 @@ class HistoryObservation:
         if not failure and "turn_finish" not in metadata:
             if metadata.get("terminal_status") != "complete":
                 raise ValueError("legacy terminal mismatch")
-            return
-        if not v4:
+            if self._projection.profile != "inbox-retired-v1":
+                return
+            result_metadata = metadata
+        elif v4:
+            result_metadata = self._terminal_metadata(row, metadata)
+        else:
             raise ValueError("unsupported terminal finish profile")
-        result_metadata = self._terminal_metadata(row, metadata)
         if row["attempt_count"] != 1 or row["regeneration_count"] != 0:
             raise ValueError("unexpected attempt counter")
         self._no_traces(row)
@@ -456,7 +459,7 @@ class HistoryObservation:
         if expected_purpose is not None:
             if (
                 type(expected_purpose) is not str
-                or self._projection.profile != "terminal-v3"
+                or self._projection.profile not in ("terminal-v3", "inbox-retired-v1")
                 or type(request) is not dict
                 or not _is_inbox_pilot_request(request, expected_purpose)
             ):

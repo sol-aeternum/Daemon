@@ -5,7 +5,7 @@ import { chromium } from "../frontend/node_modules/playwright/index.mjs";
 
 const lines = createInterface({ input: process.stdin });
 const frames = lines[Symbol.asyncIterator]();
-const { ui, backend, bootstrap } = JSON.parse((await frames.next()).value);
+const { ui, backend, bootstrap, managedRestart } = JSON.parse((await frames.next()).value);
 const browser = await chromium.launch();
 const pilot = backend + "/tasks/inbox-pilot";
 const receipt = (stage, values = {}) => console.log(JSON.stringify({ stage, ...values }));
@@ -98,6 +98,18 @@ async function readReport(page, original, content) {
   await page.getByLabel("Conversation messages").getByText(content, { exact: true }).waitFor();
 }
 
+async function enrollPhone(enrollment) {
+  const phone = await open(390, 844);
+  const page = phone.page;
+  await page.goto(ui + "/setup");
+  await page.getByLabel("Enrollment Link or Token").fill(enrollment.qr_payload);
+  const enrolled = page.waitForResponse((r) => new URL(r.url()).pathname === "/api/v1/auth/enroll/complete");
+  await page.getByRole("button", { name: "Complete Enrollment" }).click();
+  assert.equal((await enrolled).status(), 200);
+  await composer(page).waitFor();
+  return page;
+}
+
 try {
   const desktop = await open(1440, 960);
   const first = desktop.page;
@@ -121,30 +133,38 @@ try {
   await status(first).getByText(/Accepted/).waitFor();
   receipt("first", { key: keyX });
   const x = JSON.parse((await frames.next()).value);
-  const selectedX = await ask(first, "X", "X", "completed");
+  let secondSender = first;
+  if (managedRestart) {
+    phase = "successor-independent-phone";
+    await desktop.context.close();
+    secondSender = await enrollPhone(enrollment);
+    await secondSender.goto(ui + "/inbox");
+  }
+  const selectedX = await ask(secondSender, "X", "X", "completed");
   assert.equal(selectedX.data.conversation_id, x.conversation);
   assert.deepEqual(selectedX.data.can_start, ["Y"]);
-  await link(first).waitFor();
+  await link(secondSender).waitFor();
+  if (managedRestart) {
+    await readReport(secondSender, x, "Synthetic report X. First fixture.");
+    receipt("recovered", { starts, x: x.task });
+    assert.equal((await frames.next()).value, "explicit Y");
+    await secondSender.goto(ui + "/inbox");
+    await composer(secondSender).waitFor();
+  }
 
   phase = "second-lost-ack";
-  const yRequest = await send(first, prompt("Y"), "POST");
+  const yRequest = await send(secondSender, prompt("Y"), "POST");
   const keyY = await yRequest.headerValue("idempotency-key");
   assert.notEqual(keyX, keyY);
-  await first.getByText("Status unavailable", { exact: true }).waitFor();
-  assert.equal(await link(first).count(), 0);
+  await secondSender.getByText("Status unavailable", { exact: true }).waitFor();
+  assert.equal(await link(secondSender).count(), 0);
   assert.equal(lost, 1);
   receipt("second", { key: keyY, lost });
   const y = JSON.parse((await frames.next()).value);
-  await desktop.context.close();
+  if (!managedRestart) await desktop.context.close();
 
   phase = "independent-phone";
-  const phone = await open(390, 844);
-  const page = phone.page;
-  await page.goto(ui + "/setup");
-  await page.getByLabel("Enrollment Link or Token").fill(enrollment.qr_payload);
-  const enrolled = page.waitForResponse((r) => new URL(r.url()).pathname === "/api/v1/auth/enroll/complete");
-  await page.getByRole("button", { name: "Complete Enrollment" }).click();
-  assert.equal((await enrolled).status(), 200);
+  const page = managedRestart ? secondSender : await enrollPhone(enrollment);
   phase = "phone-reopen";
   await composer(page).waitFor();
   await page.goto(ui + "/inbox");
