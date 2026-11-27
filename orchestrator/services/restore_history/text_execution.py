@@ -12,7 +12,6 @@ from uuid import UUID
 import asyncpg
 
 from orchestrator.config import Settings
-from orchestrator.attempt_lifecycle import AttemptIdentity
 from orchestrator.entitlements.models import ReservationStatus, Settlement
 from orchestrator.memory.encryption import ContentEncryption
 from orchestrator.services.connection_cleanup import pool_connection, retain_pool_cleanup
@@ -20,6 +19,7 @@ from orchestrator.tasks.composition import WorkerComposition, qualify_worker_com
 from orchestrator.tasks.runner import AttemptState, run_chat_task
 from orchestrator.tasks.states import TaskStatus
 from orchestrator.tasks._invocation import InferenceInvocation
+from orchestrator.tasks._history_binding import ComputeHistoryBinding
 
 from .coordination import HistoryCoordinator
 from .effects import HistoryEffects
@@ -31,7 +31,7 @@ from .terminal_projection import TERMINAL_PROFILES, TerminalHistoryProjection
 
 @dataclass(frozen=True, slots=True)
 class OriginalCleanup:
-    identity: AttemptIdentity
+    binding: ComputeHistoryBinding
     send_record: UUID
     settlement: Settlement
 
@@ -262,7 +262,7 @@ class HistoryTextExecution:
             or len(owned[1]) != 1
         ):
             raise HistoryError("original_cleanup_unavailable")
-        return OriginalCleanup(binding.identity, next(iter(owned[1])), result)
+        return OriginalCleanup(binding, next(iter(owned[1])), result)
 
     def block(self) -> None:
         self._blocked = True

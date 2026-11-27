@@ -1608,7 +1608,7 @@ class IsolatedAcceptanceHost:
                         raise HistoryError("inbox_retirement_refused")
                     _, sent, terminal = entries
                     send = sent.command.data
-                    identity, settlement = proof.identity, proof.settlement
+                    identity, settlement = proof.binding.identity, proof.settlement
                     if (
                         type(send) is not SendPossible
                         or sent.command.record_id != proof.send_record

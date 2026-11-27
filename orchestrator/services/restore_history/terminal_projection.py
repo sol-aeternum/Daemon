@@ -127,7 +127,9 @@ INBOX_RETIRED_CATALOG = _replace(
     TERMINAL_CATALOG,
     "count(*)=16 AND bool_and(p.proowner",
     "count(*)=19 AND bool_and(p.proowner",
-).replace(
+)
+INBOX_RETIRED_CATALOG = _replace(
+    INBOX_RETIRED_CATALOG,
     "'task_history_decode_terminal'",
     "'task_history_decode_terminal','task_history_decode_retired'",
 )

@@ -749,6 +749,10 @@ def composition_violations(sources: dict[str, str]) -> list[str]:
                         ("orchestrator/services/restore_history/acceptance_host.py", "_lookup"),
                         ("orchestrator/services/restore_history/acceptance_host.py", "_cancel"),
                         ("orchestrator/services/restore_history/acceptance_host.py", "_ui_read"),
+                        (
+                            "orchestrator/services/restore_history/acceptance_host.py",
+                            "retire_original",
+                        ),
                         ("orchestrator/services/restore_history/observation.py", "_lookup"),
                         ("orchestrator/services/restore_history/effects.py", "_mark"),
                         ("orchestrator/services/restore_history/effects.py", "_cancel"),
