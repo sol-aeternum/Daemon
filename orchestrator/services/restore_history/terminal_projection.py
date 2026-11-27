@@ -130,8 +130,13 @@ INBOX_RETIRED_CATALOG = _replace(
 )
 INBOX_RETIRED_CATALOG = _replace(
     INBOX_RETIRED_CATALOG,
-    "'task_history_decode_terminal'",
-    "'task_history_decode_terminal','task_history_decode_retired'",
+    "'task_history_decode_terminal'))",
+    "'task_history_decode_terminal','task_history_decode_retired'))",
+)
+INBOX_RETIRED_CATALOG = _replace(
+    INBOX_RETIRED_CATALOG,
+    "'task_history_decode_terminal') THEN",
+    "'task_history_decode_terminal','task_history_decode_retired') THEN",
 )
 INBOX_RETIRED_CATALOG = _replace(
     INBOX_RETIRED_CATALOG,
