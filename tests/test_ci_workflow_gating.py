@@ -126,6 +126,7 @@ def test_postgres_inventory_reports_browser_exclusions_and_pytest_result(
     upload = next(step for step in steps if step["name"] == "Upload PostgreSQL opt-in results")
     cases = {
         "test_b1_browser_bootstrap_postgres": "test_b1_actual_https_production_browser_empty_history",
+        "test_history_inbox_restart_postgres": "test_clean_process_replacement_explicit_phone_y",
         "test_history_ui_browser_postgres": "test_actual_page_saved_partial_second_issued_device_and_terminal",
         "test_resource_history_postgres": "test_native_components_real_browser_sessions_proxy_and_history",
         "test_resource_http_postgres": "test_actual_browser_contexts_and_fresh_composition_restart",
