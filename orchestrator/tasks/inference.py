@@ -203,6 +203,15 @@ class InferenceRecovery:
         if await conn.fetchval(ROLE_PRECONDITION) is not True:
             raise ObservationBlocked("inference_principal_refused")
 
+    async def require_open_in_transaction(self, conn: Any, identity: AttemptIdentity) -> None:
+        """Recheck the original attempt on the caller's preflighted worker transaction."""
+        require_effect()
+        if not conn.is_in_transaction():
+            raise ObservationBlocked("inference_transaction_required")
+        await conn.execute(
+            "SELECT public.attempt_lifecycle_assert_open($1::jsonb)", identity.wire()
+        )
+
     async def lock(
         self, conn: Any, account: UUID, generation: int, task: UUID, epoch: int
     ) -> RecoveryObservation:
@@ -267,10 +276,7 @@ class InferenceRecovery:
                     result = json.loads(raw)
                     if identity is not None:
                         state.require_effect()
-                        await conn.execute(
-                            "SELECT public.attempt_lifecycle_assert_open($1::jsonb)",
-                            identity.wire(),
-                        )
+                        await self.require_open_in_transaction(conn, identity)
                     state.require_effect()
                     if stage is not None:
                         await stage(conn, result)
@@ -328,9 +334,7 @@ class InferenceRecovery:
                     ):
                         raise ObservationBlocked()
                     state.require_effect()
-                    await conn.execute(
-                        "SELECT public.attempt_lifecycle_assert_open($1::jsonb)", identity.wire()
-                    )
+                    await self.require_open_in_transaction(conn, identity)
                 state.require_effect()
         except BaseException as exc:
             state.block("inference_registration_unavailable")

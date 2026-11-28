@@ -1,6 +1,7 @@
 """Interrupted source writes in both durability domains cannot authorize a later leg."""
 
 import asyncio
+from uuid import uuid4
 
 import httpx
 import pytest
@@ -108,8 +109,11 @@ async def test_source_receipt_fault_fences_original_and_successor(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("text_host", ["sources"], indirect=True)
-async def test_committed_stop_after_possible_before_get_prevents_transport(text_host, monkeypatch):
-    """A possible-read acknowledgement is not a permit surviving a later Stop."""
+@pytest.mark.parametrize("revocation", ["stop", "lifecycle-close"])
+async def test_revocation_after_possible_before_get_prevents_transport(
+    text_host, monkeypatch, revocation
+):
+    """A possible-read acknowledgement does not survive Stop or original lifecycle closure."""
     s = text_host
     configure(s)
     entered = asyncio.Event()
@@ -127,8 +131,19 @@ async def test_committed_stop_after_possible_before_get_prevents_transport(text_
         assert (await start(http, headers, QUESTION)).status_code == 200
         await asyncio.wait_for(entered.wait(), 10)
         try:
-            stopped = await http.post(f"/tasks/{s.calls[0].task_id}/cancel", headers=headers)
-            assert stopped.status_code == 200
+            identity = s.calls[0]
+            if revocation == "stop":
+                stopped = await http.post(f"/tasks/{identity.task_id}/cancel", headers=headers)
+                assert stopped.status_code == 200
+            else:
+                # No Stop intent or task cancellation: the lifecycle check itself
+                # must prevent the pending GET after the native close commits.
+                async with s.db.connection("md_app") as conn:
+                    await conn.fetchval(
+                        "SELECT public.attempt_lifecycle_close($1::jsonb,$2,'requested')",
+                        identity.wire(),
+                        uuid4(),
+                    )
         finally:
             resume.set()
         assert (await jobs(s))[0] != "completed"

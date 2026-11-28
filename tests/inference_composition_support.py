@@ -10,6 +10,10 @@ ADMITTED = {
     "orchestrator/tasks/inference.py",
 }
 
+# Nested source helpers own one phase each. The inner function name alone is
+# not a fixture identity, so the enclosing SourceRun method is pinned too.
+SOURCE_SITES = {"prepare": "mark", "recheck": "dispatch", "stage": "publish"}
+
 
 def composition_violations(sources: dict[str, str]) -> list[str]:
     violations = []
@@ -73,6 +77,41 @@ def composition_violations(sources: dict[str, str]) -> list[str]:
                 if function == "getattr" and len(node.args) >= 2:
                     return name(node.args[0]) + "." + name(node.args[1])
             return ""
+
+        def enclosing_functions(node):
+            return sorted(
+                (
+                    f
+                    for f in nodes
+                    if isinstance(f, (ast.FunctionDef, ast.AsyncFunctionDef))
+                    and f.lineno <= node.lineno <= (f.end_lineno or f.lineno)
+                ),
+                key=lambda f: f.lineno,
+            )
+
+        def enclosing_class(node):
+            classes = [
+                c
+                for c in nodes
+                if isinstance(c, ast.ClassDef)
+                and c.lineno <= node.lineno <= (c.end_lineno or c.lineno)
+            ]
+            return max(classes, key=lambda c: c.lineno).name if classes else None
+
+        def in_source_site(node, function):
+            # Only the one SourceRun phase method that owns this history/SQL
+            # boundary may enclose the nested helper; a same-named helper under
+            # another method or class is out of context.
+            expected = SOURCE_SITES.get(function)
+            if (
+                path != "orchestrator/services/restore_history/source_execution.py"
+                or expected is None
+            ):
+                return False
+            return [f.name for f in enclosing_functions(node)] == [
+                expected,
+                function,
+            ] and enclosing_class(node) == "SourceRun"
 
         for node in nodes:
             if isinstance(node, (ast.Assign, ast.AnnAssign)):
@@ -548,10 +587,47 @@ def composition_violations(sources: dict[str, str]) -> list[str]:
                                 and node.module
                                 == "orchestrator.services.restore_history.text_execution"
                                 and [i.name for i in node.names]
-                                == ["HistoryResearchExecution", "HistoryTextExecution"]
+                                == [
+                                    "HistoryResearchExecution",
+                                    "HistorySourcesExecution",
+                                    "HistoryTextExecution",
+                                ]
+                            )
+                            # The runner's single research type stays admitted;
+                            # the source profile adds exactly this one sibling.
+                            or (
+                                path == "orchestrator/tasks/runner.py"
+                                and node.module
+                                == "orchestrator.services.restore_history.text_execution"
+                                and [i.name for i in node.names]
+                                == ["HistoryResearchExecution", "HistorySourcesExecution"]
                             )
                         )
                         and all(i.asname is None for i in node.names)
+                    )
+                    # The trusted compute binding needs the fixture result type
+                    # for identity checks only: one exact name, no alias, no
+                    # sibling symbol and no other importer.
+                    source_run_type = (
+                        path == "orchestrator/tasks/_history_binding.py"
+                        and isinstance(node, ast.ImportFrom)
+                        and node.level == 0
+                        and node.module == "orchestrator.services.restore_history.source_execution"
+                        and [(item.name, item.asname) for item in node.names]
+                        == [("SourceRun", None)]
+                        and (
+                            any(
+                                isinstance(stmt, ast.If)
+                                and isinstance(stmt.test, ast.Name)
+                                and stmt.test.id == "TYPE_CHECKING"
+                                and node in stmt.body
+                                for stmt in tree.body
+                            )
+                            or (
+                                [f.name for f in enclosing_functions(node)] == ["validate"]
+                                and enclosing_class(node) == "ComputeHistoryBinding"
+                            )
+                        )
                     )
                     if isinstance(node, ast.ImportFrom):
                         module = modules[0]
@@ -562,6 +638,7 @@ def composition_violations(sources: dict[str, str]) -> list[str]:
                         not observation_reader
                         and not startup_read_only
                         and not text_type_import
+                        and not source_run_type
                         and any(
                             m == "orchestrator.services.restore_history"
                             or m.startswith("orchestrator.services.restore_history.")
@@ -677,6 +754,7 @@ def composition_violations(sources: dict[str, str]) -> list[str]:
                         "shared",
                         "execution_owner.search_tool if research else None",
                         "execution_owner.model_transport if research else None",
+                        "execution_owner.original_source(claim) if type(execution_owner) is HistorySourcesExecution else None",
                     ]
                 ):
                     violations.append(f"{path}:{node.lineno}:unapproved compute history binding")
@@ -739,12 +817,24 @@ def composition_violations(sources: dict[str, str]) -> list[str]:
                         {},
                     ),
                 }.get((path, enclosing_name, method))
+                # The source profile opens the same owned worker transaction
+                # only from its two pinned phases, on the exact claim.
+                source_worker = (
+                    path == "orchestrator/services/restore_history/source_execution.py"
+                    and method == "_worker"
+                    and expression == "effects._tasks._worker"
+                    and enclosing_name in ("prepare", "recheck")
+                    and arguments == ["self.claim.task_id", "self.claim.epoch", "self.claim"]
+                    and not call_keywords
+                    and in_source_site(node, enclosing_name)
+                )
                 if not (
                     expected_terminal is not None
                     and target.rsplit(".", 1)[0] == expected_terminal
                     or expected_v4 is not None
                     and (expression, arguments, call_keywords)
                     == (f"{expected_v4[0]}.{method}", expected_v4[1], expected_v4[2])
+                    or source_worker
                 ):
                     violations.append(f"{path}:{node.lineno}:unapproved terminal transaction seam")
             if target.endswith(".retain_pool_cleanup") or target == "retain_pool_cleanup":
@@ -799,10 +889,28 @@ def composition_violations(sources: dict[str, str]) -> list[str]:
                             "orchestrator/services/restore_history/runtime.py",
                             "qualify_before_recovery",
                         ),
+                        # Source phases open the short history operation only
+                        # from their own nested helper, under SourceRun.
+                        (
+                            "orchestrator/services/restore_history/source_execution.py",
+                            "prepare",
+                        ),
+                        (
+                            "orchestrator/services/restore_history/source_execution.py",
+                            "recheck",
+                        ),
+                        (
+                            "orchestrator/services/restore_history/source_execution.py",
+                            "stage",
+                        ),
                     }
                     or ast.unparse(node.func) != "retain_pool_cleanup"
                     or node.args
                     or node.keywords
+                    or (
+                        path == "orchestrator/services/restore_history/source_execution.py"
+                        and not in_source_site(node, enclosing)
+                    )
                 ):
                     violations.append(f"{path}:{node.lineno}:unapproved cleanup scope")
             effect_seam = next(
@@ -955,6 +1063,46 @@ def composition_violations(sources: dict[str, str]) -> list[str]:
                     != ["operation", "deadline", "options", "lookup", "request"]
                 ):
                     violations.append(f"{path}:{node.lineno}:unapproved owned acceptance seam")
+            if (
+                target.endswith(".require_open_in_transaction")
+                or target == "require_open_in_transaction"
+            ):
+                # One consolidating adapter recheck replaces identical raw SQL:
+                # the source recheck under its owned _worker transaction and the
+                # two original registration/claim sites inside InferenceRecovery.
+                lifecycle_recheck = {
+                    (
+                        "orchestrator/services/restore_history/source_execution.py",
+                        "recheck",
+                    ): (
+                        "binding.recovery.require_open_in_transaction",
+                        ["conn", "binding.identity"],
+                    ),
+                    ("orchestrator/tasks/inference.py", "_owned"): (
+                        "self.require_open_in_transaction",
+                        ["conn", "identity"],
+                    ),
+                    ("orchestrator/tasks/inference.py", "register"): (
+                        "self.require_open_in_transaction",
+                        ["conn", "identity"],
+                    ),
+                }.get((path, enclosing_name))
+                owner_class = {
+                    "orchestrator/services/restore_history/source_execution.py": "SourceRun",
+                    "orchestrator/tasks/inference.py": "InferenceRecovery",
+                }.get(path)
+                source_recheck = (
+                    path != "orchestrator/services/restore_history/source_execution.py"
+                    or in_source_site(node, "recheck")
+                )
+                if not (
+                    lifecycle_recheck is not None
+                    and (expression, arguments) == lifecycle_recheck
+                    and not call_keywords
+                    and enclosing_class(node) == owner_class
+                    and source_recheck
+                ):
+                    violations.append(f"{path}:{node.lineno}:unapproved lifecycle recheck seam")
             if not path.startswith("orchestrator/services/restore_history/"):
                 if target.endswith(
                     (

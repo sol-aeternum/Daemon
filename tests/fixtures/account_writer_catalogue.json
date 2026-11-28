@@ -7819,6 +7819,28 @@
       "rationale": "Bounded scanner flags the call to SkillStore.delete, which deletes the calling account's own skill row inside the store's transaction; the SQL is inventoried under orchestrator.services.skills. No runtime account-fence coverage claimed."
     },
     {
+      "owner_source": "orchestrator.services.restore_history.source_execution",
+      "qualname": "SourceReadTool.execute",
+      "kind": "sql_unresolvable",
+      "fingerprint": "22c74a10bc792b97",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "The fixture delegates to WebFetchTool.execute; the scanner cannot resolve the call as SQL. The underlying tool can publish a native snapshot. No independent account-fence coverage claimed."
+    },
+    {
+      "owner_source": "orchestrator.services.restore_history.source_execution",
+      "qualname": "SourceSnapshotStore.create",
+      "kind": "store_write",
+      "fingerprint": "e38943c26aac9639",
+      "tables": [],
+      "unknown": true,
+      "uncovered": true,
+      "category": "deferred",
+      "rationale": "The fixture passes the native snapshot store's create method to original-task publication. This delegation is inventoried separately from the native SQL writes and claims no independent account fence."
+    },
+    {
       "owner_source": "orchestrator.services.restore_history.acceptance",
       "qualname": "AcceptanceProjection._page",
       "kind": "sql_unresolvable",

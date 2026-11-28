@@ -552,10 +552,7 @@ class SourceRun:
                 async with effects._tasks._worker(
                     self.claim.task_id, self.claim.epoch, self.claim
                 ) as (conn, _):
-                    await conn.execute(
-                        "SELECT public.attempt_lifecycle_assert_open($1::jsonb)",
-                        binding.identity.wire(),
-                    )
+                    await binding.recovery.require_open_in_transaction(conn, binding.identity)
                 return True
 
         admitted = await self.effects._run(recheck, self.deadline)
