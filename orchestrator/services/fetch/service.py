@@ -7,6 +7,8 @@ from collections.abc import Sequence
 from typing import Protocol
 from urllib.parse import urlparse
 
+import httpx
+
 from orchestrator.services.fetch.bounds import max_content_bytes
 from orchestrator.services.fetch.cache import FetchCache
 from orchestrator.services.fetch.models import (
@@ -85,12 +87,17 @@ class FetchService:
         cache: FetchCache | None = None,
         *,
         user_id: uuid.UUID | None = None,
+        _source_transport: httpx.MockTransport | None = None,
     ) -> None:
         self.policy: FetchPolicy = policy or load_policy_from_env()
         self.cache: FetchCache = cache or FetchCache(user_id=user_id)
 
-        self.youtube_strategy: FetchStrategy | None = YouTubeTranscriptStrategy(self.policy)
-        self.direct_strategy: FetchStrategy | None = DirectFetchStrategy(self.policy)
+        self.youtube_strategy: FetchStrategy | None = (
+            YouTubeTranscriptStrategy(self.policy) if _source_transport is None else None
+        )
+        self.direct_strategy: FetchStrategy | None = DirectFetchStrategy(
+            self.policy, _source_transport=_source_transport
+        )
         # Vendor-assisted extraction has no approved bounded adapter yet.
         self.jina_strategy: FetchStrategy | None = None
         self.crawl4ai_strategy: FetchStrategy | None = None

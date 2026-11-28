@@ -104,11 +104,11 @@ class HistoryAcceptance:
             if (
                 type(purpose) is not str
                 or (
-                    self._projection.profile == "inbox-research-v1"
+                    self._projection.profile in ("inbox-research-v1", "inbox-sources-v1")
                     and purpose != _INBOX_RESEARCH_PURPOSE
                 )
                 or (
-                    self._projection.profile != "inbox-research-v1"
+                    self._projection.profile not in ("inbox-research-v1", "inbox-sources-v1")
                     and (
                         purpose == _INBOX_RESEARCH_PURPOSE
                         or self._projection.profile not in ("terminal-v3", "inbox-retired-v1")
@@ -118,7 +118,7 @@ class HistoryAcceptance:
             ):
                 raise HistoryError("acceptance_request_refused")
             required.add("purpose")
-        elif self._projection.profile == "inbox-research-v1":
+        elif self._projection.profile in ("inbox-research-v1", "inbox-sources-v1"):
             raise HistoryError("acceptance_request_refused")
         if (
             not required

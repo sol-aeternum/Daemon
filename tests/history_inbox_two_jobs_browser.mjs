@@ -5,7 +5,7 @@ import { chromium } from "../frontend/node_modules/playwright/index.mjs";
 
 const lines = createInterface({ input: process.stdin });
 const frames = lines[Symbol.asyncIterator]();
-const { ui, backend, bootstrap, managedRestart, questions } = JSON.parse((await frames.next()).value);
+const { ui, backend, bootstrap, managedRestart, questions, retrieved } = JSON.parse((await frames.next()).value);
 const browser = await chromium.launch();
 const pilot = backend + "/tasks/inbox-pilot";
 const receipt = (stage, values = {}) => console.log(JSON.stringify({ stage, ...values }));
@@ -168,6 +168,11 @@ try {
     await readReport(secondSender, x, "Synthetic report X. First fixture.");
     receipt("recovered", { starts, x: x.task });
     assert.equal((await frames.next()).value, "explicit Y");
+    await secondSender.goto(ui + "/inbox");
+    await composer(secondSender).waitFor();
+  } else if (retrieved) {
+    phase = "desktop-original-report";
+    await readReport(secondSender, x, x.content);
     await secondSender.goto(ui + "/inbox");
     await composer(secondSender).waitFor();
   }

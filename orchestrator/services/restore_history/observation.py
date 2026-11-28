@@ -12,7 +12,7 @@ import hmac
 import json
 import time
 from dataclasses import dataclass
-from typing import Any, Literal
+from typing import Any, Literal, cast
 from uuid import UUID
 
 import asyncpg
@@ -193,7 +193,7 @@ class HistoryObservation:
         result = dict(row)
         if terminal_profile:
             try:
-                if self._projection.profile == "inbox-research-v1":
+                if self._projection.profile in ("inbox-research-v1", "inbox-sources-v1"):
                     if not _is_inbox_pilot_request(json.loads(canonical), _INBOX_RESEARCH_PURPOSE):
                         return None
                     await self._research_owned(conn, accepted, result, state)
@@ -211,11 +211,13 @@ class HistoryObservation:
             for e in state.entries
             if type(e.command.data) is SendPossible and e.command.data.task_id == accepted.task_id
         ]
+        sources = self._projection.profile == "inbox-sources-v1"
+        send_kinds = (*RESEARCH_SENDS, "completion") if sources else RESEARCH_SENDS
         status = row["status"]
         if status not in ("queued", "running", "completed", "cancelled"):
             raise ValueError("unresolved research outcome")
         if (
-            tuple(send.effect_kind for send in sends) != RESEARCH_SENDS[: len(sends)]
+            tuple(send.effect_kind for send in sends) != send_kinds[: len(sends)]
             or any(send.epoch != row["lease_epoch"] for send in sends)
             or (status == "queued" and sends)
             or row["attempt_count"] not in (0, 1)
@@ -237,6 +239,8 @@ class HistoryObservation:
                 != (sends[0].epoch, sends[0].financial_scope_id)
             ):
                 raise ValueError("unsupported research attempt scope")
+        if sources:
+            await self._source_owned(conn, accepted, row, state)
         if status != "completed":
             self._no_traces(row)
             metadata = self._object(row["observed_metadata"])
@@ -281,7 +285,7 @@ class HistoryObservation:
                 ):
                     raise ValueError("unsupported cancelled research result")
             return
-        if len(sends) != 3:
+        if len(sends) != len(send_kinds):
             raise ValueError("incomplete research sends")
         self._research_traces(row)
         reservations = await conn.fetch(
@@ -291,7 +295,7 @@ class HistoryObservation:
             sends[0].financial_scope_id,
         )
         by_id = {r["id"]: r for r in reservations}
-        if len(reservations) != 3 or set(by_id) != {s.reservation_id for s in sends}:
+        if len(reservations) != len(send_kinds) or set(by_id) != {s.reservation_id for s in sends}:
             raise ValueError("unsupported research reservations")
         if len({r["period_key"] for r in reservations}) != 1:
             raise ValueError("unexpected research accounting period")
@@ -321,6 +325,163 @@ class HistoryObservation:
         if by_id[sends[-1].reservation_id]["model"] != row["model"]:
             raise ValueError("unsupported research synthesis model")
 
+    async def _source_owned(
+        self, conn: Any, accepted: AcceptPrepare, row: dict[str, Any], state: HistoryState
+    ) -> None:
+        from .model import SourcePinPrepare, SourceReadPossible
+        from .source_execution import (
+            passage_fields,
+            source_key_material,
+            source_mac,
+            validate_report,
+            validate_trace,
+        )
+        from orchestrator.services.web_snapshots import WebSnapshotError, WebSnapshotStore
+        from orchestrator.services.fetch.models import EXTRACTION_VERSION_V1
+        from orchestrator.tools.web_fetch import WebFetchTool
+
+        pins = [
+            e
+            for e in state.entries
+            if isinstance(e.command.data, SourcePinPrepare)
+            and e.command.data.task_id == accepted.task_id
+        ]
+        possible = [
+            e
+            for e in state.entries
+            if isinstance(e.command.data, SourceReadPossible)
+            and e.command.data.task_id == accepted.task_id
+        ]
+        events = await conn.fetch(
+            "SELECT seq,payload_ciphertext FROM task_events WHERE task_id=$1 AND kind='page_refreshed' ORDER BY seq",
+            accepted.task_id,
+        )
+        if len(events) != len(pins):
+            raise ValueError("source_pin_refused")
+        completed = row["status"] == "completed"
+        material = source_key_material(self._key, self._projection.expected.history_id)
+        values: list[dict[str, Any]] = []
+        search: dict[str, Any] | None = None
+        if completed:
+            calls, results = self._research_traces(row)
+            values = validate_trace(calls, results)
+            if len(values) != len(pins) or len(possible) != len(pins):
+                raise ValueError("source_pin_refused")
+            report = self._tasks._enc.decrypt(row["result_content"])
+            validate_report(report, values)
+            search = results[0]["result"]
+            receipt = self._trace(row, "tool_results")[0].get("source_receipt")
+            expected_receipt = source_mac(
+                material,
+                "report",
+                self._projection.expected.history_id,
+                cast(SourcePinPrepare, pins[0].command.data).acceptance_record_id,
+                accepted.task_id,
+                row["lease_epoch"],
+                accepted.result_message_id,
+                report,
+                [
+                    [
+                        str(e.command.record_id),
+                        cast(SourcePinPrepare, e.command.data).passage_commitment,
+                    ]
+                    for e in pins
+                ],
+                calls,
+                results,
+            )
+            if type(receipt) is not str or not hmac.compare_digest(receipt, expected_receipt):
+                raise ValueError("source_receipt_refused")
+        store = WebSnapshotStore(self._tasks._pool, self._tasks._enc)
+        tool = WebFetchTool(store, accepted.account_id, accepted.conversation_id)
+        for index, (entry, event) in enumerate(zip(pins, events, strict=True)):
+            pin = entry.command.data
+            read = possible[index].command.data
+            assert isinstance(pin, SourcePinPrepare) and isinstance(read, SourceReadPossible)
+            payload = self._tasks._open(event["payload_ciphertext"])
+            if event["seq"] != pin.event_seq or payload != {
+                "key": read.selection_commitment,
+                "snapshot_id": str(pin.snapshot_id),
+                "epoch": pin.epoch,
+            }:
+                raise ValueError("source_pin_refused")
+            snapshot_row = await conn.fetchrow(
+                "SELECT p.user_id AS observed_user,p.conversation_id AS observed_conversation,"
+                "retained.* FROM ONLY public.web_snapshots p LEFT JOIN LATERAL "
+                "(SELECT s.* FROM ONLY public.web_snapshots s WHERE s.id=p.id "
+                "AND s.user_id=$2 AND s.conversation_id=$3 AND s.expires_at>clock_timestamp()) retained "
+                "ON true WHERE p.id=$1",
+                pin.snapshot_id,
+                accepted.account_id,
+                accepted.conversation_id,
+            )
+            value = values[index] if completed else None
+            if snapshot_row is not None:
+                if (snapshot_row["observed_user"], snapshot_row["observed_conversation"]) != (
+                    accepted.account_id,
+                    accepted.conversation_id,
+                ):
+                    raise ValueError("source_pin_refused")
+            if snapshot_row is not None and snapshot_row["id"] is not None:
+                try:
+                    snapshot = store._snapshot_from_row(snapshot_row)
+                except WebSnapshotError:
+                    raise ValueError("source_pin_refused") from None
+                if (
+                    snapshot.user_id,
+                    snapshot.conversation_id,
+                    snapshot.extract_mode,
+                    snapshot.extraction_version,
+                ) != (
+                    accepted.account_id,
+                    accepted.conversation_id,
+                    "article",
+                    EXTRACTION_VERSION_V1,
+                ) or (
+                    snapshot.content_chars != len(snapshot.content)
+                    or snapshot.content_bytes != len(snapshot.content.encode("utf-8"))
+                    or snapshot.stored_bytes
+                    != len(snapshot_row["metadata_encrypted"].encode("utf-8"))
+                    + len(snapshot_row["content_encrypted"].encode("utf-8"))
+                    or snapshot.final_url != snapshot.source_url
+                ):
+                    raise ValueError("source_pin_refused")
+                actual = json.loads(tool._section(snapshot, 0, 1000))
+                if value is not None and value != actual:
+                    raise ValueError("source_pin_refused")
+                value = value or actual
+            if value is None or value["snapshot_id"] != str(pin.snapshot_id):
+                raise ValueError("source_pin_refused")
+            expected = source_mac(
+                material,
+                "passage",
+                self._projection.expected.history_id,
+                pin.acceptance_record_id,
+                accepted.task_id,
+                pin.epoch,
+                accepted.result_message_id,
+                *passage_fields(value),
+            )
+            if not hmac.compare_digest(expected, pin.passage_commitment):
+                raise ValueError("source_pin_refused")
+            if completed:
+                assert search is not None
+                selection = source_mac(
+                    material,
+                    "selection",
+                    self._projection.expected.history_id,
+                    pin.acceptance_record_id,
+                    accepted.task_id,
+                    pin.epoch,
+                    accepted.result_message_id,
+                    search,
+                    value["url"],
+                    "article",
+                    EXTRACTION_VERSION_V1,
+                )
+                if not hmac.compare_digest(selection, read.selection_commitment):
+                    raise ValueError("source_selection_refused")
+
     async def _terminal_owned(
         self, conn: Any, accepted: AcceptPrepare, row: dict[str, Any], state: HistoryState
     ) -> None:
@@ -336,7 +497,7 @@ class HistoryObservation:
         )
         status = row["status"]
         v4 = self._projection.profile == "terminal-v4"
-        research = self._projection.profile == "inbox-research-v1"
+        research = self._projection.profile in ("inbox-research-v1", "inbox-sources-v1")
         if fact is None:
             if status == "completed" or (v4 and status in ("failed", "needs_attention")):
                 raise ValueError("missing terminal fact")
@@ -376,7 +537,11 @@ class HistoryObservation:
         if not failure and "turn_finish" not in metadata:
             if metadata.get("terminal_status") != "complete":
                 raise ValueError("legacy terminal mismatch")
-            if self._projection.profile not in ("inbox-retired-v1", "inbox-research-v1"):
+            if self._projection.profile not in (
+                "inbox-retired-v1",
+                "inbox-research-v1",
+                "inbox-sources-v1",
+            ):
                 return
             if research:
                 raise ValueError("missing research finish")
@@ -485,7 +650,7 @@ class HistoryObservation:
             ):
                 raise ValueError("unsupported tool envelope")
             if (
-                self._projection.profile == "inbox-research-v1"
+                self._projection.profile in ("inbox-research-v1", "inbox-sources-v1")
                 and len(trace["ciphertext"]) > 250_000
             ):
                 raise ValueError("research trace too large")
@@ -505,7 +670,13 @@ class HistoryObservation:
             if type(raw) is not dict:
                 raise ValueError("missing encrypted research trace")
         calls, results = self._trace(message, "tool_calls"), self._trace(message, "tool_results")
-        validate_research_trace(calls, results)
+        if self._projection.profile == "inbox-sources-v1":
+            from .source_execution import validate_trace
+
+            validate_trace(calls, results)
+            results = [{k: v for k, v in item.items() if k != "source_receipt"} for item in results]
+        else:
+            validate_research_trace(calls, results)
         return calls, results
 
     async def _cancelled_owned(
@@ -527,7 +698,11 @@ class HistoryObservation:
             if type(e.command.data) is SendPossible and e.command.data.task_id == accepted.task_id
         ]
         send_kinds = (
-            RESEARCH_SENDS if self._projection.profile == "inbox-research-v1" else ("completion",)
+            (*RESEARCH_SENDS, "completion")
+            if self._projection.profile == "inbox-sources-v1"
+            else RESEARCH_SENDS
+            if self._projection.profile == "inbox-research-v1"
+            else ("completion",)
         )
         if tuple(send.effect_kind for send in sends) != send_kinds[: len(sends)] or any(
             (send.account_id, send.account_generation, send.task_id, send.epoch)
@@ -613,11 +788,11 @@ class HistoryObservation:
             if (
                 type(expected_purpose) is not str
                 or (
-                    self._projection.profile == "inbox-research-v1"
+                    self._projection.profile in ("inbox-research-v1", "inbox-sources-v1")
                     and expected_purpose != _INBOX_RESEARCH_PURPOSE
                 )
                 or (
-                    self._projection.profile != "inbox-research-v1"
+                    self._projection.profile not in ("inbox-research-v1", "inbox-sources-v1")
                     and (
                         expected_purpose == _INBOX_RESEARCH_PURPOSE
                         or self._projection.profile not in ("terminal-v3", "inbox-retired-v1")

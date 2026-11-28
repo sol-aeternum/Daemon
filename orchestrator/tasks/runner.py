@@ -480,6 +480,10 @@ def _guard_tools(registry: Any, store: TaskStore, state: AttemptState) -> None:
     )
     fetch = registry.get("web_fetch")
     if fetch is not None and hasattr(fetch, "refresh_guard"):
+        if state.history_binding is not None and state.history_binding.source_run is not None:
+            if fetch is not state.history_binding.source_run.tool:
+                raise ObservationBlocked("source_scope_refused")
+            return
         # A regenerated attempt reuses what an earlier attempt of this task
         # refreshed rather than fetching and snapshotting it again (#475).
         fetch.refresh_guard = _TaskRefreshGuard(store, state)
@@ -924,11 +928,12 @@ async def _execute(ctx: dict[str, Any], store: TaskStore, state: AttemptState) -
         if requirement is not None:
             from orchestrator.services.restore_history.text_execution import (
                 HistoryResearchExecution,
+                HistorySourcesExecution,
             )
             from orchestrator.tasks.inputs import _INBOX_RESEARCH_PURPOSE, _is_inbox_pilot_request
 
             execution_owner = ctx["history_text_execution"]
-            research = type(execution_owner) is HistoryResearchExecution
+            research = type(execution_owner) in (HistoryResearchExecution, HistorySourcesExecution)
             assert execution_owner.effects is not None
             if research:
                 canonical = json.loads(task_input["_request"])
@@ -962,6 +967,9 @@ async def _execute(ctx: dict[str, Any], store: TaskStore, state: AttemptState) -
                 shared,
                 execution_owner.search_tool if research else None,
                 execution_owner.model_transport if research else None,
+                execution_owner.original_source(claim)
+                if type(execution_owner) is HistorySourcesExecution
+                else None,
             )
             state.history_binding.validate(required_history.get())
         async with _mutation(state):
@@ -1001,7 +1009,7 @@ async def _execute(ctx: dict[str, Any], store: TaskStore, state: AttemptState) -
         if (
             state.history_binding is not None
             and state.history_binding.effects._projection.profile
-            in ("inbox-retired-v1", "inbox-research-v1")
+            in ("inbox-retired-v1", "inbox-research-v1", "inbox-sources-v1")
         ):
             state.compute_scope.retirement_holds = []
         scope_id = current_scope().scope_id
@@ -1404,6 +1412,7 @@ async def _run_chat_task(ctx: dict[str, Any], task_id: str) -> str:
     if effects is not None and effects._projection.profile in (
         "inbox-retired-v1",
         "inbox-research-v1",
+        "inbox-sources-v1",
     ):
         ctx["history_text_execution"].retain_original_attempt(state)
     execution = asyncio.create_task(_execute(ctx, store, state))
@@ -1440,6 +1449,7 @@ async def _run_chat_task(ctx: dict[str, Any], task_id: str) -> str:
         if effects is not None and effects._projection.profile in (
             "inbox-retired-v1",
             "inbox-research-v1",
+            "inbox-sources-v1",
         ):
             stopping_heartbeat = heartbeat.cancelling() == 0
             state.heartbeat_stop_requested = heartbeat.cancel() and stopping_heartbeat

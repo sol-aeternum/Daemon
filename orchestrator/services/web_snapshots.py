@@ -575,6 +575,7 @@ class WebSnapshotStore:
         title: str | None = None,
         now: datetime | None = None,
         on_created: Callable[[Connection, uuid.UUID], Awaitable[None]] | None = None,
+        _retain_connection: bool = False,
     ) -> WebSnapshot:
         """Retain one immutable snapshot under atomic owner and quota admission.
 
@@ -628,7 +629,10 @@ class WebSnapshotStore:
         content_fp = self.content_fingerprint(user_id, content)
 
         try:
-            async with self._pool.acquire() as conn:
+            from orchestrator.services.connection_cleanup import pool_connection
+
+            connection = pool_connection(self._pool) if _retain_connection else self._pool.acquire()
+            async with connection as conn:
                 async with conn.transaction():
                     await self._lock_account(conn, user_id)
                     await self._lock_owned_conversation(conn, user_id, conversation_id)

@@ -308,8 +308,13 @@ class _CookieJarRequestAdapter:
 class DirectFetchStrategy:
     """Direct HTTP fetch strategy using a stable, operator-configurable identity."""
 
-    def __init__(self, policy: FetchPolicy) -> None:
+    def __init__(
+        self, policy: FetchPolicy, *, _source_transport: httpx.MockTransport | None = None
+    ) -> None:
         self.policy: FetchPolicy = policy
+        if _source_transport is not None and type(_source_transport) is not httpx.MockTransport:
+            raise ValueError("invalid source fixture transport")
+        self._source_transport = _source_transport
         self.user_agent = get_settings().daemon_fetch_user_agent
         if self.user_agent != DEFAULT_FETCH_USER_AGENT:
             logger.warning("Direct fetch User-Agent overridden by DAEMON_FETCH_USER_AGENT")
@@ -360,6 +365,24 @@ class DirectFetchStrategy:
                     raise FetchTransportError()
                 if _is_blocked_domain(current_url, self.policy.blocked_domains):
                     raise SsrfPolicyViolation(f"hostname is blocked by fetch policy: {current_url}")
+                if self._source_transport is not None:
+                    # The explicit fixture uses an in-memory transport only.
+                    # It cannot enter DNS, address, redirect or cookie retries.
+                    async with httpx.AsyncClient(
+                        transport=self._source_transport,
+                        trust_env=False,
+                        follow_redirects=False,
+                    ) as client:
+                        request = client.build_request("GET", current_url)
+                        response = await asyncio.wait_for(
+                            client.send(request, stream=True), timeout=remaining
+                        )
+                        if response.status_code in _REDIRECT_STATUSES:
+                            await response.aclose()
+                            raise FetchHttpError()
+                        body = await _read_bounded_body(response, deadline_at=deadline_at)
+                        response = _materialize_response(response, body)
+                    break
                 try:
                     validated = await validate_url_and_resolve_async(
                         current_url,

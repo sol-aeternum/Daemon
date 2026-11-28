@@ -439,6 +439,7 @@ def validate_worker_composition(ctx: dict[str, Any]) -> None:
         if bundle.requires_history:
             from orchestrator.services.restore_history.text_execution import (
                 HistoryResearchExecution,
+                HistorySourcesExecution,
                 HistoryTextExecution,
             )
 
@@ -446,6 +447,7 @@ def validate_worker_composition(ctx: dict[str, Any]) -> None:
             if execution is None or type(execution) not in (
                 HistoryTextExecution,
                 HistoryResearchExecution,
+                HistorySourcesExecution,
             ):
                 raise ObservationBlocked("history_execution_required")
             execution.validate_worker(ctx, bundle)

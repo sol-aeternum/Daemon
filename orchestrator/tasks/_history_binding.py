@@ -18,6 +18,7 @@ if TYPE_CHECKING:
     from orchestrator.tasks.composition import WorkerComposition
     from orchestrator.tasks.inference import InferenceRecovery
     from orchestrator.tools.web_search import WebSearchTool
+    from orchestrator.services.restore_history.source_execution import SourceRun
 
 
 # Set only by the original runner, before claim, independently of compute arguments.
@@ -54,6 +55,16 @@ def research_tool() -> WebSearchTool | None:
     return None
 
 
+def source_run() -> SourceRun | None:
+    from orchestrator.compute_runtime import _scope
+
+    scope = _scope.get()
+    if text_only_execution() and scope is not None and scope.history_binding is not None:
+        scope.require_inference_effect()
+        return scope.history_binding.source_run
+    return None
+
+
 @dataclass(frozen=True, slots=True)
 class ComputeHistoryBinding:
     composition: WorkerComposition
@@ -63,10 +74,12 @@ class ComputeHistoryBinding:
     state: InferenceInvocation
     research_tool: WebSearchTool | None = None
     research_model_transport: Callable[..., Awaitable[Any]] | None = None
+    source_run: SourceRun | None = None
 
     def validate(self, requirement: WorkerComposition | None) -> None:
         from orchestrator.services.restore_history.effects import HistoryEffects
         from orchestrator.tools.web_search import WebSearchTool
+        from orchestrator.services.restore_history.source_execution import SourceRun
         import httpx
 
         current = invocation.get()
@@ -86,8 +99,11 @@ class ComputeHistoryBinding:
                 or self.effects._history._blocked
                 or self.effects._history._closing
                 or self.effects._history._closed
-                or (self.effects._projection.profile == "inbox-research-v1")
+                or (self.effects._projection.profile in ("inbox-research-v1", "inbox-sources-v1"))
                 != (self.research_tool is not None)
+                or (self.effects._projection.profile == "inbox-sources-v1")
+                != (type(self.source_run) is SourceRun)
+                or (self.source_run is not None and self.source_run.effects is not self.effects)
                 or (self.research_tool is not None) != (self.research_model_transport is not None)
                 or (
                     self.research_tool is not None
