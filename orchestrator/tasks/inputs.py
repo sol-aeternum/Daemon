@@ -19,6 +19,17 @@ _INBOX_PILOT_PURPOSE: Final = "isolated-inbox-research-v1"
 _INBOX_PILOT_TEXT: Final = "Do a deep dive on X."
 _INBOX_TWO_JOB_PURPOSE: Final = "isolated-inbox-research-v2"
 _INBOX_TWO_JOB_TEXTS: Final = (_INBOX_PILOT_TEXT, "Do a deep dive on Y.")
+_INBOX_RESEARCH_PURPOSE: Final = "isolated-inbox-native-research-v1"
+
+
+def valid_research_question(value: Any) -> bool:
+    if type(value) is not str or not value or value != value.strip() or len(value) > 512:
+        return False
+    try:
+        value.encode("utf-8")
+    except UnicodeError:
+        return False
+    return "\x00" not in value
 
 
 def canonical_json(value: Any) -> str:
@@ -34,6 +45,9 @@ def _is_inbox_pilot_request(value: dict[str, Any], purpose: str = _INBOX_PILOT_P
             return False
     elif purpose == _INBOX_TWO_JOB_PURPOSE:
         if message not in _INBOX_TWO_JOB_TEXTS:
+            return False
+    elif purpose == _INBOX_RESEARCH_PURPOSE:
+        if not valid_research_question(message):
             return False
     else:
         return False
@@ -105,6 +119,7 @@ def chat_request_fingerprint(
         if type(purpose) is not str or purpose not in (
             _INBOX_PILOT_PURPOSE,
             _INBOX_TWO_JOB_PURPOSE,
+            _INBOX_RESEARCH_PURPOSE,
         ):
             raise ValueError("unsupported request purpose")
         accepted["purpose"] = purpose

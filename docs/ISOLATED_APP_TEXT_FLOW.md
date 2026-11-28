@@ -450,6 +450,61 @@ chain. See the draft PR for exact-head results. This does not qualify a
 production browser/backend, crash recovery, remote provider shutdown or
 another successor.
 
+### Question-driven research in the disposable inbox
+
+The [approved search-only slice of #761](https://github.com/sol-aeternum/Daemon/issues/761#issuecomment-7230025736)
+uses a separate `inbox-research-v1` composition. A person can submit a bounded
+question instead of a scripted X or Y prompt. The authenticated acceptance
+commits the question to its original task. Only a fresh, acknowledged
+acceptance can schedule it. A second distinct question requires a separate
+explicit start after the first original finishes on the same host.
+
+The original task has three priced calls: the model asks for `web_search`,
+the search service returns passages from a controlled corpus, and the model
+synthesizes that evidence. Each call needs its own reservation and protected
+possible-Send record within the same attempt. The native inference recovery row
+identifies only the first possible dispatch. The three individual records,
+their reservation metadata and settlements distinguish subsequent calls; a
+possible-Send record alone does not establish that the transport returned.
+The only terminal publication belongs to the original assistant message.
+
+For example, an inbox user can ask “What feeds the fictional Dawn Lake?” and
+later “Research: How does the fictional Hill Library work?” The search fixture
+returns a field note for the first question and a library handbook for the
+second. Both searches also return a shared bulletin. Changing its opening
+time between requests changes the new report while the first report keeps
+its original bytes and message ID.
+
+“How’s that going?” reads the saved status. With two questions it asks which
+one the person means; selecting a question reads its original status. Only a
+selected completed report has an **Open report** link. The report retains its
+source references. Neither report opening nor authentication refresh runs
+search or synthesis. After process loss, surviving records can be observed
+where their evidence validates; they cannot grant another start or settle a
+reservation. The managed X/Y retirement protocol above does not apply.
+
+`tests/test_history_ui_process_postgres.py -k research-interrupted` kills the
+original interpreter after its first marked model dispatch. A separately
+authenticated device in a new interpreter reads the surviving running state.
+The original open reservation remains open, the report link is absent, and an
+explicit second start is refused. This test exercises process loss; it does
+not attribute the successful managed X/Y handoff to a research attempt.
+
+Run the profile, browser and interruption checks together on owned services:
+
+```sh
+PYTHONPATH=. uv run pytest -q --compute-metadata-postgres \
+  tests/test_history_inbox_research_postgres.py \
+  tests/history_inbox_two_jobs_browser_postgres.py \
+  tests/test_history_ui_process_postgres.py
+```
+
+This slice concerns DEC04–DEC05/DEC10 and AC03/AC09. It uses deterministic
+transports and does not qualify live research quality, page fetch, source
+snapshot writes, production activation or recovery of interrupted research.
+[#761](https://github.com/sol-aeternum/Daemon/issues/761) and
+[#477](https://github.com/sol-aeternum/Daemon/issues/477) remain open.
+
 ## How partial text reaches the current page
 
 The isolated POST stream remains acceptance metadata only. It does not emit answer

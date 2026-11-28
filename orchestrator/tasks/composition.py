@@ -437,10 +437,16 @@ def validate_worker_composition(ctx: dict[str, Any]) -> None:
             raise ObservationBlocked("inference_composition_refused")
         bundle.validate_worker(ctx)
         if bundle.requires_history:
-            from orchestrator.services.restore_history.text_execution import HistoryTextExecution
+            from orchestrator.services.restore_history.text_execution import (
+                HistoryResearchExecution,
+                HistoryTextExecution,
+            )
 
             execution = ctx.get("history_text_execution")
-            if type(execution) is not HistoryTextExecution:
+            if execution is None or type(execution) not in (
+                HistoryTextExecution,
+                HistoryResearchExecution,
+            ):
                 raise ObservationBlocked("history_execution_required")
             execution.validate_worker(ctx, bundle)
         if invocation.get() is not None:

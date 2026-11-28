@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 from contextvars import ContextVar
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
+import inspect
 
 from orchestrator.tasks._invocation import invocation
 from orchestrator.services.account_control.transaction import ObservationBlocked
@@ -15,6 +17,7 @@ if TYPE_CHECKING:
     from orchestrator.tasks._invocation import InferenceInvocation
     from orchestrator.tasks.composition import WorkerComposition
     from orchestrator.tasks.inference import InferenceRecovery
+    from orchestrator.tools.web_search import WebSearchTool
 
 
 # Set only by the original runner, before claim, independently of compute arguments.
@@ -38,6 +41,19 @@ def text_only_execution() -> bool:
     return current is not None or captured is not None
 
 
+def research_tool() -> WebSearchTool | None:
+    """Exact original scoped research tool, never a broader registry grant."""
+    from orchestrator.compute_runtime import _scope
+
+    scope = _scope.get()
+    if text_only_execution() and scope is not None:
+        binding = scope.history_binding
+        if binding is not None and binding.research_tool is not None:
+            scope.require_inference_effect()
+            return binding.research_tool
+    return None
+
+
 @dataclass(frozen=True, slots=True)
 class ComputeHistoryBinding:
     composition: WorkerComposition
@@ -45,9 +61,13 @@ class ComputeHistoryBinding:
     recovery: InferenceRecovery
     identity: AttemptIdentity
     state: InferenceInvocation
+    research_tool: WebSearchTool | None = None
+    research_model_transport: Callable[..., Awaitable[Any]] | None = None
 
     def validate(self, requirement: WorkerComposition | None) -> None:
         from orchestrator.services.restore_history.effects import HistoryEffects
+        from orchestrator.tools.web_search import WebSearchTool
+        import httpx
 
         current = invocation.get()
         try:
@@ -66,6 +86,19 @@ class ComputeHistoryBinding:
                 or self.effects._history._blocked
                 or self.effects._history._closing
                 or self.effects._history._closed
+                or (self.effects._projection.profile == "inbox-research-v1")
+                != (self.research_tool is not None)
+                or (self.research_tool is not None) != (self.research_model_transport is not None)
+                or (
+                    self.research_tool is not None
+                    and (
+                        type(self.research_tool) is not WebSearchTool
+                        or type(self.research_tool._transport) is not httpx.MockTransport
+                        or self.research_tool._pacer is None
+                        or self.research_tool.provider != "brave"
+                        or not inspect.iscoroutinefunction(self.research_model_transport)
+                    )
+                )
             ):
                 raise ObservationBlocked("history_binding_unavailable")
             self.state.require_effect()

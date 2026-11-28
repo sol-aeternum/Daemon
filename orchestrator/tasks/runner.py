@@ -922,12 +922,46 @@ async def _execute(ctx: dict[str, Any], store: TaskStore, state: AttemptState) -
         )
         requirement = required_history.get()
         if requirement is not None:
+            from orchestrator.services.restore_history.text_execution import (
+                HistoryResearchExecution,
+            )
+            from orchestrator.tasks.inputs import _INBOX_RESEARCH_PURPOSE, _is_inbox_pilot_request
+
+            execution_owner = ctx["history_text_execution"]
+            research = type(execution_owner) is HistoryResearchExecution
+            assert execution_owner.effects is not None
+            if research:
+                canonical = json.loads(task_input["_request"])
+                if (
+                    not _is_inbox_pilot_request(canonical, _INBOX_RESEARCH_PURPOSE)
+                    or task_input.get("message") != canonical["message"]
+                    or task_input.get("provider") is not None
+                    or task_input.get("disable_memory_write") is not True
+                    or task_input.get("auto_route") is not True
+                    or task_input.get("_history_text_only") is not True
+                    or any(
+                        name in task_input
+                        for name in (
+                            "answer_detail",
+                            "research_effort",
+                            "temporal_scope",
+                            "prepared_content",
+                            "trusted_spawn_context",
+                            "actual_model",
+                            "reported_model",
+                            "routing_info",
+                        )
+                    )
+                ):
+                    raise ObservationBlocked("history_research_input_required")
             state.history_binding = ComputeHistoryBinding(
                 requirement,
-                ctx["history_text_execution"].effects,
+                execution_owner.effects,
                 store._inference,
                 identity,
                 shared,
+                execution_owner.search_tool if research else None,
+                execution_owner.model_transport if research else None,
             )
             state.history_binding.validate(required_history.get())
         async with _mutation(state):
@@ -966,7 +1000,8 @@ async def _execute(ctx: dict[str, Any], store: TaskStore, state: AttemptState) -
         state.compute_scope = current_scope()
         if (
             state.history_binding is not None
-            and state.history_binding.effects._projection.profile == "inbox-retired-v1"
+            and state.history_binding.effects._projection.profile
+            in ("inbox-retired-v1", "inbox-research-v1")
         ):
             state.compute_scope.retirement_holds = []
         scope_id = current_scope().scope_id
@@ -1366,7 +1401,10 @@ async def _run_chat_task(ctx: dict[str, Any], task_id: str) -> str:
         # now. Nothing has executed, so nothing counts against the attempts.
         return "fenced"
     state = AttemptState(claim=claim, lease_deadline=lease_deadline)
-    if effects is not None and effects._projection.profile == "inbox-retired-v1":
+    if effects is not None and effects._projection.profile in (
+        "inbox-retired-v1",
+        "inbox-research-v1",
+    ):
         ctx["history_text_execution"].retain_original_attempt(state)
     execution = asyncio.create_task(_execute(ctx, store, state))
     state.execution = execution
@@ -1399,7 +1437,10 @@ async def _run_chat_task(ctx: dict[str, Any], task_id: str) -> str:
         if compute_error(exc) is None:
             logger.exception("Durable chat task attempt failed (task_id=%s)", claim.task_id)
     finally:
-        if effects is not None and effects._projection.profile == "inbox-retired-v1":
+        if effects is not None and effects._projection.profile in (
+            "inbox-retired-v1",
+            "inbox-research-v1",
+        ):
             stopping_heartbeat = heartbeat.cancelling() == 0
             state.heartbeat_stop_requested = heartbeat.cancel() and stopping_heartbeat
         else:

@@ -13,7 +13,7 @@ from uuid import uuid4
 
 import asyncpg
 from cryptography.fernet import Fernet
-from httpx import ASGITransport, AsyncClient, ReadError
+from httpx import ASGITransport, AsyncClient, MockTransport, ReadError, Response
 import pytest
 import pytest_asyncio
 
@@ -38,10 +38,14 @@ from orchestrator.services.restore_history.model import (
 from orchestrator.services.restore_history.observation import HistoryObservation
 from orchestrator.services.restore_history.terminal_projection import (
     InboxRetiredHistoryProjection,
+    InboxResearchHistoryProjection,
     TerminalHistoryProjection,
     TerminalV4HistoryProjection,
 )
-from orchestrator.services.restore_history.text_execution import HistoryTextExecution
+from orchestrator.services.restore_history.text_execution import (
+    HistoryResearchExecution,
+    HistoryTextExecution,
+)
 from orchestrator.tasks.store import TaskStore
 from orchestrator.tasks import runner
 from orchestrator.turn_finish import TurnFinish
@@ -64,7 +68,9 @@ from tests.test_restore_history_store import owned
 @pytest_asyncio.fixture
 async def text_host(projection_db, tmp_path, monkeypatch, request):
     database = projection_db
-    restart = getattr(request, "param", None) == "managed-restart"
+    variant = getattr(request, "param", None)
+    restart = variant == "managed-restart"
+    research = variant in ("research", "research-self-hosted-ui")
     if restart:
         # Only the create-new launcher fixture supplies this directory.
         tmp_path = database.cluster.resource
@@ -85,7 +91,7 @@ async def text_host(projection_db, tmp_path, monkeypatch, request):
     journal_id = uuid4()
     initialize(journal, journal_id)
     async with database.connection() as conn:
-        if restart or getattr(request, "param", None) == "self-hosted-ui":
+        if restart or variant in ("self-hosted-ui", "research-self-hosted-ui"):
             from orchestrator.routes.auth_setup import SINGLETON_USER_ID
 
             # Initial disposable fixture data only, never runtime identity repair.
@@ -116,6 +122,18 @@ async def text_host(projection_db, tmp_path, monkeypatch, request):
     )
     route = _route(input_price=1000)
     _qualified_policy(monkeypatch, route=route)
+    if research:
+        from orchestrator.entitlements.policy import parse_inference_policy
+        from tests.test_metered_web_search import _approved_document
+
+        previous = runtime.load_inference_policy()
+        services = parse_inference_policy(_approved_document())
+        policy = SimpleNamespace(
+            routes=previous.routes,
+            requirements=services.requirements,
+            tool_service=services.tool_service,
+        )
+        monkeypatch.setattr(runtime, "load_inference_policy", lambda: policy)
     monkeypatch.setattr(runtime, "get_settings", lambda: settings)
     path = tmp_path / "h"
     if restart:
@@ -143,7 +161,15 @@ async def text_host(projection_db, tmp_path, monkeypatch, request):
         journal_id=journal_id,
         settings=settings,
         finish_reason="stop",
+        research_corpus={},
+        search_calls=[],
+        model_requests=[],
+        reports=[],
+        search_entered=asyncio.Event(),
+        search_release=asyncio.Event(),
+        search_closed=asyncio.Event(),
     )
+    state.search_release.set()
     from orchestrator import daemon
 
     monkeypatch.setattr(
@@ -262,7 +288,137 @@ async def text_host(projection_db, tmp_path, monkeypatch, request):
         observations[response] = raw_finish
         return response
 
-    monkeypatch.setattr(runtime.litellm, "acompletion", provider)
+    async def assert_research_mark(kind):
+        scope = runtime.current_scope()
+        identity = scope.inference_identity
+        assert scope.history_binding is not None
+        assert identity is not None and scope.history_binding.effects is state.execution.effects
+        async with state.execution.history.operation(deadline=deadline()) as operation:
+            entries = (await operation.verify()).entries
+            sends = [
+                e.command.data
+                for e in entries
+                if type(e.command.data) is SendPossible
+                and e.command.data.task_id == identity.task_id
+            ]
+            assert sends[-1].effect_kind == kind
+        async with database.connection() as conn:
+            mark = sends[-1]
+            assert await conn.fetchval(
+                "SELECT EXISTS(SELECT 1 FROM compute_reservation_metadata m "
+                "JOIN entitlement_reservations r ON r.id=m.reservation_id "
+                "WHERE r.id=$1 AND m.runtime_identity=$2 AND m.dispatch_nonce=$3 "
+                "AND r.scope_id=$4 AND r.status='open')",
+                mark.reservation_id,
+                mark.runtime_identity,
+                mark.dispatch_nonce,
+                identity.financial_scope_id,
+            )
+        return identity
+
+    async def research_search(wire):
+        identity = await assert_research_mark("web_search")
+        assert wire.url.host == "api.search.brave.com" and wire.method == "GET"
+        query = wire.url.params["q"]
+        entries = state.research_corpus.get(query, [])
+        state.search_calls.append(SimpleNamespace(query=query, results=entries, identity=identity))
+        state.search_entered.set()
+        try:
+            await state.search_release.wait()
+            if getattr(state, "search_failure", False):
+                return Response(503)
+            return Response(200, json={"web": {"results": entries}})
+        finally:
+            state.search_closed.set()
+
+    async def research_provider(**kwargs):
+        from orchestrator.tools.completion import _unwrap_tool_result
+
+        identity = await assert_research_mark("completion")
+        state.calls.append(identity)
+        assert kwargs["num_retries"] == 0
+        messages = kwargs["messages"]
+        tools = kwargs.get("tools")
+        state.model_requests.append(
+            SimpleNamespace(messages=messages, tools=tools, identity=identity)
+        )
+        first = bool(tools)
+        if getattr(state, "model_failure_leg", None) == ("first" if first else "synthesis"):
+            raise ConnectionError("synthetic model transport failure")
+        raw_finish = SimpleNamespace(result={"state": "missing"})
+
+        async def stream():
+            try:
+                if first:
+                    assert tools is not None
+                    assert [t["function"]["name"] for t in tools] == ["web_search"]
+                    state.entered.set()
+                    await state.release.wait()
+                    question = next(m["content"] for m in messages if m["role"] == "user")
+                    query = question[:400]
+                    tool_calls = [
+                        {
+                            "index": 0,
+                            "id": "original-search",
+                            "function": {
+                                "name": "web_search",
+                                "arguments": json.dumps({"query": query}),
+                            },
+                        }
+                    ]
+                    if state.unsolicited:
+                        tool_calls.append(
+                            {
+                                "index": 1,
+                                "id": "extra-search",
+                                "function": {
+                                    "name": "web_search",
+                                    "arguments": json.dumps({"query": query}),
+                                },
+                            }
+                        )
+                    yield {"choices": [{"delta": {"tool_calls": tool_calls}}]}
+                    reason = "tool_calls"
+                else:
+                    evidence = next(m["content"] for m in messages if m["role"] == "tool")
+                    results = json.loads(_unwrap_tool_result(evidence))["results"]
+                    report = (
+                        "\n\n".join(
+                            f"{item['title']}: {item['description']} [{item['title']}]({item['url']})"
+                            for item in results
+                        )
+                        or "No matching local corpus evidence."
+                    )
+                    state.reports.append(report)
+                    yield {"choices": [{"delta": {"content": report}}]}
+                    reason = state.finish_reason
+                yield {
+                    "choices": [{"delta": {}, "finish_reason": reason}],
+                    "usage": {"prompt_tokens": 10, "completion_tokens": 10},
+                }
+                if reason is not None:
+                    raw_finish.result = {
+                        "state": "confirmed",
+                        "reason": reason,
+                        "provenance": "provider_wire",
+                    }
+            finally:
+                state.closed.set()
+
+        response = stream()
+        observations[response] = raw_finish
+        return response
+
+    monkeypatch.setattr(runtime.litellm, "acompletion", research_provider if research else provider)
+    default_pacer = None
+    if research:
+        from orchestrator.services.search_pacing import SearchPacer
+
+        redis_owner = request.getfixturevalue("owned_search_redis")
+        default_pacer = SearchPacer(
+            client_factory=redis_owner.connect, namespace="research:" + uuid4().hex
+        )
+        state.research_pacer = default_pacer
 
     @asynccontextmanager
     async def make():
@@ -279,6 +435,8 @@ async def text_host(projection_db, tmp_path, monkeypatch, request):
             projection_type = TerminalV4HistoryProjection if v4 else TerminalHistoryProjection
             if restart:
                 projection_type = InboxRetiredHistoryProjection
+            if research:
+                projection_type = InboxResearchHistoryProjection
             projection = projection_type(
                 identity, acceptor="md_acceptor", worker="md_app", publisher="reserved_p"
             )
@@ -293,22 +451,37 @@ async def text_host(projection_db, tmp_path, monkeypatch, request):
             reader = HistoryObservation(
                 TaskStore(w, enc, MemoryStore(w, enc)), reader_history, projection, KEY
             )
-            execution = HistoryTextExecution(w, enc, settings, worker_history, projection)
+            execution = (
+                HistoryResearchExecution(
+                    w,
+                    enc,
+                    settings,
+                    worker_history,
+                    cast(InboxResearchHistoryProjection, projection),
+                    model_transport=research_provider,
+                    search_transport=MockTransport(research_search),
+                    search_pacer=state.research_pacer,
+                )
+                if research
+                else HistoryTextExecution(w, enc, settings, worker_history, projection)
+            )
             host = IsolatedAcceptanceHost(
                 HistoryAcceptance(tasks, history, projection, KEY),
                 reader,
                 fingerprint_key="synthetic-pepper",
                 max_body_bytes=4096,
                 keepalive_s=1,
-                execution=None if restart else execution,
-                inbox_pilot=restart or getattr(state, "inbox_pilot", False),
-                inbox_two_jobs=restart or getattr(state, "inbox_two_jobs", False),
+                execution=None
+                if restart or getattr(state, "research_observer", False)
+                else execution,
+                inbox_pilot=restart or research or getattr(state, "inbox_pilot", False),
+                inbox_two_jobs=restart or research or getattr(state, "inbox_two_jobs", False),
             )
             state.execution = execution
             state.host, state.app, state.w = host, create_isolated_acceptance_app(host), w
             try:
                 await host.open(deadline=deadline())
-                if restart:
+                if restart or getattr(state, "research_observer", False):
                     assert not execution._started
                     yield state
                     return
@@ -326,6 +499,7 @@ async def text_host(projection_db, tmp_path, monkeypatch, request):
                 yield state
             finally:
                 state.release.set()
+                state.search_release.set()
                 try:
                     await host.aclose(deadline=deadline())
                 except TimeoutError:
@@ -341,7 +515,11 @@ async def text_host(projection_db, tmp_path, monkeypatch, request):
                     await a.close()
 
     state.make = make
-    yield state
+    try:
+        yield state
+    finally:
+        if default_pacer is not None:
+            await default_pacer.aclose()
 
 
 async def submitted(s, headers, **kwargs):

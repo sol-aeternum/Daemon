@@ -70,9 +70,11 @@ from orchestrator.tasks._invocation import block
 from orchestrator.tasks.inputs import (
     _INBOX_PILOT_PURPOSE,
     _INBOX_PILOT_TEXT,
+    _INBOX_RESEARCH_PURPOSE,
     _INBOX_TWO_JOB_PURPOSE,
     _INBOX_TWO_JOB_TEXTS,
     chat_request_fingerprint,
+    valid_research_question,
 )
 from orchestrator.tasks.observe import _Observation
 from orchestrator.tasks.store import (
@@ -98,9 +100,10 @@ from .store import _check_time
 from .terminal_projection import (
     TERMINAL_PROFILES,
     InboxRetiredHistoryProjection,
+    InboxResearchHistoryProjection,
     TerminalHistoryProjection,
 )
-from .text_execution import HistoryTextExecution
+from .text_execution import HistoryResearchExecution, HistoryTextExecution
 from .model import (
     AcceptPrepare,
     Command,
@@ -127,6 +130,7 @@ def _unavailable() -> HTTPException:
 class _Submission:
     task: AcceptedTask
     auth: AuthenticatedDevice
+    question: str | None = None
 
 
 class _InboxPilotInput(BaseModel):
@@ -146,6 +150,20 @@ class _InboxTwoJobInput(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
     text: Literal["Do a deep dive on X.", "Do a deep dive on Y."]
+
+
+class _InboxResearchInput(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    text: str
+
+    @field_validator("text")
+    @classmethod
+    def _question(cls, value: str) -> str:
+        value = value.strip()
+        if not valid_research_question(value):
+            raise ValueError("unsupported research question")
+        return value
 
 
 _Topic = Literal["X", "Y"]
@@ -223,6 +241,7 @@ class IsolatedAcceptanceHost:
         self._execution = execution
         self._inbox_pilot = inbox_pilot
         self._inbox_two_jobs = inbox_two_jobs
+        self._inbox_research = type(acceptance._projection) is InboxResearchHistoryProjection
         self._inbox_child = _inbox_child
         self._original_receipt: _Submission | None = None
         self._retired_record: UUID | None = None
@@ -303,6 +322,16 @@ class IsolatedAcceptanceHost:
         execution = self._execution
         retired_profile = type(ap) is InboxRetiredHistoryProjection
         retired_observer = retired_profile and execution is None and self._inbox_child is None
+        research_profile = type(ap) is InboxResearchHistoryProjection
+        if (
+            self._inbox_research != research_profile
+            or (research_profile and not self._inbox_two_jobs)
+            or (
+                execution is not None
+                and research_profile != (type(execution) is HistoryResearchExecution)
+            )
+        ):
+            raise HistoryError("isolated_host_refused")
         if (
             (retired_profile and not self._inbox_two_jobs)
             or (self._inbox_child is not None and not retired_profile)
@@ -314,6 +343,7 @@ class IsolatedAcceptanceHost:
         if (
             self._inbox_pilot
             and not retired_observer
+            and not research_profile
             and (execution is None or ap.profile not in ("terminal-v3", "inbox-retired-v1"))
         ):
             raise HistoryError("isolated_host_refused")
@@ -328,7 +358,7 @@ class IsolatedAcceptanceHost:
         ):
             raise HistoryError("isolated_host_refused")
         if execution is not None and (
-            type(execution) is not HistoryTextExecution
+            type(execution) not in (HistoryTextExecution, HistoryResearchExecution)
             or type(ap) not in TERMINAL_PROFILES
             or execution.pool is not w._pool
             or execution.encryption is not w._enc
@@ -525,7 +555,7 @@ class IsolatedAcceptanceHost:
         self,
         authorization: str | None,
         client_key: str | None,
-        payload: _InboxPilotInput | _InboxTwoJobInput,
+        payload: _InboxPilotInput | _InboxTwoJobInput | _InboxResearchInput,
         *,
         deadline: float,
     ) -> Any:
@@ -534,7 +564,13 @@ class IsolatedAcceptanceHost:
             self._execution is None
             or not self._inbox_pilot
             or type(payload)
-            is not (_InboxTwoJobInput if self._inbox_two_jobs else _InboxPilotInput)
+            is not (
+                _InboxResearchInput
+                if self._inbox_research
+                else _InboxTwoJobInput
+                if self._inbox_two_jobs
+                else _InboxPilotInput
+            )
         ):
             raise _unavailable()
         token, key = self._submission_credentials(authorization, client_key)
@@ -545,7 +581,11 @@ class IsolatedAcceptanceHost:
             )
         finally:
             self._pending_submissions -= 1
-        topic = _inbox_topic(payload.text) if self._inbox_two_jobs else None
+        topic = (
+            _inbox_topic(payload.text)
+            if self._inbox_two_jobs and not self._inbox_research
+            else None
+        )
         return await self.ui_read(
             authorization, "inbox", None, deadline=deadline, topic=topic, _receipt=receipt
         )
@@ -618,7 +658,9 @@ class IsolatedAcceptanceHost:
                     if admission is not None:
                         captured = admission[1]
                     purpose = (
-                        _INBOX_TWO_JOB_PURPOSE
+                        _INBOX_RESEARCH_PURPOSE
+                        if self._inbox_research
+                        else _INBOX_TWO_JOB_PURPOSE
                         if self._inbox_two_jobs
                         else _INBOX_PILOT_PURPOSE
                         if self._inbox_pilot
@@ -703,7 +745,7 @@ class IsolatedAcceptanceHost:
                     )
             # W auth transaction and A's actual reset have settled; outer scope
             # still owns W holder reset, filesystem work and H release.
-        return _Submission(accepted, auth)
+        return _Submission(accepted, auth, message if self._inbox_research else None)
 
     async def _inbox_precheck(
         self,
@@ -734,9 +776,17 @@ class IsolatedAcceptanceHost:
                     return checked
                 current, originals = checked
                 allowed = await self._inbox_can_start(operation, conn, auth, originals)
-                if message not in _INBOX_TWO_JOB_TEXTS or not any(
-                    message == f"Do a deep dive on {topic}." for topic in allowed
-                ):
+                if self._inbox_research:
+                    permitted = (
+                        bool(allowed)
+                        and valid_research_question(message)
+                        and all(message != o.messages[0]["content"] for o in originals)
+                    )
+                else:
+                    permitted = message in _INBOX_TWO_JOB_TEXTS and any(
+                        message == f"Do a deep dive on {topic}." for topic in allowed
+                    )
+                if not permitted:
                     return self._ui_recovery()
                 lookup, _ = commitments(reader._key, auth.user_id, client_key, b"")
                 if any(hmac.compare_digest(lookup, o.accepted.key_commitment) for o in originals):
@@ -841,17 +891,29 @@ class IsolatedAcceptanceHost:
                             row,
                             next(c for c in convs if c["id"] == a.conversation_id),
                             [m for m in messages if m["conversation_id"] == a.conversation_id],
-                            expected_purpose=_INBOX_TWO_JOB_PURPOSE,
+                            expected_purpose=(
+                                _INBOX_RESEARCH_PURPOSE
+                                if self._inbox_research
+                                else _INBOX_TWO_JOB_PURPOSE
+                            ),
                         )
                         if row["status"] == "cancelled":
                             await reader._cancelled_owned(
                                 operation, conn, xid, a, row, state, pair[-1]["metadata"], deadline
                             )
                         snapshot = reader._tasks._snapshot_from(row)
-                        topic = _inbox_topic(pair[0]["content"])
+                        topic = (
+                            _TOPICS[len(originals)]
+                            if self._inbox_research
+                            else _inbox_topic(pair[0]["content"])
+                        )
                     except Exception:
                         return self._ui_recovery()
                     if any(o.topic == topic for o in originals):
+                        return self._ui_recovery()
+                    if self._inbox_research and any(
+                        o.messages[0]["content"] == pair[0]["content"] for o in originals
+                    ):
                         return self._ui_recovery()
                     handoff = None
                     if self._inbox_child is not None and topic == "X":
@@ -923,6 +985,8 @@ class IsolatedAcceptanceHost:
                 job.done() and ident == task for job, ident in execution._job_tasks.items()
             ):
                 return []
+            if self._inbox_research and not execution.research_cleanup_confirmed(task):
+                return []
         elif self._inbox_child is not None and (self._inbox_child.handoff is not None or entries):
             return []
         if (
@@ -935,6 +999,8 @@ class IsolatedAcceptanceHost:
             return []
         if not originals and self._inbox_child is not None:
             return ["X"]
+        if self._inbox_research:
+            return [_TOPICS[len(originals)]]
         return [t for t in _TOPICS if not any(o.topic == t for o in originals)]
 
     async def cancel(
@@ -1300,27 +1366,36 @@ class IsolatedAcceptanceHost:
                     except WriteGuardRefusal:
                         return self._ui_recovery()
 
-    @staticmethod
     def _two_job_status(
+        self,
         originals: list[_InboxOriginal],
         can_start: list[_Topic],
         topic: _Topic | None,
         receipt: _Submission | None,
     ) -> Any:
+        labels = (
+            {"research_questions": [o.messages[0]["content"] for o in originals]}
+            if self._inbox_research
+            else {}
+        )
         if receipt is not None:
             selected = next(
                 (o for o in originals if o.accepted.task_id == receipt.task.task_id), None
             )
-            if selected is None or selected.topic != topic:
+            if selected is None or (
+                selected.messages[0]["content"] != receipt.question
+                if self._inbox_research
+                else selected.topic != topic
+            ):
                 return _unavailable()
         elif topic is not None:
             selected = next((o for o in originals if o.topic == topic), None)
             if selected is None:
-                return {"state": "missing", "can_start": can_start}
+                return {"state": "missing", "can_start": can_start, **labels}
         elif not originals:
-            return {"state": "empty", "can_start": can_start}
+            return {"state": "empty", "can_start": can_start, **labels}
         elif len(originals) == 2:
-            return {"state": "ambiguous", "choices": list(_TOPICS), "can_start": []}
+            return {"state": "ambiguous", "choices": list(_TOPICS), "can_start": [], **labels}
         else:
             selected = originals[0]
         response = IsolatedAcceptanceHost._inbox_status(
@@ -1332,6 +1407,7 @@ class IsolatedAcceptanceHost:
             **response.model_dump(mode="json"),
             "topic": selected.topic,
             "can_start": can_start,
+            **labels,
         }
 
     @staticmethod
@@ -1887,7 +1963,27 @@ def create_isolated_ui_app(host: IsolatedAcceptanceHost) -> FastAPI:
         except Exception:
             raise _unavailable() from None
 
-    if host._inbox_two_jobs:
+    if host._inbox_research:
+
+        @app.get("/tasks/inbox-pilot", response_model=None)
+        async def research_status(request: Request, topic: _Topic | None = None) -> Any:
+            return await read(request, "inbox", None, topic=topic)
+
+        @app.post("/tasks/inbox-pilot", response_model=None)
+        async def research_start(payload: _InboxResearchInput, request: Request) -> Any:
+            try:
+                return await host._submit_inbox_pilot(
+                    request.headers.get("Authorization"),
+                    request.headers.get("Idempotency-Key"),
+                    payload,
+                    deadline=time.monotonic() + 10,
+                )
+            except HTTPException:
+                raise
+            except Exception:
+                raise _unavailable() from None
+
+    elif host._inbox_two_jobs:
 
         @app.get("/tasks/inbox-pilot", response_model=None)
         async def two_job_status(request: Request, topic: _Topic | None = None) -> Any:

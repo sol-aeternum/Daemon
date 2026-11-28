@@ -525,6 +525,10 @@ def composition_violations(sources: dict[str, str]) -> list[str]:
                             "orchestrator.services.restore_history.model",
                         ): ["HistoryError"],
                         (
+                            "orchestrator/tasks/runner.py",
+                            "orchestrator.services.restore_history.text_execution",
+                        ): ["HistoryResearchExecution"],
+                        (
                             "orchestrator/tasks/store.py",
                             "orchestrator.services.restore_history.coordination",
                         ): ["HistoryOperation"],
@@ -536,8 +540,17 @@ def composition_violations(sources: dict[str, str]) -> list[str]:
                     text_type_import = (
                         isinstance(node, ast.ImportFrom)
                         and node.level == 0
-                        and [i.name for i in node.names]
-                        == text_types.get((path, node.module or ""))
+                        and (
+                            [i.name for i in node.names]
+                            == text_types.get((path, node.module or ""))
+                            or (
+                                path == "orchestrator/tasks/composition.py"
+                                and node.module
+                                == "orchestrator.services.restore_history.text_execution"
+                                and [i.name for i in node.names]
+                                == ["HistoryResearchExecution", "HistoryTextExecution"]
+                            )
+                        )
                         and all(i.asname is None for i in node.names)
                     )
                     if isinstance(node, ast.ImportFrom):
@@ -658,10 +671,12 @@ def composition_violations(sources: dict[str, str]) -> list[str]:
                     and arguments
                     == [
                         "requirement",
-                        "ctx['history_text_execution'].effects",
+                        "execution_owner.effects",
                         "store._inference",
                         "identity",
                         "shared",
+                        "execution_owner.search_tool if research else None",
+                        "execution_owner.model_transport if research else None",
                     ]
                 ):
                     violations.append(f"{path}:{node.lineno}:unapproved compute history binding")

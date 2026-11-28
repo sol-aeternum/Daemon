@@ -76,8 +76,13 @@ SSE_KEEPALIVE_FRAME = ": keepalive\n\n"
 def create_chat_registry(**kwargs: Any) -> Any:
     if text_only_execution():
         from orchestrator.tools.registry import ToolRegistry
+        from orchestrator.tasks._history_binding import research_tool
 
-        return ToolRegistry()
+        registry = ToolRegistry()
+        tool = research_tool()
+        if tool is not None:
+            registry.register(tool)
+        return registry
     return create_default_registry(**kwargs)
 
 
