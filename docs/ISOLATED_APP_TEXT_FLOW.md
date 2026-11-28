@@ -505,6 +505,84 @@ snapshot writes, production activation or recovery of interrupted research.
 [#761](https://github.com/sol-aeternum/Daemon/issues/761) and
 [#477](https://github.com/sol-aeternum/Daemon/issues/477) remain open.
 
+### Disposable profile: retrieved pages and cited evidence
+
+The [approved disposable source profile](https://github.com/sol-aeternum/Daemon/issues/761#issuecomment-7232651920)
+extends the question-driven proof with native page retrieval. Its qualification
+is separate from the search-only and managed X/Y qualifications above. A search
+snippet identifies a candidate page; it is not evidence that the task read it.
+
+For each original, qualify one search, a model selection of one or two distinct
+URLs from that search, sequential article retrieval, and cited synthesis on the
+original result-message ID. Three model calls and one search each use their own
+reservation. Direct reads have no provider charge. Each read instead needs its
+own protected record before transport and a second record tied to the owned
+snapshot, task pin, and exact passage. A committed pin alone does not prove the
+synthesis model received the passage.
+
+`inbox-sources-v1` retains at most the first 1,000 Unicode code points per
+article in the model's tool results. A second check compares those results to
+the final synthesis input. Each paragraph of the model's answer refers to
+one or both selected pages; each evidence entry quotes text at checked
+character offsets in the identified snapshot and links to its source URL.
+The fixture verifies passage identity, quotation and range mechanically.
+It tests the meaning of the answer separately against known facts, including
+conflicting notices and an unanswered question. This does not measure a live
+model's judgment or citation quality.
+
+The SQL profile installs only on a fresh disposable 065 fixture. Its page and
+projection functions expose protected frames without granting raw table
+access. At pin time the PostgreSQL 16 fixture checks that the snapshot is a
+top-level insert by this transaction, in the first transaction-ID epoch,
+with change tracking enabled and no updates to the snapshot heap. The
+native snapshot, task event and SQL projection commit together. The history
+file is separate: loss of parity or acknowledgement cannot authorize another
+read, a new task or synthesis.
+
+In the browser control, two independently enrolled clients share the originals.
+The search descriptions stay fixed; only a page body changes. The second
+report must reflect that change, while the phone reads the first report with
+its original ID, bytes and citations. Check authority and accounting around
+clarification, lost submission acknowledgement, refresh and revoked/foreign
+sessions. Readback must neither dispatch nor renew the snapshot. If the full
+source expires, only the bounded evidence already committed with the report
+can support readback; do not claim a fresh source check.
+
+The process-loss qualification kills the original interpreter after the
+possible-read mark, after a returned page but before its pin, and after native
+pin COMMIT before the caller receives the acknowledgement. A new interpreter
+may show a verified saved status or refuse the read. It cannot start another
+original, retry the source, complete synthesis or settle an outstanding hold.
+
+Run the disposable source checks with the cached owned PostgreSQL image,
+owned Redis and loopback browser prerequisites:
+
+```sh
+PYTHONPATH=. uv run pytest -q --compute-metadata-postgres \
+  tests/test_source_history_model.py tests/test_source_projection_postgres.py \
+  tests/test_source_snapshot_insert_witness_postgres.py \
+  tests/test_history_inbox_sources_postgres.py \
+  tests/test_source_publication_faults_postgres.py tests/test_source_cited_synthesis_postgres.py \
+  tests/test_history_ui_process_postgres.py tests/history_inbox_two_jobs_browser_postgres.py
+```
+
+**Separate live acceptance plan (not run or authorized).** One public question:
+as of the evaluation date, which US passport product can a first-time adult
+applicant use for international air travel versus land crossings, and what
+application and acceptance fees apply to each? Use the State Department eligibility
+guidance and official fee schedule. Before any request, record the exact pinned
+model, provider and endpoint, dated route-specific ZDR evidence, current prices,
+source-service approvals and no-fallback policy. Search-service terms are
+separate from model retention; standard Brave is not ZDR. Prefer an owned index
+and explicitly approved official sources. Obtain owner approval for the named
+route and experiment. Preprice the worst case (three model calls, one search,
+up to two reads) at **US $0.25 aggregate or less**. Include all charged source
+services and outstanding holds; charge unknown post-send usage to its ceiling.
+One attempt, no automatic retry. Pass only if each travel-use and itemized fee
+claim maps to a dated retrieved passage, conflict or missing evidence is
+disclosed, citations are real, and another device opens the exact saved report
+with no new dispatch or charge. Record latency and reconcile the original ledger.
+
 ## How partial text reaches the current page
 
 The isolated POST stream remains acceptance metadata only. It does not emit answer

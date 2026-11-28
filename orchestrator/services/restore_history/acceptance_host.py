@@ -101,9 +101,10 @@ from .terminal_projection import (
     TERMINAL_PROFILES,
     InboxRetiredHistoryProjection,
     InboxResearchHistoryProjection,
+    InboxSourcesHistoryProjection,
     TerminalHistoryProjection,
 )
-from .text_execution import HistoryResearchExecution, HistoryTextExecution
+from .text_execution import HistoryResearchExecution, HistorySourcesExecution, HistoryTextExecution
 from .model import (
     AcceptPrepare,
     Command,
@@ -241,7 +242,10 @@ class IsolatedAcceptanceHost:
         self._execution = execution
         self._inbox_pilot = inbox_pilot
         self._inbox_two_jobs = inbox_two_jobs
-        self._inbox_research = type(acceptance._projection) is InboxResearchHistoryProjection
+        self._inbox_research = type(acceptance._projection) in (
+            InboxResearchHistoryProjection,
+            InboxSourcesHistoryProjection,
+        )
         self._inbox_child = _inbox_child
         self._original_receipt: _Submission | None = None
         self._retired_record: UUID | None = None
@@ -322,13 +326,17 @@ class IsolatedAcceptanceHost:
         execution = self._execution
         retired_profile = type(ap) is InboxRetiredHistoryProjection
         retired_observer = retired_profile and execution is None and self._inbox_child is None
-        research_profile = type(ap) is InboxResearchHistoryProjection
+        research_profile = type(ap) in (
+            InboxResearchHistoryProjection,
+            InboxSourcesHistoryProjection,
+        )
         if (
             self._inbox_research != research_profile
             or (research_profile and not self._inbox_two_jobs)
             or (
                 execution is not None
-                and research_profile != (type(execution) is HistoryResearchExecution)
+                and research_profile
+                != (type(execution) in (HistoryResearchExecution, HistorySourcesExecution))
             )
         ):
             raise HistoryError("isolated_host_refused")
@@ -358,7 +366,8 @@ class IsolatedAcceptanceHost:
         ):
             raise HistoryError("isolated_host_refused")
         if execution is not None and (
-            type(execution) not in (HistoryTextExecution, HistoryResearchExecution)
+            type(execution)
+            not in (HistoryTextExecution, HistoryResearchExecution, HistorySourcesExecution)
             or type(ap) not in TERMINAL_PROFILES
             or execution.pool is not w._pool
             or execution.encryption is not w._enc

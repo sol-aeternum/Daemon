@@ -39,11 +39,13 @@ from orchestrator.services.restore_history.observation import HistoryObservation
 from orchestrator.services.restore_history.terminal_projection import (
     InboxRetiredHistoryProjection,
     InboxResearchHistoryProjection,
+    InboxSourcesHistoryProjection,
     TerminalHistoryProjection,
     TerminalV4HistoryProjection,
 )
 from orchestrator.services.restore_history.text_execution import (
     HistoryResearchExecution,
+    HistorySourcesExecution,
     HistoryTextExecution,
 )
 from orchestrator.tasks.store import TaskStore
@@ -70,7 +72,8 @@ async def text_host(projection_db, tmp_path, monkeypatch, request):
     database = projection_db
     variant = getattr(request, "param", None)
     restart = variant == "managed-restart"
-    research = variant in ("research", "research-self-hosted-ui")
+    sources = variant in ("sources", "sources-self-hosted-ui")
+    research = sources or variant in ("research", "research-self-hosted-ui")
     if restart:
         # Only the create-new launcher fixture supplies this directory.
         tmp_path = database.cluster.resource
@@ -80,6 +83,10 @@ async def text_host(projection_db, tmp_path, monkeypatch, request):
     else:
         install(database)
         install_terminal(database)
+        if sources:
+            from tests.test_source_projection_postgres import install_sources
+
+            install_sources(database)
     v4 = getattr(request, "param", None) == "terminal-v4"
     if v4:
         from tests.test_terminal_v4_postgres import SQL
@@ -91,7 +98,11 @@ async def text_host(projection_db, tmp_path, monkeypatch, request):
     journal_id = uuid4()
     initialize(journal, journal_id)
     async with database.connection() as conn:
-        if restart or variant in ("self-hosted-ui", "research-self-hosted-ui"):
+        if restart or variant in (
+            "self-hosted-ui",
+            "research-self-hosted-ui",
+            "sources-self-hosted-ui",
+        ):
             from orchestrator.routes.auth_setup import SINGLETON_USER_ID
 
             # Initial disposable fixture data only, never runtime identity repair.
@@ -163,6 +174,8 @@ async def text_host(projection_db, tmp_path, monkeypatch, request):
         finish_reason="stop",
         research_corpus={},
         search_calls=[],
+        source_pages={},
+        source_calls=[],
         model_requests=[],
         reports=[],
         search_entered=asyncio.Event(),
@@ -342,7 +355,8 @@ async def text_host(projection_db, tmp_path, monkeypatch, request):
         state.model_requests.append(
             SimpleNamespace(messages=messages, tools=tools, identity=identity)
         )
-        first = bool(tools)
+        first = bool(tools) and tools[0]["function"]["name"] == "web_search"
+        selection = sources and bool(tools) and tools[0]["function"]["name"] == "web_fetch"
         if getattr(state, "model_failure_leg", None) == ("first" if first else "synthesis"):
             raise ConnectionError("synthetic model transport failure")
         raw_finish = SimpleNamespace(result={"state": "missing"})
@@ -379,6 +393,46 @@ async def text_host(projection_db, tmp_path, monkeypatch, request):
                         )
                     yield {"choices": [{"delta": {"tool_calls": tool_calls}}]}
                     reason = "tool_calls"
+                elif selection:
+                    evidence = next(m["content"] for m in messages if m["role"] == "tool")
+                    results = json.loads(_unwrap_tool_result(evidence))["results"]
+                    urls = list(dict.fromkeys(item["url"] for item in results))[:2]
+                    if getattr(state, "source_selection", None) is not None:
+                        urls = state.source_selection
+                    yield {
+                        "choices": [
+                            {
+                                "delta": {
+                                    "tool_calls": [
+                                        {
+                                            "index": i,
+                                            "id": f"source-{i}",
+                                            "function": {
+                                                "name": "web_fetch",
+                                                "arguments": json.dumps({"url": url}),
+                                            },
+                                        }
+                                        for i, url in enumerate(urls)
+                                    ]
+                                }
+                            }
+                        ]
+                    }
+                    reason = "tool_calls"
+                elif sources:
+                    from tests.source_model_fixture import synthesize
+
+                    values = [
+                        json.loads(_unwrap_tool_result(m["content"]))
+                        for m in messages
+                        if m["role"] == "tool" and m["name"] == "web_fetch"
+                    ]
+                    question = next(m["content"] for m in messages if m["role"] == "user")
+                    report = synthesize(question, values)
+                    report = getattr(state, "source_report_override", report)
+                    state.reports.append(report)
+                    yield {"choices": [{"delta": {"content": report}}]}
+                    reason = state.finish_reason
                 else:
                     evidence = next(m["content"] for m in messages if m["role"] == "tool")
                     results = json.loads(_unwrap_tool_result(evidence))["results"]
@@ -409,6 +463,20 @@ async def text_host(projection_db, tmp_path, monkeypatch, request):
         observations[response] = raw_finish
         return response
 
+    async def source_fetch(request):
+        assert request.method == "GET"
+        url = str(request.url)
+        state.source_calls.append(url)
+        hook = getattr(state, "source_check", None)
+        if hook is not None:
+            await hook(request)
+        body = state.source_pages.get(url)
+        if body is None:
+            return Response(404)
+        if isinstance(body, Response):
+            return body
+        return Response(200, text=body, headers={"Content-Type": "text/html; charset=utf-8"})
+
     monkeypatch.setattr(runtime.litellm, "acompletion", research_provider if research else provider)
     default_pacer = None
     if research:
@@ -437,6 +505,8 @@ async def text_host(projection_db, tmp_path, monkeypatch, request):
                 projection_type = InboxRetiredHistoryProjection
             if research:
                 projection_type = InboxResearchHistoryProjection
+            if sources:
+                projection_type = InboxSourcesHistoryProjection
             projection = projection_type(
                 identity, acceptor="md_acceptor", worker="md_app", publisher="reserved_p"
             )
@@ -452,7 +522,20 @@ async def text_host(projection_db, tmp_path, monkeypatch, request):
                 TaskStore(w, enc, MemoryStore(w, enc)), reader_history, projection, KEY
             )
             execution = (
-                HistoryResearchExecution(
+                HistorySourcesExecution(
+                    w,
+                    enc,
+                    settings,
+                    worker_history,
+                    projection,
+                    model_transport=research_provider,
+                    search_transport=MockTransport(research_search),
+                    search_pacer=state.research_pacer,
+                    source_transport=MockTransport(source_fetch),
+                    source_key=KEY,
+                )
+                if sources
+                else HistoryResearchExecution(
                     w,
                     enc,
                     settings,

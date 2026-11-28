@@ -101,6 +101,7 @@ class HistoryEffects:
         # continued distinct calls only within the SAME original live invocation;
         # reconstruction/restart cannot adopt historical sends. Not send authority.
         self._owned_sends: dict[int, tuple[InferenceInvocation, set[UUID]]] = {}
+        self._source_stops: set[UUID] = set()
         self._check()
 
     def _check(self) -> None:
@@ -783,7 +784,7 @@ class HistoryEffects:
                 nonlocal record
                 if record is not None:
                     raise HistoryError("effects_stage_refused", uncertain=True)
-                if self._projection.profile == "inbox-research-v1":
+                if self._projection.profile in ("inbox-research-v1", "inbox-sources-v1"):
                     receipt = await conn.fetchrow(
                         "SELECT provider,route_id,model FROM public.entitlement_reservations "
                         "WHERE id=$1 AND user_id=$2 AND scope_id=$3 AND status='open'",
@@ -892,6 +893,10 @@ class HistoryEffects:
                 or not outcome.accepted
             ):
                 raise HistoryError("effects_origin_refused")
+            if self._projection.profile == "inbox-sources-v1":
+                # Negative-only same-process latch before yielding to either
+                # append or SQL. Even an uncertain Stop cannot reopen transport.
+                self._source_stops.add(task)
             prepared = await operation.append(
                 Command(uuid4(), StopIntent(account, accepted.account_generation, task, "owner"))
             )
@@ -1061,7 +1066,7 @@ class HistoryEffects:
                         if await self._tasks._completion_control(conn, row):
                             result = TaskStatus.NEEDS_ATTENTION
                         else:
-                            if projection.profile == "inbox-research-v1":
+                            if projection.profile in ("inbox-research-v1", "inbox-sources-v1"):
                                 from orchestrator.tools.web_search import validate_research_trace
 
                                 if (
@@ -1073,9 +1078,22 @@ class HistoryEffects:
                                 ):
                                     raise HistoryError("research_terminal_refused")
                                 try:
-                                    validate_research_trace(
-                                        fields.get("tool_calls"), fields.get("tool_results")
-                                    )
+                                    if projection.profile == "inbox-sources-v1":
+                                        from orchestrator.compute_runtime import current_scope
+
+                                        scope = current_scope()
+                                        source = (
+                                            scope.history_binding.source_run
+                                            if scope.history_binding
+                                            else None
+                                        )
+                                        if source is None or source.effects is not self:
+                                            raise HistoryError("source_terminal_refused")
+                                        await source.terminal_receipt(conn, fields, content, state)
+                                    else:
+                                        validate_research_trace(
+                                            fields.get("tool_calls"), fields.get("tool_results")
+                                        )
                                 except ValueError:
                                     raise HistoryError("research_terminal_refused") from None
                             if isinstance(metadata, dict) and "turn_finish" in metadata:

@@ -314,3 +314,250 @@ def test_observation_startup_does_not_admit_mutating_imports_or_construction(pat
 )
 def test_startup_read_exception_does_not_allow_alias_or_foreign_binding(source):
     assert composition_violations({"orchestrator/db.py": source})
+
+
+SOURCE_EXECUTION = "orchestrator/services/restore_history/source_execution.py"
+
+
+def _source_phase(outer, inner, *lines, klass="SourceRun"):
+    body = "".join(f"            {line}\n" for line in lines)
+    return (
+        f"class {klass}:\n    async def {outer}(self):\n        async def {inner}(limit):\n{body}"
+    )
+
+
+def test_source_run_type_import_is_exact_and_path_bound():
+    approved = "from orchestrator.services.restore_history.source_execution import SourceRun\n"
+    path = "orchestrator/tasks/_history_binding.py"
+    assert composition_violations({path: "if TYPE_CHECKING:\n    " + approved}) == []
+    assert (
+        composition_violations(
+            {path: "class ComputeHistoryBinding:\n    def validate(self):\n        " + approved}
+        )
+        == []
+    )
+    assert composition_violations({path: approved})
+    for hostile in (
+        approved.replace(" SourceRun", " SourceRun as S"),
+        approved.replace(" SourceRun", " SourceRun, SourceReadPossible"),
+        approved.replace(
+            "orchestrator.services.restore_history.source_execution",
+            "orchestrator.services.restore_history.model",
+        ),
+    ):
+        assert composition_violations({path: "if TYPE_CHECKING:\n    " + hostile})
+    assert composition_violations({"orchestrator/tasks/other.py": approved})
+
+
+def test_source_execution_import_sets_are_exact():
+    assert (
+        composition_violations(
+            {
+                "orchestrator/tasks/composition.py": (
+                    "from orchestrator.services.restore_history.text_execution import "
+                    "HistoryResearchExecution, HistorySourcesExecution, HistoryTextExecution\n"
+                ),
+                "orchestrator/tasks/runner.py": (
+                    "from orchestrator.services.restore_history.text_execution import "
+                    "HistoryResearchExecution, HistorySourcesExecution\n"
+                ),
+            }
+        )
+        == []
+    )
+    # The pre-source research-only import remains admitted.
+    assert (
+        composition_violations(
+            {
+                "orchestrator/tasks/runner.py": (
+                    "from orchestrator.services.restore_history.text_execution import "
+                    "HistoryResearchExecution\n"
+                )
+            }
+        )
+        == []
+    )
+    for path, hostile in (
+        (
+            "orchestrator/tasks/composition.py",
+            "from orchestrator.services.restore_history.text_execution import "
+            "HistoryResearchExecution, HistorySourcesExecution, HistoryTextExecution, "
+            "HistoryObservation\n",
+        ),
+        (
+            "orchestrator/tasks/composition.py",
+            "from orchestrator.services.restore_history.text_execution import "
+            "HistoryResearchExecution, HistorySourcesExecution\n",
+        ),
+        (
+            "orchestrator/tasks/runner.py",
+            "from orchestrator.services.restore_history.text_execution import "
+            "HistoryResearchExecution, HistorySourcesExecution as S\n",
+        ),
+        (
+            "orchestrator/tasks/runner.py",
+            "from orchestrator.services.restore_history.text_execution import "
+            "HistoryResearchExecution, HistoryTextExecution\n",
+        ),
+    ):
+        assert composition_violations({path: hostile})
+
+
+def test_source_phase_cleanup_is_bound_to_its_owner_and_class():
+    approved = _source_phase("mark", "prepare", "async with retain_pool_cleanup():", "    pass")
+    assert composition_violations({SOURCE_EXECUTION: approved}) == []
+    aliased = (
+        "from orchestrator.services.connection_cleanup import retain_pool_cleanup as rpc\n"
+        + _source_phase("mark", "prepare", "async with rpc():", "    pass")
+    )
+    for hostile in (
+        _source_phase("publish", "prepare", "async with retain_pool_cleanup():", "    pass"),
+        _source_phase(
+            "mark", "prepare", "async with retain_pool_cleanup():", "    pass", klass="Other"
+        ),
+        "class SourceRun:\n    async def mark(self):\n        await retain_pool_cleanup()\n",
+        _source_phase("mark", "prepare", "async with retain_pool_cleanup(limit):", "    pass"),
+        aliased,
+    ):
+        assert composition_violations({SOURCE_EXECUTION: hostile})
+
+
+def test_source_phase_worker_seam_is_exact():
+    worker = (
+        "async with effects._tasks._worker("
+        "self.claim.task_id, self.claim.epoch, self.claim) as (conn, _):"
+    )
+    assert (
+        composition_violations(
+            {SOURCE_EXECUTION: _source_phase("mark", "prepare", worker, "    pass")}
+        )
+        == []
+    )
+    for hostile in (
+        _source_phase(
+            "mark",
+            "prepare",
+            "async with effects._tasks._worker(self.claim.task_id, self.claim.epoch) as (conn, _):",
+            "    pass",
+        ),
+        _source_phase(
+            "mark",
+            "prepare",
+            "async with effects._tasks._worker("
+            "self.claim.task_id, self.claim.epoch, self.claim, "
+            "allow_interrupted=True) as (conn, _):",
+            "    pass",
+        ),
+        _source_phase("publish", "prepare", worker, "    pass"),
+        _source_phase("mark", "stage", worker, "    pass"),
+        _source_phase("publish", "stage", worker, "    pass"),
+        _source_phase("mark", "prepare", worker, "    pass", klass="Other"),
+    ):
+        assert composition_violations({SOURCE_EXECUTION: hostile})
+
+
+@pytest.mark.parametrize(
+    "path,source",
+    [
+        (
+            "orchestrator/tasks/inference.py",
+            "class InferenceRecovery:\n"
+            "    async def lock(self, conn, identity):\n"
+            "        await self.require_open_in_transaction(conn, identity)\n",
+        ),
+        (
+            "orchestrator/tasks/inference.py",
+            "class Other:\n"
+            "    async def register(self, conn, identity):\n"
+            "        await self.require_open_in_transaction(conn, identity)\n",
+        ),
+        (
+            "orchestrator/tasks/inference.py",
+            "class InferenceRecovery:\n"
+            "    async def register(self, conn, identity):\n"
+            "        await self.require_open_in_transaction(conn, identity, None)\n",
+        ),
+        (
+            "orchestrator/tasks/inference.py",
+            "class InferenceRecovery:\n"
+            "    async def _owned(self, conn, identity):\n"
+            "        await self.require_open_in_transaction(conn, identity, stage=None)\n",
+        ),
+        (
+            SOURCE_EXECUTION,
+            _source_phase(
+                "dispatch",
+                "recheck",
+                "await getattr(binding.recovery, 'require_open_in_transaction')"
+                "(conn, binding.identity)",
+            ),
+        ),
+        (
+            SOURCE_EXECUTION,
+            _source_phase(
+                "publish",
+                "recheck",
+                "await binding.recovery.require_open_in_transaction(conn, binding.identity)",
+            ),
+        ),
+        (
+            SOURCE_EXECUTION,
+            _source_phase(
+                "dispatch",
+                "recheck",
+                "await binding.recovery.require_open_in_transaction(conn, binding.identity)",
+                klass="Other",
+            ),
+        ),
+    ],
+)
+def test_lifecycle_recheck_adapter_negatives(path, source):
+    assert composition_violations({path: source})
+
+
+def test_lifecycle_recheck_adapter_admits_the_three_approved_sites():
+    assert (
+        composition_violations(
+            {
+                "orchestrator/tasks/inference.py": (
+                    "class InferenceRecovery:\n"
+                    "    async def _owned(self, conn, identity):\n"
+                    "        await self.require_open_in_transaction(conn, identity)\n"
+                    "    async def register(self, conn, identity):\n"
+                    "        await self.require_open_in_transaction(conn, identity)\n"
+                ),
+                SOURCE_EXECUTION: _source_phase(
+                    "dispatch",
+                    "recheck",
+                    "await binding.recovery.require_open_in_transaction(conn, binding.identity)",
+                ),
+            }
+        )
+        == []
+    )
+
+
+def test_compute_history_binding_argument_shape_is_exact():
+    approved = (
+        "execution_owner.original_source(claim) "
+        "if type(execution_owner) is HistorySourcesExecution else None"
+    )
+    template = (
+        "async def _execute(state, claim, execution_owner):\n"
+        "    state.history_binding = ComputeHistoryBinding(\n"
+        "        requirement, execution_owner.effects, store._inference, identity, shared,\n"
+        "        execution_owner.search_tool if research else None,\n"
+        "        execution_owner.model_transport if research else None,\n"
+        "        {source_run},\n"
+        "    )\n"
+    )
+    path = "orchestrator/tasks/runner.py"
+    assert composition_violations({path: template.format(source_run=approved)}) == []
+    for altered in (
+        "None",
+        approved + " if research else None",
+        "execution_owner.original_source(claim)",
+        approved + ", claim",
+        approved + ", source_run=None",
+    ):
+        assert composition_violations({path: template.format(source_run=altered)})

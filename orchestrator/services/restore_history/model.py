@@ -25,8 +25,15 @@ ARTIFACT_DOMAIN = b"daemon.restore-history.frame.v2\n"
 TERMINAL_DOMAIN = b"daemon.restore-history.frame.v3\n"
 NONSUCCESS_DOMAIN = b"daemon.restore-history.frame.v4\n"
 INBOX_RETIRED_DOMAIN = b"daemon.restore-history.frame.v5\n"
+SOURCE_DOMAIN = b"daemon.restore-history.frame.v6\n"
 Profile = Literal[
-    "h1", "artifact-v2", "terminal-v3", "terminal-v4", "inbox-retired-v1", "inbox-research-v1"
+    "h1",
+    "artifact-v2",
+    "terminal-v3",
+    "terminal-v4",
+    "inbox-retired-v1",
+    "inbox-research-v1",
+    "inbox-sources-v1",
 ]
 RESEARCH_SENDS = ("completion", "web_search", "completion")
 
@@ -61,6 +68,7 @@ def check_profile(profile: Profile) -> Profile:
         "terminal-v4",
         "inbox-retired-v1",
         "inbox-research-v1",
+        "inbox-sources-v1",
     ):
         raise HistoryError("invalid_profile")
     return profile
@@ -268,6 +276,34 @@ class InboxOriginalRetired:
     send_record_id: UUID
 
 
+@dataclass(frozen=True, slots=True)
+class SourceReadPossible:
+    account_id: UUID
+    account_generation: int
+    task_id: UUID
+    epoch: int
+    acceptance_record_id: UUID
+    ordinal: int
+    count: int
+    search_record_id: UUID
+    selection_record_id: UUID
+    selection_commitment: str
+
+
+@dataclass(frozen=True, slots=True)
+class SourcePinPrepare:
+    account_id: UUID
+    account_generation: int
+    task_id: UUID
+    epoch: int
+    acceptance_record_id: UUID
+    ordinal: int
+    possible_record_id: UUID
+    snapshot_id: UUID
+    event_seq: int
+    passage_commitment: str
+
+
 TERMINAL_KINDS = (TerminalOutputPrepare, NonsuccessOutputPrepare)
 
 
@@ -281,6 +317,8 @@ RecordData = (
     | TerminalOutputPrepare
     | NonsuccessOutputPrepare
     | InboxOriginalRetired
+    | SourceReadPossible
+    | SourcePinPrepare
 )
 _KINDS = {
     AcceptPrepare: ("ACCEPT_PREPARE", "backend"),
@@ -292,10 +330,52 @@ _KINDS = {
     TerminalOutputPrepare: ("TERMINAL_OUTPUT_PREPARE", "worker"),
     NonsuccessOutputPrepare: ("NONSUCCESS_OUTPUT_PREPARE", "worker"),
     InboxOriginalRetired: ("INBOX_ORIGINAL_RETIRED", "worker"),
+    SourceReadPossible: ("SOURCE_READ_POSSIBLE", "worker"),
+    SourcePinPrepare: ("SOURCE_PIN_PREPARE", "worker"),
 }
 
 
 def _data(kind: str, raw: Any) -> RecordData:
+    if kind in ("SOURCE_READ_POSSIBLE", "SOURCE_PIN_PREPARE"):
+        names = "account_id account_generation task_id epoch acceptance_record_id ordinal"
+        d = _keys(
+            raw,
+            names
+            + (
+                " count search_record_id selection_record_id selection_commitment"
+                if kind == "SOURCE_READ_POSSIBLE"
+                else " possible_record_id snapshot_id event_seq passage_commitment"
+            ),
+        )
+        ordinal = _number(d["ordinal"], 1)
+        common = (
+            _uuid(d["account_id"]),
+            _number(d["account_generation"]),
+            _uuid(d["task_id"]),
+            _number(d["epoch"], 1),
+            _uuid(d["acceptance_record_id"]),
+            ordinal,
+        )
+        if ordinal > 2:
+            raise HistoryError("invalid_record")
+        if kind == "SOURCE_READ_POSSIBLE":
+            count = _number(d["count"], ordinal)
+            if count > 2:
+                raise HistoryError("invalid_record")
+            return SourceReadPossible(
+                *common,
+                count,
+                _uuid(d["search_record_id"]),
+                _uuid(d["selection_record_id"]),
+                _hex(d["selection_commitment"]),
+            )
+        return SourcePinPrepare(
+            *common,
+            _uuid(d["possible_record_id"]),
+            _uuid(d["snapshot_id"]),
+            _number(d["event_seq"], 1),
+            _hex(d["passage_commitment"]),
+        )
     if kind == "INBOX_ORIGINAL_RETIRED":
         d = _keys(raw, "terminal_record_id send_record_id")
         return InboxOriginalRetired(_uuid(d["terminal_record_id"]), _uuid(d["send_record_id"]))
@@ -505,10 +585,12 @@ _FRAME_VERSIONS: dict[type[Any], tuple[int, bytes, tuple[Profile, ...]]] = {
     TerminalOutputPrepare: (
         3,
         TERMINAL_DOMAIN,
-        ("terminal-v3", "terminal-v4", "inbox-retired-v1", "inbox-research-v1"),
+        ("terminal-v3", "terminal-v4", "inbox-retired-v1", "inbox-research-v1", "inbox-sources-v1"),
     ),
     NonsuccessOutputPrepare: (4, NONSUCCESS_DOMAIN, ("terminal-v4",)),
     InboxOriginalRetired: (5, INBOX_RETIRED_DOMAIN, ("inbox-retired-v1",)),
+    SourceReadPossible: (6, SOURCE_DOMAIN, ("inbox-sources-v1",)),
+    SourcePinPrepare: (6, SOURCE_DOMAIN, ("inbox-sources-v1",)),
 }
 _WIRE_VERSIONS = {_KINDS[kind][0]: shape for kind, shape in _FRAME_VERSIONS.items()}
 
@@ -534,12 +616,25 @@ def decode_entry(frame: bytes, *, profile: Profile = "h1") -> Entry:
         raise HistoryError("invalid_record")
     data = _data(d["kind"], d["data"])
     seq = _number(d["seq"], 1)
-    if d["actor"] != _KINDS[type(data)][1] or (version in (4, 5) and seq > MAX_RECORDS):
+    if d["actor"] != _KINDS[type(data)][1] or (version in (4, 5, 6) and seq > MAX_RECORDS):
         raise HistoryError("invalid_record")
     record_id = _uuid(d["record_id"])
     if (
         isinstance(data, InboxOriginalRetired)
         and len({record_id, data.terminal_record_id, data.send_record_id}) != 3
+    ):
+        raise HistoryError("invalid_record")
+    if (
+        isinstance(data, SourceReadPossible)
+        and len(
+            {record_id, data.acceptance_record_id, data.search_record_id, data.selection_record_id}
+        )
+        != 4
+    ):
+        raise HistoryError("invalid_record")
+    if (
+        isinstance(data, SourcePinPrepare)
+        and len({record_id, data.acceptance_record_id, data.possible_record_id}) != 3
     ):
         raise HistoryError("invalid_record")
     return Entry(
@@ -581,6 +676,9 @@ def validate_chain(
     open_restore: tuple[UUID, UUID] | None = None
     retirement_task: UUID | None = None
     research_sends: dict[UUID, list[SendPossible]] = {}
+    source_reads: dict[UUID, list[Command]] = {}
+    source_sends: dict[UUID, list[Command]] = {}
+    source_original: AcceptPrepare | None = None
     research_originals: dict[UUID, list[AcceptPrepare]] = {}
     if len(entries) > MAX_RECORDS:
         raise HistoryError("capacity")
@@ -603,10 +701,21 @@ def validate_chain(
             raise HistoryError("chain_mismatch")
         operations.add(e.command.record_id)
         d = e.command.data
-        if profile == "inbox-research-v1":
+        if profile in ("inbox-research-v1", "inbox-sources-v1"):
+            sources = profile == "inbox-sources-v1"
+            send_kinds = (*RESEARCH_SENDS, "completion") if sources else RESEARCH_SENDS
             if isinstance(d, (RestoreBegin, RestoreAssessed, ArtifactPrepare)):
                 raise HistoryError("unsupported_inbox_history")
             if isinstance(d, AcceptPrepare):
+                if sources:
+                    if source_original is not None and (
+                        len(accepted) != 1
+                        or source_original.task_id not in terminal_tasks
+                        or (source_original.account_id, source_original.account_generation)
+                        != (d.account_id, d.account_generation)
+                    ):
+                        raise HistoryError("unsupported_source_original")
+                    source_original = d
                 originals = research_originals.setdefault(d.account_id, [])
                 if len(originals) >= 2 or any(
                     a.account_generation != d.account_generation or a.task_id not in terminal_tasks
@@ -614,13 +723,17 @@ def validate_chain(
                 ):
                     raise HistoryError("unsupported_inbox_history")
                 originals.append(d)
+            elif sources and (
+                source_original is None or getattr(d, "task_id", None) != source_original.task_id
+            ):
+                raise HistoryError("unsupported_source_original")
             if isinstance(d, StopIntent) and (d.task_id in stopped or d.task_id in terminal_tasks):
                 raise HistoryError("effect_stopped")
             if isinstance(d, SendPossible):
                 prior = research_sends.setdefault(d.task_id, [])
                 if (
-                    len(prior) >= len(RESEARCH_SENDS)
-                    or d.effect_kind != RESEARCH_SENDS[len(prior)]
+                    len(prior) >= len(send_kinds)
+                    or d.effect_kind != send_kinds[len(prior)]
                     or any(
                         (
                             p.epoch,
@@ -643,10 +756,68 @@ def validate_chain(
                     )
                 ):
                     raise HistoryError("unsupported_research_send")
+                if sources:
+                    reads = source_reads.get(d.task_id, [])
+                    if len(prior) == 3:
+                        if (
+                            not reads
+                            or not isinstance(reads[0].data, SourceReadPossible)
+                            or len(reads) != 2 * reads[0].data.count
+                        ):
+                            raise HistoryError("unsupported_source_send")
+                    elif reads:
+                        raise HistoryError("unsupported_source_send")
+                    source_sends.setdefault(d.task_id, []).append(e.command)
                 prior.append(d)
+            if isinstance(d, (SourceReadPossible, SourcePinPrepare)):
+                a = accepted.get(d.task_id)
+                prior = research_sends.get(d.task_id, [])
+                sends = source_sends.get(d.task_id, [])
+                reads = source_reads.setdefault(d.task_id, [])
+                if (
+                    a is None
+                    or (a.account_id, a.account_generation) != (d.account_id, d.account_generation)
+                    or acceptance_records[d.task_id] != d.acceptance_record_id
+                    or d.task_id in stopped
+                    or d.task_id in terminal_tasks
+                    or len(prior) != 3
+                    or prior[-1].epoch != d.epoch
+                    or d.ordinal != len(reads) // 2 + 1
+                ):
+                    raise HistoryError("unsupported_source_read")
+                if isinstance(d, SourceReadPossible):
+                    if (
+                        len(reads) % 2
+                        or d.search_record_id != sends[1].record_id
+                        or d.selection_record_id != sends[2].record_id
+                        or any(
+                            isinstance(p.data, SourceReadPossible)
+                            and (
+                                p.data.count != d.count
+                                or p.data.selection_commitment == d.selection_commitment
+                            )
+                            for p in reads
+                        )
+                    ):
+                        raise HistoryError("unsupported_source_read")
+                else:
+                    if (
+                        len(reads) % 2 != 1
+                        or d.possible_record_id != reads[-1].record_id
+                        or any(
+                            isinstance(p.data, SourcePinPrepare)
+                            and (
+                                p.data.snapshot_id == d.snapshot_id
+                                or p.data.event_seq >= d.event_seq
+                            )
+                            for p in reads
+                        )
+                    ):
+                        raise HistoryError("unsupported_source_pin")
+                reads.append(e.command)
             if isinstance(d, TerminalOutputPrepare):
                 prior = research_sends.get(d.task_id, [])
-                if len(prior) != len(RESEARCH_SENDS) or prior[-1].epoch != d.epoch:
+                if len(prior) != len(send_kinds) or prior[-1].epoch != d.epoch:
                     raise HistoryError("unsupported_research_terminal")
         if profile == "inbox-retired-v1":
             if isinstance(d, (RestoreBegin, RestoreAssessed, ArtifactPrepare)):

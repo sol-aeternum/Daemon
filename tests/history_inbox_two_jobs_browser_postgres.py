@@ -58,6 +58,15 @@ async def effect_snapshot(s):
                 "FROM entitlement_accounts WHERE user_id=$1",
                 s.account,
             ),
+            await conn.fetch(
+                "SELECT id,conversation_id,content_fingerprint,retrieved_at,expires_at "
+                "FROM web_snapshots WHERE user_id=$1 ORDER BY id",
+                s.account,
+            ),
+            await conn.fetch(
+                "SELECT task_id,seq,payload_ciphertext FROM task_events "
+                "WHERE kind='page_refreshed' ORDER BY task_id,seq"
+            ),
         )
 
 
@@ -156,8 +165,125 @@ async def test_research_two_questions_desktop_phone_original_reports(text_host, 
     assert old_passage in s.reports[0] and new_passage not in s.reports[0]
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("text_host", ["sources-self-hosted-ui"], indirect=True)
+async def test_source_passages_survive_changed_bulletin_and_phone_reopen(text_host, monkeypatch):
+    s = text_host
+    questions = (
+        "Which instrument does the estuary station lend, and when does the desk open?",
+        "What does the town archive lend for fieldwork, and when does the desk open?",
+    )
+    water = "https://estuary.example/loans"
+    archive = "https://archive.example/fieldwork"
+    bulletin = "https://district.example/hours"
+    source_urls = [[water, bulletin], [archive, bulletin]]
+    water_fact = "The station lends a brass tide gauge."
+    archive_fact = "The archive lends a linen map case."
+    early = "The loan desk opens at seven."
+    late = "The loan desk opens at eleven."
+
+    from tests.source_model_fixture import public_notice
+
+    # Model fixtures can learn the material facts only from retrieved page bodies.
+    # In particular the shared search result does not change between originals.
+    s.research_corpus = {
+        question: [
+            {"url": url, "title": "Fieldwork notice", "description": "Consult the notice."}
+            for url in urls
+        ]
+        for question, urls in zip(questions, source_urls, strict=True)
+    }
+    s.source_pages = {
+        water: public_notice(water_fact),
+        archive: public_notice(archive_fact),
+        bulletin: public_notice(early),
+    }
+    initial_results = copy.deepcopy(s.research_corpus)
+
+    def change_bulletin():
+        s.source_pages[bulletin] = public_notice(late)
+
+    await exercise_two_originals(
+        s,
+        monkeypatch,
+        questions=questions,
+        source_urls=source_urls,
+        between_questions=change_bulletin,
+        retrieved=True,
+    )
+    assert s.research_corpus == initial_results
+    assert [call.query for call in s.search_calls] == list(questions)
+    assert list(s.source_calls) == [water, bulletin, archive, bulletin]
+    # Use the persisted, independently read messages, not expected transport output.
+    x, y = await originals(s)
+    first, second = (s.execution.encryption.decrypt(row["content"]) for row in (x, y))
+    first_answer = first.split("\n\nSources:\n\n")[0]
+    second_answer = second.split("\n\nSources:\n\n")[0]
+    assert water_fact in first_answer and early in first_answer and late not in first
+    assert archive_fact in second_answer and late in second_answer and early not in second
+    async with s.db.connection() as conn:
+        for original, expected_pages in (
+            (x, {water: water_fact, bulletin: early}),
+            (y, {archive: archive_fact, bulletin: late}),
+        ):
+            pages = await conn.fetch(
+                "SELECT id,metadata_encrypted,content_encrypted FROM web_snapshots "
+                "WHERE user_id=$1 AND conversation_id=$2",
+                s.account,
+                original["conversation_id"],
+            )
+            pins = await conn.fetch(
+                "SELECT payload_ciphertext FROM task_events "
+                "WHERE task_id=$1 AND kind='page_refreshed'",
+                original["id"],
+            )
+            decrypt = s.execution.encryption.decrypt
+            pinned = [json.loads(decrypt(p["payload_ciphertext"])) for p in pins]
+            assert {p["snapshot_id"] for p in pinned} == {str(p["id"]) for p in pages}
+            assert all(p["epoch"] == original["epoch"] for p in pinned)
+            assert len(pages) == len(expected_pages)
+            actual_pages = {
+                json.loads(decrypt(p["metadata_encrypted"]))["final_url"]: decrypt(
+                    p["content_encrypted"]
+                )
+                for p in pages
+            }
+            assert actual_pages.keys() == expected_pages.keys()
+            for url, passage in expected_pages.items():
+                assert passage in actual_pages[url]
+    # Retention is independent of the committed report's lifetime. Remove only
+    # the first original's retained pages via their normal owned store API;
+    # a fresh reader must never consult transport to fill them back in.
+    from orchestrator.services.restore_history.acceptance_host import create_isolated_ui_app
+    from orchestrator.services.web_snapshots import WebSnapshotStore
+
+    _, credentials = await device(s, s.account)
+    s.research_observer = True
+    async with s.make():
+        store = WebSnapshotStore(s.w, s.execution.encryption, s.settings)
+        retained = await store.list(s.account, x["conversation_id"])
+        assert len(retained.items) == 2
+        for page in retained.items:
+            assert await store.delete(s.account, x["conversation_id"], page.id)
+        state = await effect_snapshot(s)
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=create_isolated_ui_app(s.host)),
+            base_url="http://isolated",
+            headers=credentials,
+        ) as http:
+            selected = await http.get("/tasks/inbox-pilot?topic=X")
+            assert selected.status_code == 200
+            assert selected.json()["conversation_id"] == str(x["conversation_id"])
+            detail = await http.get(f"/conversations/{x['conversation_id']}")
+            assert detail.status_code == 200
+            message = detail.json()["messages"][-1]
+            assert (message["id"], message["content"]) == (str(x["result_message_id"]), first)
+        assert await effect_snapshot(s) == state
+        assert list(s.source_calls) == [water, bulletin, archive, bulletin]
+
+
 async def exercise_two_originals(
-    s, monkeypatch, *, questions=None, source_urls=None, between_questions=None
+    s, monkeypatch, *, questions=None, source_urls=None, between_questions=None, retrieved=False
 ):
     owner = OwnedSearchRedis(Path(os.environ["OPENCODE_WORK_TEST_DIR"]), "inbox-761-two")
     evidence = Path(os.environ["OPENCODE_WORK_EVIDENCE_DIR"])
@@ -196,7 +322,7 @@ async def exercise_two_originals(
                     assert received["stage"] == stage
                     return received
 
-                await send(json.dumps({**packet, "questions": questions}))
+                await send(json.dumps({**packet, "questions": questions, "retrieved": retrieved}))
                 first = await receive("first")
                 await asyncio.wait_for(s.entered.wait(), 10)
                 s.release.set()
@@ -259,9 +385,17 @@ async def exercise_two_originals(
                 terminal_effects = await effect_snapshot(s)
                 await send("second committed")
                 if questions:
-                    assert len(s.calls) == 4
-                    assert len(terminal_effects[1]) == 6
+                    assert len(s.calls) == (6 if retrieved else 4)
+                    assert len(terminal_effects[1]) == (8 if retrieved else 6)
                     assert all(r["status"] == "settled" for r in terminal_effects[1])
+                    if retrieved:
+                        assert len(terminal_effects[4]) == len(terminal_effects[5]) == 4
+                        for row in (x, actual_y):
+                            kinds = [
+                                f["kind"] for f in terminal_effects[0] if f["task_id"] == row["id"]
+                            ]
+                            assert kinds.count("SOURCE_READ_POSSIBLE") == 2
+                            assert kinds.count("SOURCE_PIN_PREPARE") == 2
                     await send(json.dumps(second_report))
                     await check_research_auth(s, packet["backend"], actual_y, receive, send)
                 finished = await receive("finished")

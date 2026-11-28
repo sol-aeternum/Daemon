@@ -89,12 +89,21 @@ class ToolExecutor:
         return (await self.execute_invocation(name, arguments)).result
 
     async def execute_invocation(self, name: str, arguments: str | dict[str, Any]) -> ToolExecution:
-        from orchestrator.tasks._history_binding import research_tool, text_only_execution
+        from orchestrator.tasks._history_binding import (
+            research_tool,
+            source_run,
+            text_only_execution,
+        )
         from orchestrator.compute_runtime import ComputeUnavailable
 
         if text_only_execution():
-            tool = research_tool()
-            if tool is None or name != "web_search" or self._registry.get(name) is not tool:
+            sources = source_run()
+            tool = (
+                research_tool()
+                if name == "web_search"
+                else (sources.tool if name == "web_fetch" and sources is not None else None)
+            )
+            if tool is None or self._registry.get(name) is not tool:
                 raise ComputeUnavailable(
                     "capability_unavailable", "Tools unavailable in text execution"
                 )

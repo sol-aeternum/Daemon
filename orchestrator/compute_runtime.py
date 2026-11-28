@@ -2708,9 +2708,10 @@ async def guarded_completion(
     """
     scope = current_scope()
     if text_only_execution() or scope.history_requirement is not None:
-        from orchestrator.tasks._history_binding import research_tool
+        from orchestrator.tasks._history_binding import research_tool, source_run
 
         tool = research_tool()
+        sources = source_run()
         has_tools = any(
             params.get(key) not in (None, [], "none")
             for key in ("tools", "tool_choice", "functions", "function_call")
@@ -2724,6 +2725,19 @@ async def guarded_completion(
                 and params.get("functions") is None
                 and params.get("function_call") is None
             )
+        elif sources is not None:
+            if scope.completion_seq == 1:
+                allowed = (
+                    scope.research_search_ok
+                    and params.get("tools") == [sources.tool.to_openai_schema()]
+                    and params.get("tool_choice") == "auto"
+                    and params.get("functions") is None
+                    and params.get("function_call") is None
+                )
+            else:
+                allowed = scope.completion_seq == 2 and not has_tools
+            if allowed:
+                sources.verify_context(params["messages"], final=scope.completion_seq == 2)
         else:
             allowed = scope.completion_seq == 1 and scope.research_search_ok and not has_tools
         if not allowed:
@@ -3070,11 +3084,16 @@ async def guarded_completion(
                     model_transport = litellm.acompletion
                     if (
                         scope.history_binding is not None
-                        and scope.history_binding.effects._projection.profile == "inbox-research-v1"
+                        and scope.history_binding.effects._projection.profile
+                        in ("inbox-research-v1", "inbox-sources-v1")
                     ):
                         scope.require_inference()
                         model_transport = scope.history_binding.research_model_transport
                         assert model_transport is not None
+                        if scope.history_binding.source_run is not None and completion_seq > 1:
+                            scope.history_binding.source_run.verify_context(
+                                call["messages"], final=completion_seq == 3
+                            )
                     call_started = True
                     response = await asyncio.wait_for(
                         model_transport(**call),

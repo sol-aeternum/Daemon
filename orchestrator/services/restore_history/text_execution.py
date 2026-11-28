@@ -34,6 +34,7 @@ from .store import _check_time
 from .terminal_projection import (
     TERMINAL_PROFILES,
     InboxResearchHistoryProjection,
+    InboxSourcesHistoryProjection,
     TerminalHistoryProjection,
 )
 
@@ -72,6 +73,8 @@ class HistoryTextExecution:
             or history._expected != projection.expected
             or (type(projection) is InboxResearchHistoryProjection)
             != (type(self) is HistoryResearchExecution)
+            or (type(projection) is InboxSourcesHistoryProjection)
+            != (type(self) is HistorySourcesExecution)
         ):
             raise HistoryError("text_execution_refused")
         self.pool, self.encryption, self.settings = pool, encryption, settings
@@ -182,7 +185,8 @@ class HistoryTextExecution:
     def retain_original_attempt(self, state: AttemptState) -> None:
         child = asyncio.current_task()
         if (
-            self.projection.profile not in ("inbox-retired-v1", "inbox-research-v1")
+            self.projection.profile
+            not in ("inbox-retired-v1", "inbox-research-v1", "inbox-sources-v1")
             or child is None
             or self._job_tasks.get(child) != state.claim.task_id
             or child in self._original_attempts
@@ -192,7 +196,7 @@ class HistoryTextExecution:
 
     def research_cleanup_confirmed(self, task: UUID) -> bool:
         """Same-host proof only; no recovery or settlement from saved rows."""
-        if self.projection.profile != "inbox-research-v1":
+        if self.projection.profile not in ("inbox-research-v1", "inbox-sources-v1"):
             return False
         child = next((j for j, ident in self._job_tasks.items() if ident == task), None)
         if child is None or not _successful(child) or child.result() != "completed":
@@ -201,6 +205,19 @@ class HistoryTextExecution:
         if state is None or state.compute_scope is None or state.history_binding is None:
             return False
         scope, binding = state.compute_scope, state.history_binding
+        if self.projection.profile == "inbox-sources-v1":
+            source = binding.source_run
+            if (
+                source is None
+                or source.claim is not state.claim
+                or source.effects is not self.effects
+                or source.pending is not None
+                or not source.transport_entered
+                or not source.synthesis_checked
+                or source.report is None
+                or not 1 <= len(source.pins) == len(source.selected) <= 2
+            ):
+                return False
         beat = state.heartbeat
         if not (
             state.result is TaskStatus.COMPLETED
@@ -222,15 +239,15 @@ class HistoryTextExecution:
             and scope.closed
             and not scope.outstanding
             and not scope.streams
-            and len(scope.settled) == 3
+            and len(scope.settled) == (4 if self.projection.profile == "inbox-sources-v1" else 3)
             and all(_successful(owner) for owner in scope.cleanup_owners)
             and scope.retirement_holds is not None
-            and len(scope.retirement_holds) == 3
+            and len(scope.retirement_holds) == len(scope.settled)
         ):
             return False
         assert self.effects is not None
         owned = self.effects._owned_sends.get(id(binding.state))
-        if owned is None or owned[0] is not binding.state or len(owned[1]) != 3:
+        if owned is None or owned[0] is not binding.state or len(owned[1]) != len(scope.settled):
             return False
         for index, hold in enumerate(scope.retirement_holds):
             if not _successful(hold.settlement) or hold.settlement not in scope.cleanup_owners:
@@ -444,7 +461,7 @@ class HistoryResearchExecution(HistoryTextExecution):
         encryption: ContentEncryption,
         settings: Settings,
         history: HistoryCoordinator,
-        projection: InboxResearchHistoryProjection,
+        projection: InboxResearchHistoryProjection | InboxSourcesHistoryProjection,
         *,
         model_transport: Callable[..., Awaitable[Any]],
         search_transport: httpx.MockTransport,
@@ -454,7 +471,8 @@ class HistoryResearchExecution(HistoryTextExecution):
             type(search_transport) is not httpx.MockTransport
             or search_pacer is None
             or not inspect.iscoroutinefunction(model_transport)
-            or type(projection) is not InboxResearchHistoryProjection
+            or type(projection)
+            not in (InboxResearchHistoryProjection, InboxSourcesHistoryProjection)
             or settings.mock_llm
         ):
             raise HistoryError("research_execution_refused")
@@ -466,3 +484,48 @@ class HistoryResearchExecution(HistoryTextExecution):
             _transport=search_transport,
             pacer=search_pacer,
         )
+
+
+class HistorySourcesExecution(HistoryResearchExecution):
+    """Explicit source profile, with no live fetch transport or startup selector."""
+
+    def __init__(
+        self,
+        pool,
+        encryption,
+        settings,
+        history,
+        projection,
+        *,
+        model_transport,
+        search_transport,
+        search_pacer,
+        source_transport,
+        source_key,
+    ):
+        if (
+            type(projection) is not InboxSourcesHistoryProjection
+            or type(source_transport) is not httpx.MockTransport
+        ):
+            raise HistoryError("source_execution_refused")
+        projection.expected.verify_key(source_key)
+        from .source_execution import source_key_material
+
+        super().__init__(
+            pool,
+            encryption,
+            settings,
+            history,
+            projection,
+            model_transport=model_transport,
+            search_transport=search_transport,
+            search_pacer=search_pacer,
+        )
+        self.source_transport = source_transport
+        self.source_key = source_key_material(source_key, projection.expected.history_id)
+
+    def original_source(self, claim):
+        from .source_execution import SourceRun
+
+        assert self.effects is not None
+        return SourceRun(claim, self.effects, self.source_key, self.source_transport, self.settings)
