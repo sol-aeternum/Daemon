@@ -2782,7 +2782,32 @@ async def guarded_completion(
     dispatch_deadline = started + _dispatch_budget_s(_dispatch_timeout_s, deadline - started)
     policy = await scope.service.resolve(scope.user_id)
     if owned_source is not None:
-        await owned_source.require_budget(scope, policy)
+        binding = scope.history_binding
+        if (
+            binding is None
+            or scope.profile != "routine"
+            or scope.operation != "chat"
+            or scope.extended
+            or scope.background
+            or scope.account_allow_premium
+            or scope.outstanding
+            or scope.streams
+            or scope.retirement_holds is None
+            or (scope.expected_period is not None and scope.expected_period != policy.period_key)
+            or await binding.composition.pool.fetchval(
+                "SELECT EXISTS(SELECT 1 FROM public.entitlement_reservations "
+                "WHERE user_id=$1 AND status='open')",
+                scope.user_id,
+            )
+            is not False
+        ):
+            raise ComputeUnavailable("account_unavailable", "Owned-index account unavailable")
+        if owned_source.remaining_cost_bound(scope) > min(
+            policy.remaining_for(False),
+            250_000 - policy.period_spent_microusd - policy.period_reserved_microusd,
+        ):
+            raise ComputeUnavailable("budget_exceeded", "Owned-index budget unavailable")
+        scope.expected_period = policy.period_key
     if "chat" not in policy.capabilities:
         raise ComputeUnavailable("capability_unavailable", "Chat unavailable")
     if (

@@ -39,7 +39,6 @@ from .terminal_projection import InboxOwnedIndexHistoryProjection, InboxSourcesH
 
 if TYPE_CHECKING:
     from orchestrator.compute_runtime import ComputeScope, ToolServiceApproval
-    from orchestrator.entitlements.models import ResolvedPolicy
     from orchestrator.entitlements.policy import RoutePolicy
     from orchestrator.config import Settings
     from orchestrator.tasks._history_binding import ComputeHistoryBinding
@@ -301,8 +300,10 @@ class SourceRun:
 
     def owned_capability(self) -> SourceRun | None:
         """Expose the owned-only policy through the validated original scope."""
+        if not self.owned_index:
+            return None
         self.scope()
-        return self if self.owned_index else None
+        return self
 
     def owns_search_approval(self, tool: Any, approval: ToolServiceApproval) -> bool:
         return (
@@ -321,40 +322,17 @@ class SourceRun:
         params["max_tokens"] = MAX_OUTPUT
         return MODEL_ROUTE
 
-    async def require_budget(self, scope: ComputeScope, policy: ResolvedPolicy) -> None:
+    def remaining_cost_bound(self, scope: ComputeScope) -> int:
         from .owned_index import MAX_HOLD
         from orchestrator.compute_runtime import ComputeUnavailable
 
-        binding = scope.history_binding
         if (
-            self.scope() is not scope
-            or binding is None
-            or scope.profile != "routine"
-            or scope.operation != "chat"
-            or scope.extended
-            or scope.background
-            or scope.account_allow_premium
-            or scope.outstanding
-            or scope.streams
-            or scope.retirement_holds is None
+            not self.owned_index
+            or self.scope() is not scope
             or scope.completion_seq not in (0, 1, 2)
-            or (scope.expected_period is not None and scope.expected_period != policy.period_key)
-            or await binding.composition.pool.fetchval(
-                "SELECT EXISTS(SELECT 1 FROM public.entitlement_reservations "
-                "WHERE user_id=$1 AND status='open')",
-                scope.user_id,
-            )
-            is not False
         ):
             raise ComputeUnavailable("account_unavailable", "Owned-index account unavailable")
-        remaining_hold = MAX_HOLD * (3 - scope.completion_seq)
-        if remaining_hold > min(
-            policy.remaining_for(False),
-            250_000 - policy.period_spent_microusd - policy.period_reserved_microusd,
-        ):
-            raise ComputeUnavailable("budget_exceeded", "Owned-index budget unavailable")
-        self.scope()
-        scope.expected_period = policy.period_key
+        return MAX_HOLD * (3 - scope.completion_seq)
 
     def require_input_bound(self, bound: int) -> None:
         from .owned_index import MAX_INPUT_BOUND
