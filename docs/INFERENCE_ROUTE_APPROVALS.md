@@ -193,10 +193,13 @@ evidence comes from OpenRouter's listings and says nothing about any other host.
 **Check.** The backend and the worker each run the check themselves, at start and
 every 6 hours. Neither depends on the other to enforce a revocation. Each fetches two
 public OpenRouter listings with no credentials: the ZDR endpoint listing and provider
-data policies. Two changes revoke a route:
+data policies. These changes revoke a route:
 - the **exact** requested model id at the pinned provider tag leaves the ZDR listing
   (`left_zdr_listing`). A sibling model such as `<model>-pro`, or a dated revision
   listed without the requested id, does not count as listed;
+- the exact endpoint explicitly reports `safety_retention: true`. Membership alone
+  is insufficient: confirmation requires the JSON boolean `false` on the exact
+  row, independently of the provider-wide data policy;
 - any baseline data-policy value changes (`provider_policy_changed:<key>`).
 
 An observed revocation applies to that process's admission immediately, before any
@@ -206,23 +209,39 @@ back. A process that cannot reconcile that history cannot renew a baseline anoth
 process has revoked; its approval simply goes stale.
 Results are then recorded, one row per monitored route, in
 `inference_route_attestations` (migration 043). The write is retried, and a revocation
-that cannot be persisted is logged as critical. An unreadable check records
-`check_failed` and revokes nothing.
+that cannot be persisted is logged as critical. Missing, malformed or conflicting
+endpoint evidence does not renew a confirmation. If neither source establishes
+a revocation, an inconclusive check records `check_failed`; if one establishes a
+revocation, an unreadable second source cannot cancel it.
 
 **Admission.** Backend and worker read a snapshot of those rows, refreshed every
 minute. A monitored route is admitted only if:
-- its current baseline has been confirmed within **72 hours**; and
+- its current baseline has been confirmed within **72 hours**, with exact-endpoint
+  Safety Retention evidence. Older-format positive rows do not count; and
 - that baseline has **never been revoked**.
 
 Otherwise it fails closed (`zdr_attestation_stale`, `zdr_attestation_revoked`, or
-`zdr_attestation_unknown` before the first snapshot loads). Revocation is sticky for
+`zdr_attestation_unknown` for missing or future-dated confirmation). Revocation is sticky for
 the approved baseline. Re-approval is an explicit operator change to the route,
 normally a new review date after requalification; the route never recovers on its
 own.
 
-**Not monitored.** The account-side attestation (prompt logging disabled, training
-opt-out) cannot be checked from public metadata and is carried by the operator
-review. Price, limits and capability changes are not revocation triggers. The
+**Not monitored.** A public `attested` result describes an exact endpoint and its
+provider's published baseline. It does not verify a contract, private account
+settings, or what happened to a particular request. The operator review carries
+the separate assertions about prompt logging and training opt-out.
+
+As checked on 28 November 2026, [OpenRouter's ZDR terms](https://openrouter.ai/docs/guides/features/zdr)
+say `zdr: true` follows the effective account and guardrail choice between **ZDR
+only** and **Allow Safety Retention**. Without an explicit choice, self-serve
+and enterprise accounts have different defaults. Separately, OpenRouter reserves
+retention of potential CSAM for review, reporting and legal preservation even on
+ZDR traffic. The exact endpoint field does not exclude that gateway exception,
+upstream diagnostic logging, or account-enabled tracing. A new live qualification
+needs dated evidence for the effective key and applicable terms at both hops;
+the monitor cannot supply it. See [#803](https://github.com/sol-aeternum/Daemon/issues/803).
+
+Price, limits and capability changes are not revocation triggers. The
 transport price cap still refuses dispatch when a listed price exceeds the pinned
 ceiling (see #421).
 
@@ -236,7 +255,10 @@ check:
   policy reason;
 - `3`: the policy has no monitored routes.
 
-Restart only on `0`. Expiring approvals keep their existing behaviour.
+Restart only on `0`. For the #803 change, use the corrected bootstrap and run
+the corrected monitor in **both** backend and worker: an old process still reads
+legacy positives. The baseline fingerprint is unchanged, so a new confirmation
+cannot clear a prior revocation. Expiring approvals keep their existing behaviour.
 
 ## GLM Flash input ceiling — 3 October 2026
 

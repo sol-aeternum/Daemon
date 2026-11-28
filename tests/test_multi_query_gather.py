@@ -645,7 +645,7 @@ async def test_concurrent_guarded_ledger_holds_settle_once_and_context_isolated(
     # completion fixture attests only completion routes, not embedding routes.
     # (The clock moved past the Oct 5 embedding review with #747.)
     reasons = route.rejection_reasons(production_policy.requirements, now=REVIEWED)
-    assert "zdr_attestation_stale" in reasons
+    assert "zdr_attestation_unknown" in reasons
     assert (
         route.route_id,
         attestation.baseline_fingerprint(route),

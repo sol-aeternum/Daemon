@@ -63,7 +63,11 @@ def _route(**kwargs: Any) -> RoutePolicy:
 
 
 def _zdr(*entries: tuple[str, str]) -> dict[str, Any]:
-    return {"data": [{"model_id": model, "tag": tag} for model, tag in entries]}
+    return {
+        "data": [
+            {"model_id": model, "tag": tag, "safety_retention": False} for model, tag in entries
+        ]
+    }
 
 
 def _providers(**policy: Any) -> dict[str, Any]:
@@ -73,6 +77,12 @@ def _providers(**policy: Any) -> dict[str, Any]:
 
 
 LISTED = _zdr(("openai/gpt-6-luna", "azure"))
+
+
+def _with_safety_retention(value: object) -> dict[str, Any]:
+    listing = copy.deepcopy(LISTED)
+    listing["data"][0]["safety_retention"] = value
+    return listing
 
 
 @pytest.fixture(autouse=True)
@@ -119,10 +129,19 @@ def test_stale_attestation_fails_closed_after_72_hours() -> None:
     route = _route()
     policy = parse_inference_policy(_monitored_policy())
     _attest(route, at=NOW)
-    assert route.is_approved(policy.requirements, now=NOW + timedelta(hours=71))
+    assert route.is_approved(policy.requirements, now=NOW + timedelta(hours=72))
     assert route.rejection_reasons(policy.requirements, now=NOW + timedelta(hours=73)) == (
         "zdr_attestation_stale",
     )
+
+
+def test_absent_and_future_dated_confirmations_are_unknown() -> None:
+    route = _route()
+    policy = parse_inference_policy(_monitored_policy())
+    attestation.set_snapshot(attestation.AttestationSnapshot(loaded=True))
+    assert route.rejection_reasons(policy.requirements, now=NOW) == ("zdr_attestation_unknown",)
+    _attest(route, at=NOW + timedelta(seconds=1))
+    assert route.rejection_reasons(policy.requirements, now=NOW) == ("zdr_attestation_unknown",)
 
 
 def test_revocation_is_sticky_for_the_approved_baseline() -> None:
@@ -209,8 +228,121 @@ def test_unchanged_listing_and_policy_attest() -> None:
     assert (check.outcome, check.reasons) == ("attested", ())
     assert check.observed == {
         "zdr_listed": True,
+        "safety_retention": False,
         "data_policy": {"training": False, "retainsPrompts": False},
     }
+
+
+def test_explicit_safety_retention_revokes_even_with_matching_provider_policy() -> None:
+    [check] = attestation.evaluate([_route()], _with_safety_retention(True), _providers())
+    assert (check.outcome, check.reasons) == (
+        "revoked",
+        ("endpoint_safety_retention_enabled",),
+    )
+    assert check.observed["safety_retention"] is True
+
+
+def test_missing_safety_retention_is_not_evidence_of_zero_retention() -> None:
+    listing = copy.deepcopy(LISTED)
+    del listing["data"][0]["safety_retention"]
+    [check] = attestation.evaluate([_route()], listing, _providers(safety_retention=False))
+    assert (check.outcome, check.reasons) == (
+        "check_failed",
+        ("endpoint_safety_retention_missing",),
+    )
+    assert "safety_retention" not in check.observed
+
+
+@pytest.mark.parametrize("value", [None, 0, 1, "false", "true", [], {}, "\u0000"])
+def test_non_boolean_safety_retention_is_unknown(value: object) -> None:
+    [check] = attestation.evaluate([_route()], _with_safety_retention(value), _providers())
+    assert (check.outcome, check.reasons) == (
+        "check_failed",
+        ("endpoint_safety_retention_invalid",),
+    )
+    assert check.observed["safety_retention"] is not False
+    assert "\u0000" not in json.dumps(check.observed)
+
+
+@pytest.mark.parametrize(
+    "first,second", [(False, False), (True, True), (True, False), (False, True), (True, None)]
+)
+def test_duplicate_exact_endpoints_are_ambiguous(first: bool, second: object) -> None:
+    listing = _with_safety_retention(first)
+    listing["data"].extend(_with_safety_retention(second)["data"])
+    [check] = attestation.evaluate([_route()], listing, _providers())
+    assert (check.outcome, check.reasons) == ("check_failed", ("endpoint_listing_ambiguous",))
+    assert "safety_retention" not in check.observed
+
+
+def test_unrelated_endpoint_flags_and_duplicates_do_not_supply_exact_route_evidence() -> None:
+    listing = copy.deepcopy(LISTED)
+    listing["data"].extend(
+        [
+            {"model_id": "openai/gpt-6-luna", "tag": "azure/us", "safety_retention": True},
+            {"model_id": "openai/gpt-6-luna", "tag": "azure/us"},
+            {"model_id": "openai/gpt-6-luna-pro", "tag": "azure", "safety_retention": True},
+        ]
+    )
+    [check] = attestation.evaluate([_route()], listing, _providers())
+    assert check.outcome == "attested"
+    listing["data"][0]["safety_retention"] = True
+    [check] = attestation.evaluate([_route()], listing, _providers())
+    assert check.outcome == "revoked"
+
+
+@pytest.mark.parametrize(
+    "listing",
+    [
+        _with_safety_retention(True),
+        _zdr(("openai/gpt-6-luna", "azure/us")),
+    ],
+)
+def test_malformed_identity_prevents_endpoint_revocation(listing: dict[str, Any]) -> None:
+    malformed = copy.deepcopy(listing)
+    malformed["data"].append({"model_id": "other", "tag": None})
+    [check] = attestation.evaluate([_route()], malformed, _providers())
+    assert (check.outcome, check.reasons) == ("check_failed", ("metadata_malformed",))
+
+
+@pytest.mark.parametrize(
+    "listing,unknown_reason",
+    [
+        (None, "metadata_malformed"),
+        (_with_safety_retention(None), "endpoint_safety_retention_invalid"),
+        ({"data": LISTED["data"] * 2}, "endpoint_listing_ambiguous"),
+    ],
+)
+def test_unknown_endpoint_evidence_does_not_mask_provider_change(
+    listing: object, unknown_reason: str
+) -> None:
+    [check] = attestation.evaluate([_route()], listing, _providers(training=True))
+    assert (check.outcome, check.reasons) == (
+        "revoked",
+        ("provider_policy_changed:training", unknown_reason),
+    )
+
+
+@pytest.mark.parametrize(
+    "providers,unknown_reason",
+    [
+        (None, "metadata_malformed"),
+        ({"data": [{"slug": "other", "dataPolicy": {}}]}, "provider_policy_missing"),
+        ({"data": _providers()["data"] * 2}, "provider_policy_ambiguous"),
+    ],
+)
+@pytest.mark.parametrize(
+    "listing,reason",
+    [
+        (_with_safety_retention(True), "endpoint_safety_retention_enabled"),
+        (_zdr(("openai/gpt-6-luna", "azure/us")), "left_zdr_listing"),
+    ],
+)
+def test_unknown_provider_evidence_does_not_mask_endpoint_change(
+    providers: object, unknown_reason: str, listing: object, reason: str
+) -> None:
+    [check] = attestation.evaluate([_route()], listing, providers)
+    assert (check.outcome, check.reasons) == ("revoked", (reason, unknown_reason))
 
 
 @pytest.mark.parametrize(
@@ -328,17 +460,39 @@ class _Conn:
         self.fail_execute = False
         self.fail_fetch = False
 
-    async def fetch(self, _sql: str) -> list[dict[str, Any]]:
+    async def fetch(self, sql: str) -> list[dict[str, Any]]:
         if self.fail_fetch:
             raise ConnectionError("database unavailable")
-        return list(self.rows)
+        # Model the aggregate query at its interface; persisted rows below carry
+        # explicit observed evidence, unlike snapshot_from_rows()'s aggregate rows.
+        assert "observed->'zdr_listed' = 'true'::jsonb" in sql
+        assert "observed->'safety_retention' = 'false'::jsonb" in sql
+        latest: dict[tuple[str, str, str], dict[str, Any]] = {}
+        for row in self.rows:
+            observed = row.get("observed", {})
+            if row["outcome"] != "revoked" and not (
+                row["outcome"] == "attested"
+                and observed.get("zdr_listed") is True
+                and observed.get("safety_retention") is False
+            ):
+                continue
+            key = (row["route_id"], row["baseline_sha256"], row["outcome"])
+            if key not in latest or row["checked_at"] > latest[key]["checked_at"]:
+                latest[key] = row
+        return list(latest.values())
 
     async def execute(self, _sql: str, *args: Any) -> None:
         if self.fail_execute:
             raise ConnectionError("database unavailable")
         self.inserted.append(args)
         self.rows.append(
-            {"route_id": args[0], "baseline_sha256": args[1], "outcome": args[2], "checked_at": NOW}
+            {
+                "route_id": args[0],
+                "baseline_sha256": args[1],
+                "outcome": args[2],
+                "checked_at": NOW,
+                "observed": json.loads(args[4]),
+            }
         )
 
     def transaction(self) -> Any:
@@ -436,6 +590,7 @@ async def test_run_check_records_attests_and_refreshes_the_snapshot() -> None:
     assert client.urls == [attestation.ZDR_LISTING_URL, attestation.PROVIDERS_URL]
     [row] = pool.conn.inserted
     assert row[0] == route.route_id and row[2] == "attested" and len(row[5]) == 64
+    assert json.loads(row[4])["safety_retention"] is False
     policy = parse_inference_policy(_monitored_policy())
     assert route.rejection_reasons(policy.requirements, now=NOW) == ()
 
@@ -446,6 +601,127 @@ async def test_unreachable_metadata_records_failure_without_revoking() -> None:
     counts = await attestation.run_check(pool, _Client(None, None, fail=True), [route])
     assert counts["check_failed"] == 1 and counts["revoked"] == 0
     assert pool.conn.inserted[0][2:4] == ("check_failed", ["metadata_unavailable"])
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "failed_url,listing,providers,reason",
+    [
+        (
+            attestation.ZDR_LISTING_URL,
+            None,
+            _providers(training=True),
+            "provider_policy_changed:training",
+        ),
+        (
+            attestation.PROVIDERS_URL,
+            _with_safety_retention(True),
+            None,
+            "endpoint_safety_retention_enabled",
+        ),
+        (
+            attestation.PROVIDERS_URL,
+            _zdr(("openai/gpt-6-luna", "azure/us")),
+            None,
+            "left_zdr_listing",
+        ),
+    ],
+)
+async def test_partial_fetch_failure_does_not_mask_revocation(
+    failed_url: str, listing: object, providers: object, reason: str
+) -> None:
+    pool, route = _Pool(), _route()
+    client = _Client(listing, providers, responses={failed_url: _Response(None, status=500)})
+    counts = await attestation.run_check(pool, client, [route])
+    assert client.urls == [attestation.ZDR_LISTING_URL, attestation.PROVIDERS_URL]
+    assert counts == {"routes": 1, "attested": 0, "check_failed": 0, "revoked": 1}
+    [row] = pool.conn.inserted
+    assert row[2:4] == ("revoked", [reason, "metadata_unavailable"])
+    assert len(row[5]) == 64
+    attestation.reset_local_revocations()
+    await attestation.refresh(pool)
+    await attestation.run_check(pool, _Client(LISTED, _providers()), [route])
+    assert attestation.attestation_reasons(route, now=NOW) == ("zdr_attestation_revoked",)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("partial_fetch", [False, True])
+async def test_unknown_check_preserves_but_does_not_renew_a_recent_confirmation(
+    partial_fetch: bool,
+) -> None:
+    pool, route = _Pool(), _route()
+    key = (route.route_id, attestation.baseline_fingerprint(route))
+    old = NOW - timedelta(hours=71)
+    pool.conn.rows.append(
+        {
+            "route_id": key[0],
+            "baseline_sha256": key[1],
+            "outcome": "attested",
+            "checked_at": old,
+            "observed": {"zdr_listed": True, "safety_retention": False},
+        }
+    )
+    client = (
+        _Client(
+            LISTED,
+            None,
+            responses={attestation.PROVIDERS_URL: _Response(None, status=503)},
+        )
+        if partial_fetch
+        else _Client(_with_safety_retention(None), _providers())
+    )
+    counts = await attestation.run_check(pool, client, [route])
+    assert counts["check_failed"] == 1
+    assert attestation.snapshot().attested_at[key] == old
+    assert attestation.attestation_reasons(route, now=NOW) == ()
+    assert attestation.attestation_reasons(route, now=NOW + timedelta(hours=2)) == (
+        "zdr_attestation_stale",
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "unproven",
+    [
+        {"zdr_listed": True},
+        {"zdr_listed": True, "safety_retention": None},
+        {"zdr_listed": True, "safety_retention": 0},
+        {"zdr_listed": True, "safety_retention": "false"},
+        {"zdr_listed": True, "safety_retention": True},
+        {"zdr_listed": False, "safety_retention": False},
+    ],
+)
+async def test_legacy_or_invalid_positive_rows_do_not_confirm_or_renew(
+    unproven: dict[str, Any],
+) -> None:
+    pool, route = _Pool(), _route()
+    key = (route.route_id, attestation.baseline_fingerprint(route))
+    pool.conn.rows.append(
+        {
+            "route_id": key[0],
+            "baseline_sha256": key[1],
+            "outcome": "attested",
+            "checked_at": NOW,
+            "observed": unproven,
+        }
+    )
+    await attestation.refresh(pool)
+    assert attestation.attestation_reasons(route, now=NOW) == ("zdr_attestation_unknown",)
+    old = NOW - timedelta(hours=73)
+    pool.conn.rows.append(
+        {
+            **pool.conn.rows[0],
+            "checked_at": old,
+            "observed": {"zdr_listed": True, "safety_retention": False},
+        }
+    )
+    await attestation.refresh(pool)
+    assert attestation.snapshot().attested_at[key] == old
+    assert attestation.attestation_reasons(route, now=NOW) == ("zdr_attestation_stale",)
+    # Old negative history remains authoritative even without the new field.
+    pool.conn.rows.append({**pool.conn.rows[0], "outcome": "revoked", "observed": {}})
+    await attestation.refresh(pool)
+    assert attestation.attestation_reasons(route, now=NOW) == ("zdr_attestation_revoked",)
 
 
 @pytest.mark.asyncio
@@ -491,12 +767,19 @@ async def _attested_pool(route: RoutePolicy) -> _Pool:
 
 
 @pytest.mark.asyncio
-async def test_revocation_is_enforced_even_when_it_cannot_be_recorded() -> None:
+@pytest.mark.parametrize(
+    "client",
+    [
+        _Client(LISTED, _providers(training=True)),
+        _Client(_with_safety_retention(True), _providers()),
+    ],
+)
+async def test_revocation_is_enforced_even_when_it_cannot_be_recorded(client: _Client) -> None:
     route = _route()
     pool = await _attested_pool(route)
     pool.conn.fail_execute = True
     with pytest.raises(ConnectionError):
-        await attestation.run_check(pool, _Client(LISTED, _providers(training=True)), [route])
+        await attestation.run_check(pool, client, [route])
     policy = parse_inference_policy(_monitored_policy())
     now = attestation.utcnow()
     assert route.rejection_reasons(policy.requirements, now=now) == ("zdr_attestation_revoked",)
@@ -546,7 +829,13 @@ async def test_clean_check_cannot_renew_a_baseline_revoked_by_another_process(
     old = attestation.utcnow() - timedelta(hours=60)
     pool = _Pool()
     pool.conn.rows.append(
-        {"route_id": key[0], "baseline_sha256": key[1], "outcome": "attested", "checked_at": old}
+        {
+            "route_id": key[0],
+            "baseline_sha256": key[1],
+            "outcome": "attested",
+            "checked_at": old,
+            "observed": {"zdr_listed": True, "safety_retention": False},
+        }
     )
     # Process A's durable revocation; B has not read it yet.
     pool.conn.rows.append(
@@ -707,6 +996,15 @@ def test_a_missing_pinned_policy_field_is_a_failed_check_not_a_value() -> None:
     )
 
 
+def test_a_missing_pinned_policy_field_cannot_mask_an_explicit_adverse_value() -> None:
+    providers = {"data": [{"slug": "azure", "dataPolicy": {"training": True}}]}
+    [check] = attestation.evaluate([_route()], LISTED, providers)
+    assert (check.outcome, check.reasons) == (
+        "revoked",
+        ("provider_policy_changed:training", "provider_policy_field_missing:retainsPrompts"),
+    )
+
+
 @pytest.mark.asyncio
 async def test_restart_with_an_unreadable_pool_fails_closed() -> None:
     route = _route()
@@ -728,7 +1026,7 @@ async def test_restart_with_an_unreadable_pool_fails_closed() -> None:
         await attestation.stop()
 
 
-def test_duplicate_provider_policy_records_are_malformed_metadata() -> None:
+def test_duplicate_provider_policy_records_are_ambiguous() -> None:
     providers = {
         "data": [
             {"slug": "azure", "dataPolicy": {"training": True, "retainsPrompts": False}},
@@ -736,7 +1034,20 @@ def test_duplicate_provider_policy_records_are_malformed_metadata() -> None:
         ]
     }
     [check] = attestation.evaluate([_route()], LISTED, providers)
-    assert (check.outcome, check.reasons) == ("check_failed", ("metadata_malformed",))
+    assert (check.outcome, check.reasons) == ("check_failed", ("provider_policy_ambiguous",))
+
+
+def test_duplicate_unrelated_provider_does_not_mask_adverse_evidence() -> None:
+    providers = _providers(training=True)
+    providers["data"].append({"slug": "other", "dataPolicy": {}})
+    [check] = attestation.evaluate([_route()], LISTED, providers)
+    assert (check.outcome, check.reasons) == (
+        "revoked",
+        ("provider_policy_changed:training", "provider_policy_ambiguous"),
+    )
+    providers["data"][0]["dataPolicy"]["training"] = False
+    [check] = attestation.evaluate([_route()], LISTED, providers)
+    assert (check.outcome, check.reasons) == ("check_failed", ("provider_policy_ambiguous",))
 
 
 def test_monitored_route_id_must_fit_the_attestation_table() -> None:
@@ -758,7 +1069,7 @@ def test_a_malformed_earlier_duplicate_record_is_still_a_duplicate() -> None:
         ]
     }
     [check] = attestation.evaluate([_route()], LISTED, providers)
-    assert (check.outcome, check.reasons) == ("check_failed", ("metadata_malformed",))
+    assert (check.outcome, check.reasons) == ("check_failed", ("provider_policy_ambiguous",))
 
 
 def test_an_unreadable_provider_policy_is_never_a_match() -> None:
@@ -812,6 +1123,20 @@ async def test_untrustworthy_metadata_is_a_failed_check(response: _Response) -> 
     client = _Client(LISTED, _providers(), responses={attestation.PROVIDERS_URL: response})
     counts = await attestation.run_check(pool, client, [route])
     assert counts["check_failed"] == 1 and counts["attested"] == 0
+    assert pool.conn.inserted[0][2:4] == ("check_failed", ["metadata_unavailable"])
+
+
+@pytest.mark.asyncio
+async def test_duplicate_safety_retention_json_members_are_unavailable_not_last_wins() -> None:
+    response = _Response(
+        None,
+        raw=b'{"data": [{"model_id": "openai/gpt-6-luna", "tag": "azure", '
+        b'"safety_retention": true, "safety_retention": false}]}',
+    )
+    pool, route = _Pool(), _route()
+    client = _Client(LISTED, _providers(), responses={attestation.ZDR_LISTING_URL: response})
+    counts = await attestation.run_check(pool, client, [route])
+    assert counts["check_failed"] == 1 and counts["revoked"] == counts["attested"] == 0
     assert pool.conn.inserted[0][2:4] == ("check_failed", ["metadata_unavailable"])
 
 
