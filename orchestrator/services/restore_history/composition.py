@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import hmac
+import json
 import time
 from typing import Any
 from uuid import UUID, uuid4
@@ -22,7 +23,11 @@ from orchestrator.services.connection_cleanup import (
     retain_pool_cleanup,
 )
 from orchestrator.tasks._invocation import block
-from orchestrator.tasks.inputs import _INBOX_RESEARCH_PURPOSE, _is_inbox_pilot_request
+from orchestrator.tasks.inputs import (
+    _INBOX_OWNED_INDEX_PURPOSE,
+    _INBOX_RESEARCH_PURPOSE,
+    _is_inbox_pilot_request,
+)
 from orchestrator.tasks.store import AcceptedTask, IdempotencyConflict, TaskStore
 
 from .acceptance import AcceptanceProjection
@@ -31,7 +36,11 @@ from .effects_projection import HistoryProjection
 from .model import MAX_CANONICAL, AcceptPrepare, Command, HistoryError, commitments, parse
 from .projection import compare_projections
 from .store import _check_time
-from .terminal_projection import TERMINAL_PROFILES
+from .terminal_projection import (
+    TERMINAL_PROFILES,
+    InboxOwnedIndexHistoryProjection,
+    research_purpose,
+)
 
 
 class HistoryAcceptance:
@@ -101,16 +110,14 @@ class HistoryAcceptance:
             "content_parts",
         }
         if purpose is not None:
+            required_purpose = research_purpose(self._projection)
             if (
                 type(purpose) is not str
+                or (required_purpose is not None and purpose != required_purpose)
                 or (
-                    self._projection.profile in ("inbox-research-v1", "inbox-sources-v1")
-                    and purpose != _INBOX_RESEARCH_PURPOSE
-                )
-                or (
-                    self._projection.profile not in ("inbox-research-v1", "inbox-sources-v1")
+                    required_purpose is None
                     and (
-                        purpose == _INBOX_RESEARCH_PURPOSE
+                        purpose in (_INBOX_RESEARCH_PURPOSE, _INBOX_OWNED_INDEX_PURPOSE)
                         or self._projection.profile not in ("terminal-v3", "inbox-retired-v1")
                     )
                 )
@@ -118,7 +125,7 @@ class HistoryAcceptance:
             ):
                 raise HistoryError("acceptance_request_refused")
             required.add("purpose")
-        elif self._projection.profile in ("inbox-research-v1", "inbox-sources-v1"):
+        elif research_purpose(self._projection) is not None:
             raise HistoryError("acceptance_request_refused")
         if (
             not required
@@ -239,6 +246,8 @@ class HistoryAcceptance:
                 if not hmac.compare_digest(data.request_commitment, request):
                     raise IdempotencyConflict("history key reused for a different request")
                 raise HistoryError("historical_acceptance", uncertain=True)
+        if type(self._projection) is InboxOwnedIndexHistoryProjection and state.entries:
+            raise HistoryError("owned_index_original_exists")
         facts = []
         native_exists: Any = None
         async with pool_connection(self._tasks._pool) as conn:
@@ -246,6 +255,23 @@ class HistoryAcceptance:
                 raise HistoryError("acceptance_transaction_owner_refused")
             async with conn.transaction(isolation="read_committed"):
                 await self._projection.qualify(conn, writing=True, deadline=deadline)
+                # The owned index deliberately shares the existing source wire
+                # format. A historical owned original is never a predecessor
+                # for the older source acceptance composition.
+                if self._projection.profile == "inbox-sources-v1" and state.entries:
+                    for entry in state.entries:
+                        data = entry.command.data
+                        if isinstance(data, AcceptPrepare):
+                            stored = await conn.fetchval(
+                                "SELECT input_ciphertext FROM public.tasks WHERE id=$1 AND user_id=$2",
+                                data.task_id,
+                                data.account_id,
+                            )
+                            if stored is None:
+                                raise HistoryError("acceptance_reconciliation_required")
+                            existing = json.loads(self._tasks._open(stored).get("_request", "{}"))
+                            if existing.get("purpose") == _INBOX_OWNED_INDEX_PURPOSE:
+                                raise HistoryError("owned_index_original_exists")
                 cursor = 0
                 while True:
                     page = await self._projection.page(conn, after_seq=cursor, deadline=deadline)

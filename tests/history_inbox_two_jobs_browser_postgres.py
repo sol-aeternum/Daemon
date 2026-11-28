@@ -335,6 +335,29 @@ async def exercise_two_originals(
                     text="Synthetic report X. First fixture.",
                     sources=source_urls[0] if source_urls else None,
                 )
+                if questions and len(questions) == 1:
+                    from tests.test_owned_index_postgres import check_accounting
+
+                    await check_accounting(s, x)
+                    before_reads = await effect_snapshot(s)
+                    await send(json.dumps(first_report))
+                    assert await receive("finished") == {
+                        "stage": "finished",
+                        "starts": 1,
+                        "x": str(x["id"]),
+                    }
+                    await asyncio.wait_for(child.wait(), 20)
+                    assert child.returncode == 0 and not s.errors
+                    assert await effect_snapshot(s) == before_reads
+                    assert await originals(s) == [x] and len(s.calls) == 3
+                    async with s.db.connection() as conn:
+                        assert (
+                            await conn.fetchval(
+                                "SELECT count(*) FROM devices WHERE user_id=$1", s.account
+                            )
+                            == 2
+                        )
+                    return
                 s.release.clear()
                 s.entered.clear()
                 s.closed.clear()
@@ -417,3 +440,15 @@ async def exercise_two_originals(
             if redis is not None:
                 await redis.aclose()
             owner.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("text_host", ["owned-index-self-hosted-ui"], indirect=True)
+async def test_owned_index_original_reopens_on_independently_enrolled_browser(
+    text_host, monkeypatch
+):
+    from tests.test_owned_index_postgres import QUESTION, URLS
+
+    await exercise_two_originals(
+        text_host, monkeypatch, questions=[QUESTION], source_urls=[URLS], retrieved=True
+    )

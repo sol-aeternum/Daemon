@@ -47,3 +47,32 @@ def synthesize(question, values):
         summary = "The notices report: " + " ".join(facts)
     numbers = ", ".join(str(i) for i in range(1, len(facts) + 1))
     return summary + f" [{numbers}]\n\nSources:\n\n" + "\n\n".join(references)
+
+
+def synthesize_owned(values):
+    """Scripted answer assembled from the original retrieved passages only."""
+    fees, services = values
+    fee_row = next(
+        line for line in fees["content"].splitlines() if "Adult (16 and over) standard" in line
+    )
+    _, label, online, paper, _ = (part.strip() for part in fee_row.split("|"))
+    difference = float(paper.removeprefix("£")) - float(online.removeprefix("£"))
+    timing = re.findall(r"You’ll usually get your passport within [^.]+\.", services["content"])[0]
+    timing_limit = re.findall(r"It may take longer than [^.]+\.", services["content"])[0]
+    clock = re.findall(r"The processing time starts from [^.]+\.", services["content"])[0]
+    extra = re.findall(r"This costs an extra £\d+\.\d+\.", services["content"])[0]
+    summary = (
+        f"For an {label}, the fee is {online} online and {paper} on paper, "
+        f"a difference of £{difference:.2f}. [1]\n\n"
+        f"{timing} {timing_limit} {clock} [2]\n\n"
+        f"The service page states: {extra} The fee table and service page disagree; "
+        "the reason is unresolved. [1, 2]"
+    )
+    references = []
+    for value, passage in zip(values, (fee_row, extra), strict=True):
+        start = value["start_char"] + value["content"].index(passage)
+        end = start + len(passage)
+        references.append(
+            f"`{passage}` [Source {value['snapshot_id']} {start}:{end}](<{value['url']}>)"
+        )
+    return summary + "\n\nSources:\n\n" + "\n\n".join(references)

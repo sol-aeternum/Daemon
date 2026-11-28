@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+import inspect
 import re
 import time
 from collections.abc import Awaitable, Callable
@@ -19,7 +20,7 @@ from orchestrator.services.fetch.models import EXTRACTION_VERSION_V1
 from orchestrator.services.fetch.service import FetchService
 from orchestrator.services.web_snapshots import WebSnapshot, WebSnapshotStore
 from orchestrator.tools.web_fetch import WebFetchTool
-from orchestrator.tools.web_search import validate_research_search_result
+from orchestrator.tools.web_search import WebSearchTool, validate_research_search_result
 
 from .model import (
     AcceptPrepare,
@@ -33,18 +34,25 @@ from .model import (
     _pairs,
     canonical,
 )
-from .terminal_projection import InboxSourcesHistoryProjection
+from .terminal_projection import InboxOwnedIndexHistoryProjection, InboxSourcesHistoryProjection
 
 if TYPE_CHECKING:
-    from orchestrator.compute_runtime import ComputeScope
+    from orchestrator.compute_runtime import ComputeScope, ToolServiceApproval
+    from orchestrator.entitlements.policy import RoutePolicy
     from orchestrator.config import Settings
-    from orchestrator.tasks.store import Claim
-    from .effects import HistoryEffects
+    from orchestrator.tasks._history_binding import ComputeHistoryBinding
+    from orchestrator.tasks.runner import AttemptState
+    from .text_execution import HistorySourcesExecution
 
 
-def source_key_material(key: bytes, history: UUID) -> bytes:
+def source_key_material(key: bytes, history: UUID, *, owned_index: bool = False) -> bytes:
     """Only a fixture-specific derivative reaches the original source owner."""
-    return hmac.digest(key, b"daemon.inbox.sources.key.v1\n" + history.bytes, "sha256")
+    domain = (
+        b"daemon.inbox.owned-uk-passport-20261128.key.v1\n"
+        if owned_index
+        else b"daemon.inbox.sources.key.v1\n"
+    )
+    return hmac.digest(key, domain + history.bytes, "sha256")
 
 
 def source_mac(
@@ -201,13 +209,14 @@ def validate_trace(calls: Any, results: Any) -> list[dict[str, Any]]:
 class SourceRun:
     def __init__(
         self,
-        claim: Claim,
-        effects: HistoryEffects,
-        key: bytes,
-        transport: httpx.MockTransport,
-        settings: Settings,
+        owner: HistorySourcesExecution,
+        original: AttemptState,
     ):
-        self.claim, self.effects, self.key, self.transport = claim, effects, key, transport
+        assert owner.effects is not None
+        self._owner, self._original = owner, original
+        self._inputs = owner._source_inputs
+        self.claim, self.effects = original.claim, owner.effects
+        self.key, self.transport = owner.source_key, owner.source_transport
         self.search: str | None = None
         self.selected: list[str] = []
         self.call_ids: list[str] = []
@@ -220,7 +229,133 @@ class SourceRun:
         self.deadline = 0.0
         self.synthesis_checked = False
         self.report: str | None = None
-        self.tool = SourceReadTool(self, settings)
+        self.tool = SourceReadTool(self, owner.settings)
+        self._original_tool = self.tool
+        self._snapshot_store = self.tool._store
+        self._fetch_service = self.tool._fetch_service
+
+    @property
+    def owned_index(self) -> bool:
+        return type(self.effects._projection) is InboxOwnedIndexHistoryProjection
+
+    def matches_binding(self, binding: ComputeHistoryBinding) -> bool:
+        """Only the retained original's exact collaborators constitute a binding."""
+        from .owned_index import INDEX_ROUTE, OwnedIndexSearchTool
+        from .text_execution import HistorySourcesExecution
+        from orchestrator.compute_runtime import ToolServiceApproval
+
+        owner, original, inputs = self._owner, self._original, self._inputs
+        identity, tool = binding.identity, binding.research_tool
+        if (
+            type(owner) is not HistorySourcesExecution
+            or owner._source_inputs is not inputs
+            or not any(state is original for state in owner._original_attempts.values())
+            or original.history_binding is not binding
+            or binding.source_run is not self
+            or original.claim is not self.claim
+            or binding.effects is not self.effects
+            or owner.effects is not self.effects
+            or owner.projection is not self.effects._projection
+            or owner.worker is not binding.composition
+            or binding.research_model_transport is not inputs.model_transport
+            or not inspect.iscoroutinefunction(inputs.model_transport)
+            or tool is not inputs.search_tool
+            or self.key is not inputs.source_key
+            or self.transport is not inputs.source_transport
+            or type(self.transport) is not httpx.MockTransport
+            or self.transport.handler is not inputs.source_handler
+            or self.tool is not self._original_tool
+            or self.tool.run is not self
+            or self.tool._store is not self._snapshot_store
+            or self.tool._fetch_service is not self._fetch_service
+            or self.tool._user_id != self.claim.user_id
+            or self.tool._conversation_id != self.claim.conversation_id
+            or identity.account_id != self.claim.user_id
+            or identity.generation != self.claim.origin.generation
+            or identity.task_id != self.claim.task_id
+            or identity.epoch != self.claim.epoch
+        ):
+            return False
+        if self.owned_index:
+            return (
+                type(tool) is OwnedIndexSearchTool
+                and tool._projection is self.effects._projection
+                and tool._approval is inputs.search_approval
+                and tool._approval
+                == ToolServiceApproval(INDEX_ROUTE, "web_search", "owned", "call", 0, 0)
+            )
+        return (
+            type(self.effects._projection) is InboxSourcesHistoryProjection
+            and type(tool) is WebSearchTool
+            and type(tool._transport) is httpx.MockTransport
+            and tool._transport is inputs.search_transport
+            and tool._pacer is inputs.search_pacer
+            and tool._pacer is not None
+            and tool.provider == "brave"
+            and inputs.search_approval is None
+        )
+
+    def owned_capability(self) -> SourceRun | None:
+        """Expose the owned-only policy through the validated original scope."""
+        if not self.owned_index:
+            return None
+        self.scope()
+        return self
+
+    def owns_search_approval(self, tool: Any, approval: ToolServiceApproval) -> bool:
+        return (
+            self.owned_index
+            and tool is self._inputs.search_tool
+            and approval is self._inputs.search_approval
+        )
+
+    def pin_completion(self, route_id: str | None, params: dict[str, Any]) -> str:
+        from .owned_index import MAX_OUTPUT, MODEL, MODEL_ROUTE
+        from orchestrator.compute_runtime import ComputeUnavailable
+
+        if route_id not in (None, MODEL_ROUTE) or not params.get("stream"):
+            raise ComputeUnavailable("route_unavailable", "Approved inference route unavailable")
+        params["model"] = MODEL
+        params["max_tokens"] = MAX_OUTPUT
+        return MODEL_ROUTE
+
+    def remaining_cost_bound(self, scope: ComputeScope) -> int:
+        from .owned_index import MAX_HOLD
+        from orchestrator.compute_runtime import ComputeUnavailable
+
+        if (
+            not self.owned_index
+            or self.scope() is not scope
+            or scope.completion_seq not in (0, 1, 2)
+        ):
+            raise ComputeUnavailable("account_unavailable", "Owned-index account unavailable")
+        return MAX_HOLD * (3 - scope.completion_seq)
+
+    def require_input_bound(self, bound: int) -> None:
+        from .owned_index import MAX_INPUT_BOUND
+        from orchestrator.compute_runtime import ComputeUnavailable
+
+        if bound > MAX_INPUT_BOUND:
+            raise ComputeUnavailable("context_limit", "Request exceeds the context limit")
+
+    def require_route(self, bound: int, output: int, route: RoutePolicy) -> None:
+        from .owned_index import MAX_HOLD, MAX_OUTPUT
+        from orchestrator.compute_runtime import ComputeUnavailable
+
+        if (
+            bound > MAX_HOLD
+            or output != MAX_OUTPUT
+            or route.price_ceiling is None
+            or route.price_ceiling.microusd_per_1m_prompt != 300_000
+            or route.price_ceiling.microusd_per_1m_completion != 1_200_000
+            or route.endpoint != "https://openrouter.ai/api/v1"
+            or route.route_class != "routine"
+            or route.transport.provider_only != ("coreweave/fp8",)
+            or route.transport.provider_order != ("coreweave/fp8",)
+            or route.transport.allow_fallbacks is not False
+            or route.transport.multi_provider
+        ):
+            raise ComputeUnavailable("route_unavailable", "Approved inference route unavailable")
 
     def scope(self) -> ComputeScope:
         from orchestrator.compute_runtime import current_scope
@@ -249,6 +384,10 @@ class SourceRun:
         validate_research_search_result(
             json.loads(call["function"]["arguments"]), json.loads(result)
         )
+        if self.owned_index:
+            from .owned_index import validate_lookup
+
+            validate_lookup(json.loads(call["function"]["arguments"]), json.loads(result))
         self.search = result
         self.search_id = call["id"]
         self.search_call = json.loads(canonical(call))
@@ -285,6 +424,11 @@ class SourceRun:
                 raise HistoryError("source_selection_refused")
             urls.append(url)
             ids.append(ident)
+        if self.owned_index:
+            from .owned_index import URLS
+
+            if tuple(urls) != URLS:
+                raise HistoryError("source_selection_refused")
         self.selected, self.call_ids = urls, ids
         self.selection_calls = json.loads(canonical(calls))
 
@@ -369,7 +513,7 @@ class SourceRun:
         holds = scope.retirement_holds
         assert holds is not None
         rows = await conn.fetch(
-            "SELECT id,user_id,scope_id,provider,route_id,model,status,reserved_microusd,actual_microusd,overage_microusd,period_key "
+            "SELECT id,user_id,scope_id,provider,route_id,model,status,reserved_microusd,actual_microusd,overage_microusd,period_key,usage "
             "FROM public.entitlement_reservations WHERE scope_id=$1",
             binding.identity.financial_scope_id,
         )
@@ -385,6 +529,10 @@ class SourceRun:
                 raise HistoryError("source_terminal_refused")
             settlement = hold.settlement.result()
             row = by_id[sent.reservation_id]
+            if self.owned_index:
+                from .owned_index import validate_reservation
+
+                validate_reservation(row, sent.effect_kind)
             if (
                 not settlement.applied
                 or settlement.status is not ReservationStatus.SETTLED
@@ -403,9 +551,14 @@ class SourceRun:
                 or (
                     sent.effect_kind == "web_search"
                     and (
-                        (row["provider"], row["route_id"], row["model"])
-                        != ("brave", "brave-web-search", None)
-                        or settlement.actual_microusd != BRAVE_FIXED_MICROUSD
+                        (
+                            not self.owned_index
+                            and (
+                                (row["provider"], row["route_id"], row["model"])
+                                != ("brave", "brave-web-search", None)
+                                or settlement.actual_microusd != BRAVE_FIXED_MICROUSD
+                            )
+                        )
                         or hold.stream is not None
                     )
                 )
@@ -569,7 +722,14 @@ class SourceRun:
         ):
             raise HistoryError("source_transport_stopped")
         self.transport_entered = True
-        return await self.transport.handle_async_request(request)
+        response = await self.transport.handle_async_request(request)
+        if self.owned_index:
+            from .owned_index import validate_capture
+
+            if response.status_code != 200:
+                raise HistoryError("owned_index_capture_refused")
+            validate_capture(str(request.url), response.content)
+        return response
 
     async def publish(
         self,
@@ -587,6 +747,10 @@ class SourceRun:
         passage = content[:1000]
         if not passage or kwargs["source_url"] != url or kwargs["final_url"] != url:
             raise HistoryError("source_pin_refused")
+        if self.owned_index:
+            from .owned_index import validate_passage
+
+            validate_passage(possible.ordinal, url, passage)
         now = datetime.now(timezone.utc)
         effects = self.effects
         projection = effects._projection

@@ -1,6 +1,7 @@
 """Actual authenticated host -> original runner/stream/compute; synthetic transport."""
 
 import asyncio
+import gzip
 import traceback
 import sys
 import json
@@ -37,6 +38,7 @@ from orchestrator.services.restore_history.model import (
 )
 from orchestrator.services.restore_history.observation import HistoryObservation
 from orchestrator.services.restore_history.terminal_projection import (
+    InboxOwnedIndexHistoryProjection,
     InboxRetiredHistoryProjection,
     InboxResearchHistoryProjection,
     InboxSourcesHistoryProjection,
@@ -72,7 +74,8 @@ async def text_host(projection_db, tmp_path, monkeypatch, request):
     database = projection_db
     variant = getattr(request, "param", None)
     restart = variant == "managed-restart"
-    sources = variant in ("sources", "sources-self-hosted-ui")
+    owned_index = variant in ("owned-index", "owned-index-self-hosted-ui")
+    sources = owned_index or variant in ("sources", "sources-self-hosted-ui")
     research = sources or variant in ("research", "research-self-hosted-ui")
     if restart:
         # Only the create-new launcher fixture supplies this directory.
@@ -102,6 +105,7 @@ async def text_host(projection_db, tmp_path, monkeypatch, request):
             "self-hosted-ui",
             "research-self-hosted-ui",
             "sources-self-hosted-ui",
+            "owned-index-self-hosted-ui",
         ):
             from orchestrator.routes.auth_setup import SINGLETON_USER_ID
 
@@ -132,8 +136,34 @@ async def text_host(projection_db, tmp_path, monkeypatch, request):
         openrouter_api_key="synthetic-no-network",
     )
     route = _route(input_price=1000)
-    _qualified_policy(monkeypatch, route=route)
-    if research:
+    if owned_index:
+        from dataclasses import replace
+        from orchestrator.entitlements import attestation
+        from orchestrator.services.restore_history.owned_index import MODEL, MODEL_ROUTE
+        from tests.test_compute_runtime import install_routing, routing_document
+        from tests.test_production_inference_policy import (
+            _attested_snapshot,
+            _pin_review_clock,
+            _production,
+        )
+
+        _pin_review_clock(monkeypatch)
+        production = _production()
+        candidate = production.routes[MODEL_ROUTE]
+        key = (MODEL_ROUTE, attestation.baseline_fingerprint(candidate))
+        snapshot = _attested_snapshot()
+        monkeypatch.setattr(
+            attestation,
+            "_snapshot",
+            replace(snapshot, attested_at={key: snapshot.attested_at[key]}),
+        )
+        policy = replace(production, routes={MODEL_ROUTE: candidate}, tool_services={})
+        assert policy.routes[MODEL_ROUTE].is_approved(policy.requirements)
+        monkeypatch.setattr(runtime, "load_inference_policy", lambda: policy)
+        install_routing(monkeypatch, routing_document([MODEL]))
+    else:
+        _qualified_policy(monkeypatch, route=route)
+    if research and not owned_index:
         from orchestrator.entitlements.policy import parse_inference_policy
         from tests.test_metered_web_search import _approved_document
 
@@ -183,6 +213,12 @@ async def text_host(projection_db, tmp_path, monkeypatch, request):
         search_closed=asyncio.Event(),
     )
     state.search_release.set()
+    if owned_index:
+        capture_dir = Path(__file__).parent / "fixtures" / "uk_passport"
+        state.owned_captures = (
+            gzip.decompress((capture_dir / "fees.html.gz").read_bytes()),
+            gzip.decompress((capture_dir / "service.html.gz").read_bytes()),
+        )
     from orchestrator import daemon
 
     monkeypatch.setattr(
@@ -350,6 +386,12 @@ async def text_host(projection_db, tmp_path, monkeypatch, request):
         identity = await assert_research_mark("completion")
         state.calls.append(identity)
         assert kwargs["num_retries"] == 0
+        if owned_index:
+            from orchestrator.services.restore_history.owned_index import MODEL
+
+            assert kwargs["model"] == MODEL and kwargs["max_tokens"] == 4000
+            assert kwargs["extra_body"]["provider"]["only"] == ["coreweave/fp8"]
+            assert kwargs["extra_body"]["provider"]["allow_fallbacks"] is False
         messages = kwargs["messages"]
         tools = kwargs.get("tools")
         state.model_requests.append(
@@ -428,7 +470,12 @@ async def text_host(projection_db, tmp_path, monkeypatch, request):
                         if m["role"] == "tool" and m["name"] == "web_fetch"
                     ]
                     question = next(m["content"] for m in messages if m["role"] == "user")
-                    report = synthesize(question, values)
+                    if owned_index:
+                        from tests.source_model_fixture import synthesize_owned
+
+                        report = synthesize_owned(values)
+                    else:
+                        report = synthesize(question, values)
                     report = getattr(state, "source_report_override", report)
                     state.reports.append(report)
                     yield {"choices": [{"delta": {"content": report}}]}
@@ -477,9 +524,49 @@ async def text_host(projection_db, tmp_path, monkeypatch, request):
             return body
         return Response(200, text=body, headers={"Content-Type": "text/html; charset=utf-8"})
 
-    monkeypatch.setattr(runtime.litellm, "acompletion", research_provider if research else provider)
+    async def no_sdk(**kwargs):
+        raise AssertionError("owned index cannot dispatch through the SDK")
+
+    monkeypatch.setattr(
+        runtime.litellm,
+        "acompletion",
+        no_sdk if owned_index else research_provider if research else provider,
+    )
+    if owned_index:
+        from orchestrator.services.restore_history.owned_index import (
+            OwnedIndexCorpus,
+            OwnedIndexSearchTool,
+        )
+
+        original_lookup = OwnedIndexSearchTool._lookup
+        original_respond = OwnedIndexCorpus.respond
+
+        async def observed_lookup(tool, arguments):
+            identity = await assert_research_mark("web_search")
+            value = await original_lookup(tool, arguments)
+            state.search_calls.append(
+                SimpleNamespace(query=value["query"], results=value["results"], identity=identity)
+            )
+            state.search_entered.set()
+            try:
+                await state.search_release.wait()
+                if getattr(state, "search_failure", False):
+                    raise ConnectionError("synthetic lookup failure")
+                return value
+            finally:
+                state.search_closed.set()
+
+        async def observed_respond(corpus, request):
+            state.source_calls.append(str(request.url))
+            hook = getattr(state, "source_check", None)
+            if hook is not None:
+                await hook(request)
+            return await original_respond(corpus, request)
+
+        monkeypatch.setattr(OwnedIndexSearchTool, "_lookup", observed_lookup)
+        monkeypatch.setattr(OwnedIndexCorpus, "respond", observed_respond)
     default_pacer = None
-    if research:
+    if research and not owned_index:
         from orchestrator.services.search_pacing import SearchPacer
 
         redis_owner = request.getfixturevalue("owned_search_redis")
@@ -507,6 +594,8 @@ async def text_host(projection_db, tmp_path, monkeypatch, request):
                 projection_type = InboxResearchHistoryProjection
             if sources:
                 projection_type = InboxSourcesHistoryProjection
+            if owned_index:
+                projection_type = InboxOwnedIndexHistoryProjection
             projection = projection_type(
                 identity, acceptor="md_acceptor", worker="md_app", publisher="reserved_p"
             )
@@ -522,12 +611,23 @@ async def text_host(projection_db, tmp_path, monkeypatch, request):
                 TaskStore(w, enc, MemoryStore(w, enc)), reader_history, projection, KEY
             )
             execution = (
-                HistorySourcesExecution(
+                HistorySourcesExecution.for_owned_index(
                     w,
                     enc,
                     settings,
                     worker_history,
-                    projection,
+                    cast(InboxOwnedIndexHistoryProjection, projection),
+                    model_transport=research_provider,
+                    captures=state.owned_captures,
+                    source_key=KEY,
+                )
+                if owned_index
+                else HistorySourcesExecution(
+                    w,
+                    enc,
+                    settings,
+                    worker_history,
+                    cast(InboxSourcesHistoryProjection, projection),
                     model_transport=research_provider,
                     search_transport=MockTransport(research_search),
                     search_pacer=state.research_pacer,

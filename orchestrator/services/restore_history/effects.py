@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
 import time
 from collections.abc import Callable, Coroutine
 from contextlib import asynccontextmanager
@@ -287,6 +288,15 @@ class HistoryEffects:
                 raise HistoryError("effects_acceptance_refused")
             accepted = matches[0]
             self._no_stop(state, task)
+            if self._projection.profile == "inbox-sources-v1":
+                native = await self._tasks._pool.fetchrow(
+                    "SELECT input_ciphertext FROM public.tasks WHERE id=$1 AND user_id=$2",
+                    task,
+                    accepted.account_id,
+                )
+                if native is None:
+                    raise HistoryError("effects_origin_refused")
+                self._check_owned_index_mode(native)
             if any(
                 type(e.command.data) is SendPossible and e.command.data.task_id == task
                 for e in state.entries
@@ -319,6 +329,8 @@ class HistoryEffects:
             row = await self._tasks._pool.fetchrow("SELECT * FROM tasks WHERE id=$1", task)
             if row is None:
                 raise HistoryError("effects_origin_refused")
+            if self._projection.profile == "inbox-sources-v1":
+                self._check_owned_index_mode(row)
             origin = self._tasks._origin(row)
             accepted = self._accepted(state, origin.account_id, task)
             if (
@@ -339,6 +351,17 @@ class HistoryEffects:
             _check_time(deadline)
         _check_time(deadline)
         return result
+
+    def _check_owned_index_mode(self, row: Any) -> None:
+        from orchestrator.tasks.inputs import _INBOX_OWNED_INDEX_PURPOSE
+        from .terminal_projection import research_purpose
+
+        mode = research_purpose(self._projection)
+        request = json.loads(self._tasks._open(row["input_ciphertext"]).get("_request", "{}"))
+        if (request.get("purpose") == _INBOX_OWNED_INDEX_PURPOSE) != (
+            mode == _INBOX_OWNED_INDEX_PURPOSE
+        ):
+            raise HistoryError("effects_origin_refused")
 
     async def register_attempt(
         self,
@@ -786,13 +809,35 @@ class HistoryEffects:
                     raise HistoryError("effects_stage_refused", uncertain=True)
                 if self._projection.profile in ("inbox-research-v1", "inbox-sources-v1"):
                     receipt = await conn.fetchrow(
-                        "SELECT provider,route_id,model FROM public.entitlement_reservations "
+                        "SELECT provider,route_id,model,reserved_microusd FROM public.entitlement_reservations "
                         "WHERE id=$1 AND user_id=$2 AND scope_id=$3 AND status='open'",
                         reservation,
                         identity.account_id,
                         identity.financial_scope_id,
                     )
-                    if (
+                    from .terminal_projection import InboxOwnedIndexHistoryProjection
+
+                    if type(self._projection) is InboxOwnedIndexHistoryProjection:
+                        from .owned_index import INDEX_ROUTE, MODEL, MODEL_ROUTE, MAX_HOLD
+
+                        expected = (
+                            ("owned", INDEX_ROUTE, None)
+                            if effect_kind == "web_search"
+                            else ("openrouter", MODEL_ROUTE, MODEL)
+                        )
+                        if (
+                            receipt is None
+                            or effect_kind not in ("web_search", "completion")
+                            or (receipt["provider"], receipt["route_id"], receipt["model"])
+                            != expected
+                            or (
+                                receipt["reserved_microusd"] != 0
+                                if effect_kind == "web_search"
+                                else not 0 < receipt["reserved_microusd"] <= MAX_HOLD
+                            )
+                        ):
+                            raise HistoryError("research_send_reservation_refused")
+                    elif (
                         receipt is None
                         or (
                             effect_kind == "web_search"
@@ -882,6 +927,8 @@ class HistoryEffects:
         self._no_stop(state, task, positive=False)
 
         async def stage(conn: Any, row: Any, outcome: CancelOutcome) -> None:
+            if self._projection.profile == "inbox-sources-v1":
+                self._check_owned_index_mode(row)
             if type(self._projection) is TerminalV4HistoryProjection:
                 # An already terminal native task returns before this callback.
                 # A restored/stale native row is not permission to append Stop.

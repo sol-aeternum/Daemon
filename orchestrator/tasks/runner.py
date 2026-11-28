@@ -930,15 +930,25 @@ async def _execute(ctx: dict[str, Any], store: TaskStore, state: AttemptState) -
                 HistoryResearchExecution,
                 HistorySourcesExecution,
             )
-            from orchestrator.tasks.inputs import _INBOX_RESEARCH_PURPOSE, _is_inbox_pilot_request
+            from orchestrator.tasks.inputs import (
+                _INBOX_OWNED_INDEX_PURPOSE,
+                _is_inbox_pilot_request,
+            )
 
             execution_owner = ctx["history_text_execution"]
             research = type(execution_owner) in (HistoryResearchExecution, HistorySourcesExecution)
             assert execution_owner.effects is not None
+            canonical = json.loads(task_input.get("_request", "{}"))
+            purpose = execution_owner.research_purpose()
+            if (
+                canonical.get("purpose") == _INBOX_OWNED_INDEX_PURPOSE
+                and purpose != _INBOX_OWNED_INDEX_PURPOSE
+            ):
+                raise ObservationBlocked("history_research_input_required")
             if research:
-                canonical = json.loads(task_input["_request"])
+                assert purpose is not None
                 if (
-                    not _is_inbox_pilot_request(canonical, _INBOX_RESEARCH_PURPOSE)
+                    not _is_inbox_pilot_request(canonical, purpose)
                     or task_input.get("message") != canonical["message"]
                     or task_input.get("provider") is not None
                     or task_input.get("disable_memory_write") is not True

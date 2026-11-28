@@ -17,7 +17,7 @@ if TYPE_CHECKING:
     from orchestrator.tasks._invocation import InferenceInvocation
     from orchestrator.tasks.composition import WorkerComposition
     from orchestrator.tasks.inference import InferenceRecovery
-    from orchestrator.tools.web_search import WebSearchTool
+    from orchestrator.tools.registry import Tool
     from orchestrator.services.restore_history.source_execution import SourceRun
 
 
@@ -42,7 +42,7 @@ def text_only_execution() -> bool:
     return current is not None or captured is not None
 
 
-def research_tool() -> WebSearchTool | None:
+def research_tool() -> Tool | None:
     """Exact original scoped research tool, never a broader registry grant."""
     from orchestrator.compute_runtime import _scope
 
@@ -72,7 +72,7 @@ class ComputeHistoryBinding:
     recovery: InferenceRecovery
     identity: AttemptIdentity
     state: InferenceInvocation
-    research_tool: WebSearchTool | None = None
+    research_tool: Tool | None = None
     research_model_transport: Callable[..., Awaitable[Any]] | None = None
     source_run: SourceRun | None = None
 
@@ -103,10 +103,11 @@ class ComputeHistoryBinding:
                 != (self.research_tool is not None)
                 or (self.effects._projection.profile == "inbox-sources-v1")
                 != (type(self.source_run) is SourceRun)
-                or (self.source_run is not None and self.source_run.effects is not self.effects)
+                or (self.source_run is not None and type(self.source_run) is not SourceRun)
                 or (self.research_tool is not None) != (self.research_model_transport is not None)
                 or (
                     self.research_tool is not None
+                    and self.source_run is None
                     and (
                         type(self.research_tool) is not WebSearchTool
                         or type(self.research_tool._transport) is not httpx.MockTransport
@@ -116,6 +117,8 @@ class ComputeHistoryBinding:
                     )
                 )
             ):
+                raise ObservationBlocked("history_binding_unavailable")
+            if self.source_run is not None and not self.source_run.matches_binding(self):
                 raise ObservationBlocked("history_binding_unavailable")
             self.state.require_effect()
         except BaseException:

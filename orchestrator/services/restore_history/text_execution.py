@@ -8,7 +8,7 @@ import os
 import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, TYPE_CHECKING
 from uuid import UUID
 
 import asyncpg
@@ -25,6 +25,7 @@ from orchestrator.tasks._invocation import InferenceInvocation
 from orchestrator.tasks._history_binding import ComputeHistoryBinding
 from orchestrator.services.search_pacing import SearchPacerLike
 from orchestrator.tools.web_search import BRAVE_FIXED_MICROUSD, WebSearchTool
+from orchestrator.tools.registry import Tool
 
 from .coordination import HistoryCoordinator
 from .effects import HistoryEffects
@@ -33,10 +34,17 @@ from .read_supervisor import _observe, qualify_read_history
 from .store import _check_time
 from .terminal_projection import (
     TERMINAL_PROFILES,
+    InboxOwnedIndexHistoryProjection,
     InboxResearchHistoryProjection,
     InboxSourcesHistoryProjection,
     TerminalHistoryProjection,
+    research_purpose,
 )
+
+if TYPE_CHECKING:
+    from orchestrator.compute_runtime import ToolServiceApproval
+    from orchestrator.tasks.store import Claim
+    from .source_execution import SourceRun
 
 
 @dataclass(frozen=True, slots=True)
@@ -73,7 +81,10 @@ class HistoryTextExecution:
             or history._expected != projection.expected
             or (type(projection) is InboxResearchHistoryProjection)
             != (type(self) is HistoryResearchExecution)
-            or (type(projection) is InboxSourcesHistoryProjection)
+            or (
+                type(projection)
+                in (InboxSourcesHistoryProjection, InboxOwnedIndexHistoryProjection)
+            )
             != (type(self) is HistorySourcesExecution)
         ):
             raise HistoryError("text_execution_refused")
@@ -98,6 +109,9 @@ class HistoryTextExecution:
             raise HistoryError("text_execution_owner_refused")
         self._loop = loop
 
+    def research_purpose(self) -> str | None:
+        return research_purpose(self.projection)
+
     async def open(self, *, deadline: float) -> None:
         self._bind()
         if self._started:
@@ -111,6 +125,11 @@ class HistoryTextExecution:
             await self.history.open(deadline=deadline)
             async with self.history.operation(deadline=deadline) as operation:
                 await qualify_read_history(operation, self.pool, self.projection, deadline=deadline)
+                if (
+                    type(self.projection) is InboxOwnedIndexHistoryProjection
+                    and (await operation.verify()).entries
+                ):
+                    raise HistoryError("owned_index_original_exists")
                 async with retain_pool_cleanup():
                     async with pool_connection(self.pool) as conn:
                         async with conn.transaction(isolation="read_committed"):
@@ -206,9 +225,11 @@ class HistoryTextExecution:
             return False
         scope, binding = state.compute_scope, state.history_binding
         if self.projection.profile == "inbox-sources-v1":
+            from .source_execution import SourceRun
+
             source = binding.source_run
             if (
-                source is None
+                type(source) is not SourceRun
                 or source.claim is not state.claim
                 or source.effects is not self.effects
                 or source.pending is not None
@@ -216,7 +237,13 @@ class HistoryTextExecution:
                 or not source.synthesis_checked
                 or source.report is None
                 or not 1 <= len(source.pins) == len(source.selected) <= 2
+                or (
+                    type(self.projection) is InboxOwnedIndexHistoryProjection
+                    and len(source.pins) != 2
+                )
             ):
+                return False
+            if not source.matches_binding(binding):
                 return False
         beat = state.heartbeat
         if not (
@@ -267,7 +294,12 @@ class HistoryTextExecution:
                 return False
             stream = hold.stream
             if index == 1:
-                if stream is not None or result.actual_microusd != BRAVE_FIXED_MICROUSD:
+                owned_index = type(self.projection) is InboxOwnedIndexHistoryProjection
+                if (
+                    stream is not None
+                    or result.actual_microusd != (0 if owned_index else BRAVE_FIXED_MICROUSD)
+                    or (owned_index and hold.reservation.reserved_microusd != 0)
+                ):
                     return False
             elif (
                 stream is None
@@ -384,6 +416,8 @@ class HistoryTextExecution:
         self.validate_worker(ctx, self.worker)
         if task in self._scheduled:
             raise HistoryError("text_execution_duplicate")
+        if type(self.projection) is InboxOwnedIndexHistoryProjection and self._scheduled:
+            raise HistoryError("owned_index_original_exists")
         self._scheduled.add(task)
         call = run_chat_task(ctx, str(task))
         try:
@@ -486,46 +520,159 @@ class HistoryResearchExecution(HistoryTextExecution):
         )
 
 
-class HistorySourcesExecution(HistoryResearchExecution):
-    """Explicit source profile, with no live fetch transport or startup selector."""
+_OWNED_INDEX_SEAL = object()
+
+
+@dataclass(frozen=True, slots=True)
+class _OwnedIndexInputs:
+    captures: tuple[bytes, bytes]
+    seal: object
+
+
+@dataclass(frozen=True, slots=True)
+class _SourceInputs:
+    search_tool: Tool
+    model_transport: Callable[..., Awaitable[Any]]
+    source_transport: httpx.MockTransport
+    source_key: bytes
+    search_approval: ToolServiceApproval | None
+    source_handler: Any
+    search_transport: httpx.MockTransport | None
+    search_pacer: SearchPacerLike | None
+
+
+class HistorySourcesExecution(HistoryTextExecution):
+    """Closed source profile composition; ordinary Brave or the exact owned corpus."""
 
     def __init__(
         self,
-        pool,
-        encryption,
-        settings,
-        history,
-        projection,
+        pool: asyncpg.Pool,
+        encryption: ContentEncryption,
+        settings: Settings,
+        history: HistoryCoordinator,
+        projection: InboxSourcesHistoryProjection,
         *,
-        model_transport,
-        search_transport,
-        search_pacer,
-        source_transport,
-        source_key,
-    ):
+        model_transport: Callable[..., Awaitable[Any]],
+        source_key: bytes,
+        search_transport: httpx.MockTransport | None = None,
+        search_pacer: SearchPacerLike | None = None,
+        source_transport: httpx.MockTransport | None = None,
+        _owned: _OwnedIndexInputs | None = None,
+    ) -> None:
+        from .owned_index import OwnedIndexCorpus, OwnedIndexSearchTool
+        from .source_execution import source_key_material
+
         if (
-            type(projection) is not InboxSourcesHistoryProjection
-            or type(source_transport) is not httpx.MockTransport
+            type(projection)
+            not in (InboxSourcesHistoryProjection, InboxOwnedIndexHistoryProjection)
+            or not inspect.iscoroutinefunction(model_transport)
+            or settings.mock_llm
         ):
             raise HistoryError("source_execution_refused")
         projection.expected.verify_key(source_key)
-        from .source_execution import source_key_material
+        search_tool: Tool
+        if type(projection) is InboxOwnedIndexHistoryProjection:
+            if (
+                type(_owned) is not _OwnedIndexInputs
+                or _owned.seal is not _OWNED_INDEX_SEAL
+                or search_transport is not None
+                or search_pacer is not None
+                or source_transport is not None
+            ):
+                raise HistoryError("owned_index_execution_refused")
+            corpus = OwnedIndexCorpus(_owned.captures)
+            search_tool = OwnedIndexSearchTool(projection)
+            search_approval = search_tool._approval
+            source_transport = httpx.MockTransport(corpus.respond)
+        else:
+            if (
+                _owned is not None
+                or type(search_transport) is not httpx.MockTransport
+                or search_pacer is None
+                or type(source_transport) is not httpx.MockTransport
+            ):
+                raise HistoryError("source_execution_refused")
+            search_tool = WebSearchTool(
+                "synthetic-inbox-search",
+                provider="brave",
+                _transport=search_transport,
+                pacer=search_pacer,
+            )
+            search_approval = None
+        super().__init__(pool, encryption, settings, history, projection)
+        self._source_inputs = _SourceInputs(
+            search_tool,
+            model_transport,
+            source_transport,
+            source_key_material(
+                source_key,
+                projection.expected.history_id,
+                owned_index=type(projection) is InboxOwnedIndexHistoryProjection,
+            ),
+            search_approval,
+            source_transport.handler,
+            search_transport,
+            search_pacer,
+        )
 
-        super().__init__(
+    @classmethod
+    def for_owned_index(
+        cls,
+        pool: asyncpg.Pool,
+        encryption: ContentEncryption,
+        settings: Settings,
+        history: HistoryCoordinator,
+        projection: InboxOwnedIndexHistoryProjection,
+        *,
+        model_transport: Callable[..., Awaitable[Any]],
+        captures: tuple[bytes, bytes],
+        source_key: bytes,
+    ) -> HistorySourcesExecution:
+        if (
+            cls is not HistorySourcesExecution
+            or type(projection) is not InboxOwnedIndexHistoryProjection
+        ):
+            raise HistoryError("owned_index_execution_refused")
+        return HistorySourcesExecution(
             pool,
             encryption,
             settings,
             history,
             projection,
             model_transport=model_transport,
-            search_transport=search_transport,
-            search_pacer=search_pacer,
+            source_key=source_key,
+            _owned=_OwnedIndexInputs(captures, _OWNED_INDEX_SEAL),
         )
-        self.source_transport = source_transport
-        self.source_key = source_key_material(source_key, projection.expected.history_id)
 
-    def original_source(self, claim):
+    @property
+    def search_tool(self) -> Tool:
+        return self._source_inputs.search_tool
+
+    @property
+    def model_transport(self) -> Callable[..., Awaitable[Any]]:
+        return self._source_inputs.model_transport
+
+    @property
+    def source_transport(self) -> httpx.MockTransport:
+        return self._source_inputs.source_transport
+
+    @property
+    def source_key(self) -> bytes:
+        return self._source_inputs.source_key
+
+    def original_source(self, claim: Claim) -> SourceRun:
         from .source_execution import SourceRun
 
-        assert self.effects is not None
-        return SourceRun(claim, self.effects, self.source_key, self.source_transport, self.settings)
+        child = asyncio.current_task()
+        original = next(
+            (state for state in self._original_attempts.values() if state.execution is child),
+            None,
+        )
+        if (
+            self.effects is None
+            or original is None
+            or original.claim is not claim
+            or original.history_binding is not None
+        ):
+            raise HistoryError("source_original_refused")
+        return SourceRun(self, original)

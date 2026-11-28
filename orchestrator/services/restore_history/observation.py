@@ -27,6 +27,7 @@ from orchestrator.services.account_control.guard import (
 from orchestrator.services.connection_cleanup import pool_connection, retain_pool_cleanup
 from orchestrator.tasks.store import TaskSnapshot, TaskStore
 from orchestrator.tasks.inputs import (
+    _INBOX_OWNED_INDEX_PURPOSE,
     _INBOX_RESEARCH_PURPOSE,
     _is_inbox_pilot_request,
     canonical_json,
@@ -49,7 +50,11 @@ from .model import (
 from .projection import compare_projections
 from .store import _check_time
 from .terminal_finish import finish_matches, returned_finish
-from .terminal_projection import TERMINAL_PROFILES
+from .terminal_projection import (
+    TERMINAL_PROFILES,
+    InboxOwnedIndexHistoryProjection,
+    research_purpose,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -191,15 +196,27 @@ class HistoryObservation:
         ):
             return None
         result = dict(row)
-        if terminal_profile:
-            try:
-                if self._projection.profile in ("inbox-research-v1", "inbox-sources-v1"):
-                    if not _is_inbox_pilot_request(json.loads(canonical), _INBOX_RESEARCH_PURPOSE):
+        try:
+            request = json.loads(canonical)
+            purpose = research_purpose(self._projection)
+            if (
+                request.get("purpose") == _INBOX_OWNED_INDEX_PURPOSE
+                and purpose != _INBOX_OWNED_INDEX_PURPOSE
+            ):
+                return None
+            if terminal_profile:
+                if purpose is not None:
+                    if not _is_inbox_pilot_request(request, purpose):
+                        return None
+                    if (
+                        type(self._projection) is InboxOwnedIndexHistoryProjection
+                        and sum(type(e.command.data) is AcceptPrepare for e in state.entries) != 1
+                    ):
                         return None
                     await self._research_owned(conn, accepted, result, state)
                 await self._terminal_owned(conn, accepted, result, state)
-            except ValueError:
-                return None
+        except (ValueError, AttributeError):
+            return None
         await self._check_owned(operation, conn, xid, deadline)
         return result
 
@@ -290,7 +307,7 @@ class HistoryObservation:
         self._research_traces(row)
         reservations = await conn.fetch(
             "SELECT id,user_id,scope_id,provider,route_id,model,status,actual_microusd,"
-            "reserved_microusd,overage_microusd,period_key "
+            "reserved_microusd,overage_microusd,period_key,usage "
             "FROM public.entitlement_reservations WHERE scope_id=$1 ORDER BY id",
             sends[0].financial_scope_id,
         )
@@ -301,6 +318,11 @@ class HistoryObservation:
             raise ValueError("unexpected research accounting period")
         for sent in sends:
             r = by_id[sent.reservation_id]
+            owned_index = type(self._projection) is InboxOwnedIndexHistoryProjection
+            if owned_index:
+                from .owned_index import validate_reservation
+
+                validate_reservation(r, sent.effect_kind)
             if (
                 r["user_id"] != accepted.account_id
                 or r["scope_id"] != sent.financial_scope_id
@@ -310,6 +332,7 @@ class HistoryObservation:
                 or not 0 <= r["actual_microusd"] <= r["reserved_microusd"]
                 or (
                     sent.effect_kind == "web_search"
+                    and not owned_index
                     and (
                         (r["provider"], r["route_id"], r["model"])
                         != ("brave", "brave-web-search", None)
@@ -359,7 +382,14 @@ class HistoryObservation:
         if len(events) != len(pins):
             raise ValueError("source_pin_refused")
         completed = row["status"] == "completed"
-        material = source_key_material(self._key, self._projection.expected.history_id)
+        owned_index = type(self._projection) is InboxOwnedIndexHistoryProjection
+        material = source_key_material(
+            self._key, self._projection.expected.history_id, owned_index=owned_index
+        )
+        if owned_index and any(
+            cast(SourceReadPossible, e.command.data).count != 2 for e in possible
+        ):
+            raise ValueError("source_pin_refused")
         values: list[dict[str, Any]] = []
         search: dict[str, Any] | None = None
         if completed:
@@ -370,6 +400,12 @@ class HistoryObservation:
             report = self._tasks._enc.decrypt(row["result_content"])
             validate_report(report, values)
             search = results[0]["result"]
+            if owned_index:
+                from .owned_index import validate_lookup
+
+                validate_lookup(calls[0]["arguments"], search)
+                if len(values) != 2:
+                    raise ValueError("source_pin_refused")
             receipt = self._trace(row, "tool_results")[0].get("source_receipt")
             expected_receipt = source_mac(
                 material,
@@ -452,6 +488,10 @@ class HistoryObservation:
                 value = value or actual
             if value is None or value["snapshot_id"] != str(pin.snapshot_id):
                 raise ValueError("source_pin_refused")
+            if owned_index:
+                from .owned_index import validate_passage
+
+                validate_passage(index + 1, value["url"], value["content"])
             expected = source_mac(
                 material,
                 "passage",
@@ -785,16 +825,14 @@ class HistoryObservation:
             "content_parts",
         }
         if expected_purpose is not None:
+            purpose = research_purpose(self._projection)
             if (
                 type(expected_purpose) is not str
+                or (purpose is not None and expected_purpose != purpose)
                 or (
-                    self._projection.profile in ("inbox-research-v1", "inbox-sources-v1")
-                    and expected_purpose != _INBOX_RESEARCH_PURPOSE
-                )
-                or (
-                    self._projection.profile not in ("inbox-research-v1", "inbox-sources-v1")
+                    purpose is None
                     and (
-                        expected_purpose == _INBOX_RESEARCH_PURPOSE
+                        expected_purpose in (_INBOX_RESEARCH_PURPOSE, _INBOX_OWNED_INDEX_PURPOSE)
                         or self._projection.profile not in ("terminal-v3", "inbox-retired-v1")
                     )
                 )
@@ -885,7 +923,7 @@ class HistoryObservation:
                 if type(message[name]) is not int or message[name] < 0:
                     raise ValueError("unsupported counter")
             if (
-                expected_purpose == _INBOX_RESEARCH_PURPOSE
+                expected_purpose in (_INBOX_RESEARCH_PURPOSE, _INBOX_OWNED_INDEX_PURPOSE)
                 and role == "assistant"
                 and status == "completed"
             ):

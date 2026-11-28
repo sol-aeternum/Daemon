@@ -130,7 +130,7 @@ async function enrollPhone(enrollment) {
   return page;
 }
 
-try {
+async function exercise() {
   const desktop = await open(1440, 960);
   const first = desktop.page;
   await first.goto(ui + "/setup");
@@ -162,6 +162,20 @@ try {
   }
   const selectedX = await ask(secondSender, "X", "X", "completed");
   assert.equal(selectedX.data.conversation_id, x.conversation);
+  if (questions?.length === 1) {
+    assert.deepEqual(selectedX.data.can_start, []);
+    await readReport(first, x, x.content);
+    await desktop.context.close();
+    const page = await enrollPhone(enrollment);
+    await page.goto(ui + "/inbox");
+    const saved = await ask(page, "X", "X", "completed");
+    assert.deepEqual(saved.data.can_start, []);
+    await readReport(page, x, x.content);
+    assert.deepEqual(external, []);
+    assert.equal(starts, 1);
+    receipt("finished", { starts, x: x.task });
+    return;
+  }
   assert.deepEqual(selectedX.data.can_start, ["Y"]);
   await link(secondSender).waitFor();
   if (managedRestart) {
@@ -260,6 +274,10 @@ try {
   assert.equal(starts, 2);
   assert.deepEqual(external, []);
   receipt("finished", { starts, lost, x: x.task, y: y.task });
+}
+
+try {
+  await exercise();
 } catch (error) {
   console.error(JSON.stringify({ failure: error.name, phase }));
   process.exitCode = 1;
