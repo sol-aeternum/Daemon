@@ -429,6 +429,72 @@ def _normalized_results(
     return results
 
 
+def research_search_arguments(arguments: Any) -> tuple[str, int]:
+    """Strict bounded native invocation shape for the disposable research profile."""
+    if (
+        type(arguments) is not dict
+        or not {"query"} <= arguments.keys() <= {"query", "num_results"}
+        or (
+            "num_results" in arguments
+            and (
+                type(arguments["num_results"]) is not int
+                or not 1 <= arguments["num_results"] <= MAX_RESULTS
+            )
+        )
+    ):
+        raise ValueError("unsupported research search arguments")
+    try:
+        return _bounded_query(_ADAPTERS["brave"], arguments["query"]), _bounded_count(
+            arguments.get("num_results")
+        )
+    except _SearchFailure:
+        raise ValueError("unsupported research search arguments") from None
+
+
+def validate_research_search_result(arguments: Any, result: Any) -> None:
+    """Validate the actual sanitized result; a refusal or omitted body is not evidence."""
+    query, count = research_search_arguments(arguments)
+    if (
+        type(result) is not dict
+        or set(result) != {"query", "results", "total_found"}
+        or result["query"] != query
+        or type(result["results"]) is not list
+        or type(result["total_found"]) is not int
+        or not 0 <= result["total_found"] == len(result["results"]) <= count
+    ):
+        raise ValueError("unsupported research search evidence")
+    for item in result["results"]:
+        if (
+            type(item) is not dict
+            or set(item) != {"title", "url", "description"}
+            or item != _normalized_entry(item, "description")
+        ):
+            raise ValueError("unsupported research source")
+        try:
+            for text in item.values():
+                text.encode("utf-8")
+        except UnicodeError:
+            raise ValueError("unsupported research source") from None
+
+
+def validate_research_trace(calls: Any, results: Any) -> None:
+    """The native engine's persisted trace, including its read-only outcome."""
+    if type(calls) is not list or type(results) is not list or len(calls) != 1 or len(results) != 1:
+        raise ValueError("unsupported research trace count")
+    call, result = calls[0], results[0]
+    if (
+        type(call) is not dict
+        or set(call) != {"name", "arguments"}
+        or call["name"] != "web_search"
+        or type(result) is not dict
+        or set(result) != {"name", "result", "outcome"}
+        or result["name"] != "web_search"
+        or result["outcome"] != "succeeded"
+    ):
+        raise ValueError("unsupported research trace shape")
+    validate_research_search_result(call["arguments"], result["result"])
+
+
 def _status_failure(status: int) -> tuple[str, str]:
     """A fixed message and log label for one upstream status code.
 
@@ -619,6 +685,7 @@ class WebSearchTool(Tool):
                 required_capability=SEARCH_CAPABILITY,
                 dispatch_aware=True,
                 work_deadline=deadline,
+                history_tool=self,
             ) as charge:
                 payload = await self._dispatch(
                     adapter,
@@ -802,6 +869,18 @@ class WebSearchTool(Tool):
             )
             if time.monotonic() >= deadline:
                 raise _SearchFailure(_TIMEOUT, category="timeout")
+            if await charge.prepare_history_dispatch(deadline=deadline):
+                # The original H mark can wait for SQL/Stop/lease ownership.
+                # No further await before native dispatch after these final checks.
+                approved_tool_service(
+                    service_id=adapter.service_id,
+                    service=SEARCH_SERVICE,
+                    provider=adapter.provider,
+                    unit=SEARCH_UNIT,
+                    fixed_microusd=adapter.fixed_microusd,
+                )
+                if time.monotonic() >= deadline:
+                    raise _SearchFailure(_TIMEOUT, category="timeout")
             charge.mark_dispatched()
             response = await client.send(request, stream=True)
             try:

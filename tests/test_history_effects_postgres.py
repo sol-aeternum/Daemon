@@ -136,6 +136,57 @@ async def test_stop_before_send_prevents_mark_and_late_terminal_output(effects):
 
 
 @pytest.mark.asyncio
+async def test_original_invocation_marks_and_accounts_for_three_distinct_sends(effects):
+    """Protected SQL feasibility; this is not admission to run a search tool."""
+    s = effects
+    await running(s)
+    service = EntitlementService(s.worker_pool)
+    sends = ("completion", "web_search", "completion")
+    reservations = []
+    for index, kind in enumerate(sends):
+        reservation = (
+            s.reservation
+            if index == 0
+            else await service.reserve_for_attempt(s.attempt, 100, operation="chat")
+        )
+        await s.effects.mark(
+            s.attempt, reservation.id, s.invocation, effect_kind=kind, deadline=deadline()
+        )
+        settlement = await service.settle(reservation.id, 10 + index)
+        assert settlement.applied
+        reservations.append(reservation.id)
+
+    facts = [e.command.data for e in entries(s) if isinstance(e.command.data, SendPossible)]
+    assert [f.effect_kind for f in facts] == list(sends)
+    assert [f.reservation_id for f in facts] == reservations
+    assert len(set(reservations)) == len({f.dispatch_nonce for f in facts}) == 3
+    assert {f.lifecycle_id for f in facts} == {s.attempt.lifecycle_id}
+    async with s.db.connection() as conn:
+        assert (
+            await conn.fetchval(
+                "SELECT first_reservation_id FROM task_inference_recovery WHERE task_id=$1",
+                s.claim.task_id,
+            )
+            == reservations[0]
+        )
+        assert (
+            await conn.fetchval(
+                "SELECT count(*) FROM task_history_projection WHERE task_id=$1 AND kind='SEND_POSSIBLE'",
+                s.claim.task_id,
+            )
+            == 3
+        )
+        assert (
+            await conn.fetchval(
+                "SELECT sum(actual_microusd) FROM entitlement_reservations "
+                "WHERE scope_id=$1 AND status='settled'",
+                s.attempt.financial_scope_id,
+            )
+            == 33
+        )
+
+
+@pytest.mark.asyncio
 async def test_send_before_stop_preserves_possible_effect_and_complete_refuses(effects):
     s = effects
     await running(s)

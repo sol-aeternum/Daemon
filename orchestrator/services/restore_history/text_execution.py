@@ -3,13 +3,16 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import os
 import time
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any
 from uuid import UUID
 
 import asyncpg
+import httpx
 
 from orchestrator.config import Settings
 from orchestrator.entitlements.models import ReservationStatus, Settlement
@@ -20,13 +23,19 @@ from orchestrator.tasks.runner import AttemptState, run_chat_task
 from orchestrator.tasks.states import TaskStatus
 from orchestrator.tasks._invocation import InferenceInvocation
 from orchestrator.tasks._history_binding import ComputeHistoryBinding
+from orchestrator.services.search_pacing import SearchPacerLike
+from orchestrator.tools.web_search import BRAVE_FIXED_MICROUSD, WebSearchTool
 
 from .coordination import HistoryCoordinator
 from .effects import HistoryEffects
 from .model import HistoryError
 from .read_supervisor import _observe, qualify_read_history
 from .store import _check_time
-from .terminal_projection import TERMINAL_PROFILES, TerminalHistoryProjection
+from .terminal_projection import (
+    TERMINAL_PROFILES,
+    InboxResearchHistoryProjection,
+    TerminalHistoryProjection,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -61,6 +70,8 @@ class HistoryTextExecution:
             or projection.profile != TERMINAL_PROFILES.get(type(projection))
             or history.profile != projection.profile
             or history._expected != projection.expected
+            or (type(projection) is InboxResearchHistoryProjection)
+            != (type(self) is HistoryResearchExecution)
         ):
             raise HistoryError("text_execution_refused")
         self.pool, self.encryption, self.settings = pool, encryption, settings
@@ -171,13 +182,91 @@ class HistoryTextExecution:
     def retain_original_attempt(self, state: AttemptState) -> None:
         child = asyncio.current_task()
         if (
-            self.projection.profile != "inbox-retired-v1"
+            self.projection.profile not in ("inbox-retired-v1", "inbox-research-v1")
             or child is None
             or self._job_tasks.get(child) != state.claim.task_id
             or child in self._original_attempts
         ):
             raise HistoryError("original_attempt_refused")
         self._original_attempts[child] = state
+
+    def research_cleanup_confirmed(self, task: UUID) -> bool:
+        """Same-host proof only; no recovery or settlement from saved rows."""
+        if self.projection.profile != "inbox-research-v1":
+            return False
+        child = next((j for j, ident in self._job_tasks.items() if ident == task), None)
+        if child is None or not _successful(child) or child.result() != "completed":
+            return False
+        state = self._original_attempts.get(child)
+        if state is None or state.compute_scope is None or state.history_binding is None:
+            return False
+        scope, binding = state.compute_scope, state.history_binding
+        beat = state.heartbeat
+        if not (
+            state.result is TaskStatus.COMPLETED
+            and state.own_completion_acknowledged
+            and not state.stopping
+            and not state.interrupted
+            and state.error is None
+            and state.requested_terminal is None
+            and _successful(state.execution)
+            and beat is not None
+            and (_successful(beat) or (beat.cancelled() and state.heartbeat_stop_requested))
+            and not binding.state.call_failed
+            and binding.state.uncertainty is None
+            and binding.effects is self.effects
+            and binding.composition is self.worker
+            and any(shared is binding.state for shared in self._invocations)
+            and scope.history_binding is binding
+            and scope.inference_identity is binding.identity
+            and scope.closed
+            and not scope.outstanding
+            and not scope.streams
+            and len(scope.settled) == 3
+            and all(_successful(owner) for owner in scope.cleanup_owners)
+            and scope.retirement_holds is not None
+            and len(scope.retirement_holds) == 3
+        ):
+            return False
+        assert self.effects is not None
+        owned = self.effects._owned_sends.get(id(binding.state))
+        if owned is None or owned[0] is not binding.state or len(owned[1]) != 3:
+            return False
+        for index, hold in enumerate(scope.retirement_holds):
+            if not _successful(hold.settlement) or hold.settlement not in scope.cleanup_owners:
+                return False
+            assert hold.settlement is not None
+            result = hold.settlement.result()
+            if (
+                type(result) is not Settlement
+                or not result.applied
+                or result.status is not ReservationStatus.SETTLED
+                or result.overage_microusd
+                or result.reservation.id != hold.reservation.id
+                or result.reservation.user_id != binding.identity.account_id
+                or result.period_key != hold.reservation.period_key
+                or scope.settled.get(result.reservation.id) != result.actual_microusd
+            ):
+                return False
+            stream = hold.stream
+            if index == 1:
+                if stream is not None or result.actual_microusd != BRAVE_FIXED_MICROUSD:
+                    return False
+            elif (
+                stream is None
+                or stream.invocation is not binding.state
+                or stream.state != "eof"
+                or stream.cleanup_blocked
+                or stream.cleanup_outcome != "close_returned"
+                or not _successful(stream.closer)
+                or not _successful(stream.closing)
+                or stream.reading is None
+                or not stream.reading.done()
+                or stream.reading.cancelled()
+                or not isinstance(stream.reading.exception(), StopAsyncIteration)
+            ):
+                return False
+        return True
 
     def original_cleanup(self, task: UUID) -> OriginalCleanup:
         """Inspect the original physical owners. Never initiate or finish cleanup here."""
@@ -344,3 +433,36 @@ class HistoryTextExecution:
         self._closed = True
         if first is not None:
             raise first
+
+
+class HistoryResearchExecution(HistoryTextExecution):
+    """Only the explicit disposable host can supply the native search adapter."""
+
+    def __init__(
+        self,
+        pool: asyncpg.Pool,
+        encryption: ContentEncryption,
+        settings: Settings,
+        history: HistoryCoordinator,
+        projection: InboxResearchHistoryProjection,
+        *,
+        model_transport: Callable[..., Awaitable[Any]],
+        search_transport: httpx.MockTransport,
+        search_pacer: SearchPacerLike,
+    ) -> None:
+        if (
+            type(search_transport) is not httpx.MockTransport
+            or search_pacer is None
+            or not inspect.iscoroutinefunction(model_transport)
+            or type(projection) is not InboxResearchHistoryProjection
+            or settings.mock_llm
+        ):
+            raise HistoryError("research_execution_refused")
+        super().__init__(pool, encryption, settings, history, projection)
+        self.model_transport = model_transport
+        self.search_tool = WebSearchTool(
+            "synthetic-inbox-search",
+            provider="brave",
+            _transport=search_transport,
+            pacer=search_pacer,
+        )

@@ -26,7 +26,12 @@ from orchestrator.services.account_control.guard import (
 )
 from orchestrator.services.connection_cleanup import pool_connection, retain_pool_cleanup
 from orchestrator.tasks.store import TaskSnapshot, TaskStore
-from orchestrator.tasks.inputs import _is_inbox_pilot_request, canonical_json
+from orchestrator.tasks.inputs import (
+    _INBOX_RESEARCH_PURPOSE,
+    _is_inbox_pilot_request,
+    canonical_json,
+)
+from orchestrator.tools.web_search import BRAVE_FIXED_MICROUSD, validate_research_trace
 
 from .coordination import HistoryCoordinator, HistoryOperation
 from .effects_projection import HistoryProjection
@@ -38,6 +43,7 @@ from .model import (
     HistoryState,
     NonsuccessOutputPrepare,
     SendPossible,
+    RESEARCH_SENDS,
     commitments,
 )
 from .projection import compare_projections
@@ -187,11 +193,133 @@ class HistoryObservation:
         result = dict(row)
         if terminal_profile:
             try:
+                if self._projection.profile == "inbox-research-v1":
+                    if not _is_inbox_pilot_request(json.loads(canonical), _INBOX_RESEARCH_PURPOSE):
+                        return None
+                    await self._research_owned(conn, accepted, result, state)
                 await self._terminal_owned(conn, accepted, result, state)
             except ValueError:
                 return None
         await self._check_owned(operation, conn, xid, deadline)
         return result
+
+    async def _research_owned(
+        self, conn: Any, accepted: AcceptPrepare, row: dict[str, Any], state: HistoryState
+    ) -> None:
+        sends = [
+            e.command.data
+            for e in state.entries
+            if type(e.command.data) is SendPossible and e.command.data.task_id == accepted.task_id
+        ]
+        status = row["status"]
+        if status not in ("queued", "running", "completed", "cancelled"):
+            raise ValueError("unresolved research outcome")
+        if (
+            tuple(send.effect_kind for send in sends) != RESEARCH_SENDS[: len(sends)]
+            or any(send.epoch != row["lease_epoch"] for send in sends)
+            or (status == "queued" and sends)
+            or row["attempt_count"] not in (0, 1)
+            or row["regeneration_count"] != 0
+        ):
+            raise ValueError("unsupported research send")
+        attempts = await conn.fetch(
+            "SELECT epoch,compute_scope_id,execution_started_at FROM public.task_attempts "
+            "WHERE task_id=$1 ORDER BY epoch LIMIT 2",
+            accepted.task_id,
+        )
+        if len(attempts) > 1 or any(a["epoch"] != row["lease_epoch"] for a in attempts):
+            raise ValueError("unsupported research attempt")
+        if sends:
+            if (
+                len(attempts) != 1
+                or row["attempt_count"] != 1
+                or (attempts[0]["epoch"], attempts[0]["compute_scope_id"])
+                != (sends[0].epoch, sends[0].financial_scope_id)
+            ):
+                raise ValueError("unsupported research attempt scope")
+        if status != "completed":
+            self._no_traces(row)
+            metadata = self._object(row["observed_metadata"])
+            if status in ("queued", "running"):
+                if row["result_status"] != "streaming" or metadata:
+                    raise ValueError("unsupported active research result")
+            else:
+                from .model import StopIntent
+
+                if (
+                    row["result_status"] != "cancelled"
+                    or row["terminal_code"] != "cancelled"
+                    or not any(
+                        type(e.command.data) is StopIntent
+                        and e.command.data.task_id == accepted.task_id
+                        for e in state.entries
+                    )
+                    or not {"terminal_status", "terminal_reason"}
+                    <= metadata.keys()
+                    <= {
+                        "terminal_status",
+                        "terminal_reason",
+                        "inference_dispatch_possible",
+                        "material_effect_possible",
+                    }
+                    or (metadata["terminal_status"], metadata["terminal_reason"])
+                    != ("cancelled", "cancelled")
+                    or any(
+                        metadata[key] is not True
+                        for key in metadata.keys()
+                        & {"inference_dispatch_possible", "material_effect_possible"}
+                    )
+                    or bool(sends) != (metadata.get("inference_dispatch_possible") is True)
+                    or (
+                        (
+                            sends
+                            or row["attempt_count"]
+                            or any(a["execution_started_at"] is not None for a in attempts)
+                        )
+                        and metadata.get("material_effect_possible") is not True
+                    )
+                ):
+                    raise ValueError("unsupported cancelled research result")
+            return
+        if len(sends) != 3:
+            raise ValueError("incomplete research sends")
+        self._research_traces(row)
+        reservations = await conn.fetch(
+            "SELECT id,user_id,scope_id,provider,route_id,model,status,actual_microusd,"
+            "reserved_microusd,overage_microusd,period_key "
+            "FROM public.entitlement_reservations WHERE scope_id=$1 ORDER BY id",
+            sends[0].financial_scope_id,
+        )
+        by_id = {r["id"]: r for r in reservations}
+        if len(reservations) != 3 or set(by_id) != {s.reservation_id for s in sends}:
+            raise ValueError("unsupported research reservations")
+        if len({r["period_key"] for r in reservations}) != 1:
+            raise ValueError("unexpected research accounting period")
+        for sent in sends:
+            r = by_id[sent.reservation_id]
+            if (
+                r["user_id"] != accepted.account_id
+                or r["scope_id"] != sent.financial_scope_id
+                or r["status"] != "settled"
+                or r["overage_microusd"] != 0
+                or type(r["actual_microusd"]) is not int
+                or not 0 <= r["actual_microusd"] <= r["reserved_microusd"]
+                or (
+                    sent.effect_kind == "web_search"
+                    and (
+                        (r["provider"], r["route_id"], r["model"])
+                        != ("brave", "brave-web-search", None)
+                        or r["actual_microusd"] != BRAVE_FIXED_MICROUSD
+                    )
+                )
+                or (
+                    sent.effect_kind == "completion"
+                    and (r["provider"] != "openrouter" or not r["model"] or not r["route_id"])
+                )
+            ):
+                raise ValueError("unsupported research settlement")
+        if by_id[sends[-1].reservation_id]["model"] != row["model"]:
+            raise ValueError("unsupported research synthesis model")
 
     async def _terminal_owned(
         self, conn: Any, accepted: AcceptPrepare, row: dict[str, Any], state: HistoryState
@@ -208,6 +336,7 @@ class HistoryObservation:
         )
         status = row["status"]
         v4 = self._projection.profile == "terminal-v4"
+        research = self._projection.profile == "inbox-research-v1"
         if fact is None:
             if status == "completed" or (v4 and status in ("failed", "needs_attention")):
                 raise ValueError("missing terminal fact")
@@ -247,16 +376,19 @@ class HistoryObservation:
         if not failure and "turn_finish" not in metadata:
             if metadata.get("terminal_status") != "complete":
                 raise ValueError("legacy terminal mismatch")
-            if self._projection.profile != "inbox-retired-v1":
+            if self._projection.profile not in ("inbox-retired-v1", "inbox-research-v1"):
                 return
+            if research:
+                raise ValueError("missing research finish")
             result_metadata = metadata
-        elif v4:
+        elif v4 or research:
             result_metadata = self._terminal_metadata(row, metadata)
         else:
             raise ValueError("unsupported terminal finish profile")
         if row["attempt_count"] != 1 or row["regeneration_count"] != 0:
             raise ValueError("unexpected attempt counter")
-        self._no_traces(row)
+        if not research:
+            self._no_traces(row)
         if any(
             row[name] is not None
             for name in ("advisor_traces", "reasoning_text", "reasoning_duration_secs")
@@ -341,21 +473,40 @@ class HistoryObservation:
             raise ValueError("unsupported terminal metadata")
         return expected
 
+    def _trace(self, message: Any, name: str) -> list[Any]:
+        trace = json.loads(message[name]) if type(message[name]) is str else message[name]
+        if type(trace) is dict:
+            if (
+                set(trace) != {"format", "version", "ciphertext"}
+                or trace["format"] != "daemon.encrypted_tool_trace"
+                or type(trace["version"]) is not int
+                or trace["version"] != 1
+                or type(trace["ciphertext"]) is not str
+            ):
+                raise ValueError("unsupported tool envelope")
+            if (
+                self._projection.profile == "inbox-research-v1"
+                and len(trace["ciphertext"]) > 250_000
+            ):
+                raise ValueError("research trace too large")
+            trace = json.loads(self._tasks._enc.decrypt(trace["ciphertext"]))
+        if type(trace) is not list:
+            raise ValueError("unsupported tool trace")
+        return trace
+
     def _no_traces(self, message: Any) -> None:
         for name in ("tool_calls", "tool_results"):
-            trace = json.loads(message[name]) if type(message[name]) is str else message[name]
-            if type(trace) is dict:
-                if (
-                    set(trace) != {"format", "version", "ciphertext"}
-                    or trace["format"] != "daemon.encrypted_tool_trace"
-                    or type(trace["version"]) is not int
-                    or trace["version"] != 1
-                    or type(trace["ciphertext"]) is not str
-                ):
-                    raise ValueError("unsupported tool envelope")
-                trace = json.loads(self._tasks._enc.decrypt(trace["ciphertext"]))
-            if type(trace) is not list or trace:
+            if self._trace(message, name):
                 raise ValueError("unsupported tool trace")
+
+    def _research_traces(self, message: Any) -> tuple[list[Any], list[Any]]:
+        for name in ("tool_calls", "tool_results"):
+            raw = json.loads(message[name]) if type(message[name]) is str else message[name]
+            if type(raw) is not dict:
+                raise ValueError("missing encrypted research trace")
+        calls, results = self._trace(message, "tool_calls"), self._trace(message, "tool_results")
+        validate_research_trace(calls, results)
+        return calls, results
 
     async def _cancelled_owned(
         self,
@@ -375,14 +526,16 @@ class HistoryObservation:
             for e in state.entries
             if type(e.command.data) is SendPossible and e.command.data.task_id == accepted.task_id
         ]
-        if len(sends) > 1 or any(
-            (send.account_id, send.account_generation, send.task_id, send.epoch, send.effect_kind)
+        send_kinds = (
+            RESEARCH_SENDS if self._projection.profile == "inbox-research-v1" else ("completion",)
+        )
+        if tuple(send.effect_kind for send in sends) != send_kinds[: len(sends)] or any(
+            (send.account_id, send.account_generation, send.task_id, send.epoch)
             != (
                 accepted.account_id,
                 accepted.account_generation,
                 accepted.task_id,
                 row["lease_epoch"],
-                "completion",
             )
             for send in sends
         ):
@@ -459,7 +612,17 @@ class HistoryObservation:
         if expected_purpose is not None:
             if (
                 type(expected_purpose) is not str
-                or self._projection.profile not in ("terminal-v3", "inbox-retired-v1")
+                or (
+                    self._projection.profile == "inbox-research-v1"
+                    and expected_purpose != _INBOX_RESEARCH_PURPOSE
+                )
+                or (
+                    self._projection.profile != "inbox-research-v1"
+                    and (
+                        expected_purpose == _INBOX_RESEARCH_PURPOSE
+                        or self._projection.profile not in ("terminal-v3", "inbox-retired-v1")
+                    )
+                )
                 or type(request) is not dict
                 or not _is_inbox_pilot_request(request, expected_purpose)
             ):
@@ -546,7 +709,15 @@ class HistoryObservation:
             for name in ("tokens_in", "tokens_out"):
                 if type(message[name]) is not int or message[name] < 0:
                     raise ValueError("unsupported counter")
-            self._no_traces(message)
+            if (
+                expected_purpose == _INBOX_RESEARCH_PURPOSE
+                and role == "assistant"
+                and status == "completed"
+            ):
+                tool_calls, tool_results = self._research_traces(message)
+            else:
+                self._no_traces(message)
+                tool_calls, tool_results = [], []
             model = message["model"]
             if model is not None and (type(model) is not str or not model.strip()):
                 raise ValueError("unsupported model")
@@ -605,8 +776,8 @@ class HistoryObservation:
                     },
                     "content": content,
                     "metadata": metadata,
-                    "tool_calls": [],
-                    "tool_results": [],
+                    "tool_calls": tool_calls,
+                    "tool_results": tool_results,
                     "advisor_traces": None,
                     "reasoning_text": None,
                     "reasoning_duration_secs": None,

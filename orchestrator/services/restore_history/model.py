@@ -25,7 +25,10 @@ ARTIFACT_DOMAIN = b"daemon.restore-history.frame.v2\n"
 TERMINAL_DOMAIN = b"daemon.restore-history.frame.v3\n"
 NONSUCCESS_DOMAIN = b"daemon.restore-history.frame.v4\n"
 INBOX_RETIRED_DOMAIN = b"daemon.restore-history.frame.v5\n"
-Profile = Literal["h1", "artifact-v2", "terminal-v3", "terminal-v4", "inbox-retired-v1"]
+Profile = Literal[
+    "h1", "artifact-v2", "terminal-v3", "terminal-v4", "inbox-retired-v1", "inbox-research-v1"
+]
+RESEARCH_SENDS = ("completion", "web_search", "completion")
 
 # These codes can describe a returned terminal answer, not a retry/Stop policy.
 NONSUCCESS_LOCAL_LIMIT_KINDS = {
@@ -57,6 +60,7 @@ def check_profile(profile: Profile) -> Profile:
         "terminal-v3",
         "terminal-v4",
         "inbox-retired-v1",
+        "inbox-research-v1",
     ):
         raise HistoryError("invalid_profile")
     return profile
@@ -498,7 +502,11 @@ _FRAME_VERSIONS: dict[type[Any], tuple[int, bytes, tuple[Profile, ...]]] = {
         ARTIFACT_DOMAIN,
         ("artifact-v2", "terminal-v3", "terminal-v4", "inbox-retired-v1"),
     ),
-    TerminalOutputPrepare: (3, TERMINAL_DOMAIN, ("terminal-v3", "terminal-v4", "inbox-retired-v1")),
+    TerminalOutputPrepare: (
+        3,
+        TERMINAL_DOMAIN,
+        ("terminal-v3", "terminal-v4", "inbox-retired-v1", "inbox-research-v1"),
+    ),
     NonsuccessOutputPrepare: (4, NONSUCCESS_DOMAIN, ("terminal-v4",)),
     InboxOriginalRetired: (5, INBOX_RETIRED_DOMAIN, ("inbox-retired-v1",)),
 }
@@ -572,6 +580,8 @@ def validate_chain(
     sent: set[tuple[UUID, UUID, UUID]] = set()
     open_restore: tuple[UUID, UUID] | None = None
     retirement_task: UUID | None = None
+    research_sends: dict[UUID, list[SendPossible]] = {}
+    research_originals: dict[UUID, list[AcceptPrepare]] = {}
     if len(entries) > MAX_RECORDS:
         raise HistoryError("capacity")
     for seq, e in enumerate(entries, 1):
@@ -593,6 +603,51 @@ def validate_chain(
             raise HistoryError("chain_mismatch")
         operations.add(e.command.record_id)
         d = e.command.data
+        if profile == "inbox-research-v1":
+            if isinstance(d, (RestoreBegin, RestoreAssessed, ArtifactPrepare)):
+                raise HistoryError("unsupported_inbox_history")
+            if isinstance(d, AcceptPrepare):
+                originals = research_originals.setdefault(d.account_id, [])
+                if len(originals) >= 2 or any(
+                    a.account_generation != d.account_generation or a.task_id not in terminal_tasks
+                    for a in originals
+                ):
+                    raise HistoryError("unsupported_inbox_history")
+                originals.append(d)
+            if isinstance(d, StopIntent) and (d.task_id in stopped or d.task_id in terminal_tasks):
+                raise HistoryError("effect_stopped")
+            if isinstance(d, SendPossible):
+                prior = research_sends.setdefault(d.task_id, [])
+                if (
+                    len(prior) >= len(RESEARCH_SENDS)
+                    or d.effect_kind != RESEARCH_SENDS[len(prior)]
+                    or any(
+                        (
+                            p.epoch,
+                            p.lifecycle_id,
+                            p.financial_scope_id,
+                            p.metadata_scope_id,
+                            p.producer_instance_id,
+                        )
+                        != (
+                            d.epoch,
+                            d.lifecycle_id,
+                            d.financial_scope_id,
+                            d.metadata_scope_id,
+                            d.producer_instance_id,
+                        )
+                        or p.reservation_id == d.reservation_id
+                        or p.runtime_identity == d.runtime_identity
+                        or p.dispatch_nonce == d.dispatch_nonce
+                        for p in prior
+                    )
+                ):
+                    raise HistoryError("unsupported_research_send")
+                prior.append(d)
+            if isinstance(d, TerminalOutputPrepare):
+                prior = research_sends.get(d.task_id, [])
+                if len(prior) != len(RESEARCH_SENDS) or prior[-1].epoch != d.epoch:
+                    raise HistoryError("unsupported_research_terminal")
         if profile == "inbox-retired-v1":
             if isinstance(d, (RestoreBegin, RestoreAssessed, ArtifactPrepare)):
                 raise HistoryError("unsupported_inbox_history")

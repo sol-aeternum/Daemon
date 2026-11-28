@@ -783,6 +783,32 @@ class HistoryEffects:
                 nonlocal record
                 if record is not None:
                     raise HistoryError("effects_stage_refused", uncertain=True)
+                if self._projection.profile == "inbox-research-v1":
+                    receipt = await conn.fetchrow(
+                        "SELECT provider,route_id,model FROM public.entitlement_reservations "
+                        "WHERE id=$1 AND user_id=$2 AND scope_id=$3 AND status='open'",
+                        reservation,
+                        identity.account_id,
+                        identity.financial_scope_id,
+                    )
+                    if (
+                        receipt is None
+                        or (
+                            effect_kind == "web_search"
+                            and (receipt["provider"], receipt["route_id"], receipt["model"])
+                            != ("brave", "brave-web-search", None)
+                        )
+                        or (
+                            effect_kind == "completion"
+                            and (
+                                receipt["provider"] != "openrouter"
+                                or not receipt["route_id"]
+                                or not receipt["model"]
+                            )
+                        )
+                        or effect_kind == "embedding"
+                    ):
+                        raise HistoryError("research_send_reservation_refused")
                 prepared = await operation.append(
                     Command(
                         uuid4(),
@@ -1035,6 +1061,23 @@ class HistoryEffects:
                         if await self._tasks._completion_control(conn, row):
                             result = TaskStatus.NEEDS_ATTENTION
                         else:
+                            if projection.profile == "inbox-research-v1":
+                                from orchestrator.tools.web_search import validate_research_trace
+
+                                if (
+                                    not has_finish
+                                    or not content.strip()
+                                    or fields.get("advisor_traces") is not None
+                                    or fields.get("reasoning_text") is not None
+                                    or fields.get("reasoning_duration_secs") is not None
+                                ):
+                                    raise HistoryError("research_terminal_refused")
+                                try:
+                                    validate_research_trace(
+                                        fields.get("tool_calls"), fields.get("tool_results")
+                                    )
+                                except ValueError:
+                                    raise HistoryError("research_terminal_refused") from None
                             if isinstance(metadata, dict) and "turn_finish" in metadata:
                                 if returned_finish(metadata["turn_finish"]).outcome != "complete":
                                     raise HistoryError("terminal_finish_invalid")

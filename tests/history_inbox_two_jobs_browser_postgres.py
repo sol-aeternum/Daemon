@@ -1,14 +1,17 @@
 """Explicit desktop-to-phone two-job proof using real auth and owned transport."""
 
 import asyncio
+import copy
 import json
 import os
 from pathlib import Path
 from uuid import uuid4
 
+import httpx
 import pytest
 
 from tests.owned_search_redis import OwnedSearchRedis
+from tests.test_history_observation_boundary_postgres import device
 from tests.test_history_text_execution_postgres import (
     db as db,
     jobs,
@@ -30,8 +33,32 @@ async def originals(s):
             s.account,
         )
     assert all(r["attempt_count"] == 1 and r["cancel_requested_at"] is None for r in rows)
-    assert len(rows) == len(s.calls)
+    assert len(rows) == len({call.task_id for call in s.calls})
     return [dict(r) for r in rows]
+
+
+async def effect_snapshot(s):
+    """Read-only control: all original effects and accounting in this owned DB."""
+    async with s.db.connection() as conn:
+        return (
+            await conn.fetch(
+                "SELECT task_id,seq,kind,digest FROM task_history_projection ORDER BY seq"
+            ),
+            await conn.fetch(
+                "SELECT id,scope_id,period_key,status,actual_microusd,settled_at "
+                "FROM entitlement_reservations ORDER BY id"
+            ),
+            await conn.fetch(
+                "SELECT user_id,period_key,spent_microusd,reserved_microusd "
+                "FROM entitlement_usage_periods WHERE user_id=$1 ORDER BY period_key",
+                s.account,
+            ),
+            await conn.fetch(
+                "SELECT user_id,trial_consumed_microusd,trial_reserved_microusd "
+                "FROM entitlement_accounts WHERE user_id=$1",
+                s.account,
+            ),
+        )
 
 
 def identity(row):
@@ -42,12 +69,96 @@ def identity(row):
     }
 
 
+def report_for_browser(s, row, *, text=None, sources=None):
+    content = s.execution.encryption.decrypt(row["content"])
+    if sources is None:
+        assert content == text
+        return identity(row)
+    assert sources and all(url in content for url in sources)
+    return {**identity(row), "content": content, "sources": sources}
+
+
+async def check_research_auth(s, backend, y, receive, send):
+    async with s.db.connection() as conn:
+        foreign_account = await s.db.account(conn)
+    _, foreign = await device(s, foreign_account)
+    async with httpx.AsyncClient(base_url=backend, headers=foreign, trust_env=False) as http:
+        missing = await http.get("/tasks/inbox-pilot?topic=Y")
+        assert missing.status_code == 200
+        assert missing.json()["state"] == "missing" and missing.json()["research_questions"] == []
+        assert "conversation_id" not in missing.json()
+        known = await http.get(f"/conversations/{y['conversation_id']}")
+        unknown = await http.get(f"/conversations/{uuid4()}")
+        assert known.status_code == unknown.status_code == 404 and known.json() == unknown.json()
+    for change in ("expired", "revoked"):
+        assert (await receive("auth-check"))["change"] == change
+        async with s.db.connection() as conn, conn.transaction():
+            if change == "expired":
+                await conn.execute(
+                    "UPDATE sessions SET access_expires_at=now()-interval '1 minute' WHERE user_id=$1",
+                    s.account,
+                )
+            else:
+                # Test revocation independently of expiry using the same phone bearer.
+                await conn.execute(
+                    "UPDATE sessions SET access_expires_at=now()+interval '1 hour' WHERE user_id=$1",
+                    s.account,
+                )
+                await conn.execute(
+                    "UPDATE devices SET revoked_at=now() WHERE user_id=$1", s.account
+                )
+        await send(change)
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("text_host", ["self-hosted-ui"], indirect=True)
 async def test_two_originals_desktop_phone_lost_second_ack(text_host, monkeypatch):
     s = text_host
     s.inbox_pilot = s.inbox_two_jobs = True
     s.synthetic_deltas = ("Synthetic report X.", " First fixture.")
+    await exercise_two_originals(s, monkeypatch)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("text_host", ["research-self-hosted-ui"], indirect=True)
+async def test_research_two_questions_desktop_phone_original_reports(text_host, monkeypatch):
+    from tests.test_history_inbox_research_postgres import CORPUS, QUESTIONS
+
+    s = text_host
+    s.research_corpus = copy.deepcopy(CORPUS)
+    # Different primary sources, plus a common bulletin edited between starts.
+    # Both versions reach the model only through a real native search response.
+    bulletin = {
+        "title": "District field bulletin",
+        "url": "https://district.example/bulletin",
+        "description": "The field station opens at noon.",
+    }
+    for q in QUESTIONS:
+        s.research_corpus[q].append(bulletin.copy())
+    old_passage = bulletin["description"]
+    new_passage = "The field station now opens at nine."
+
+    def revise_passage():
+        for q in QUESTIONS:
+            s.research_corpus[q] = [*CORPUS[q], {**bulletin, "description": new_passage}]
+
+    await exercise_two_originals(
+        s,
+        monkeypatch,
+        questions=QUESTIONS,
+        source_urls=[[source["url"] for source in s.research_corpus[q]] for q in QUESTIONS],
+        between_questions=revise_passage,
+    )
+    assert [call.query for call in s.search_calls] == list(QUESTIONS)
+    for call, report in zip(s.search_calls, s.reports, strict=True):
+        assert all(source["description"] in report for source in call.results)
+    assert new_passage in s.reports[1] and old_passage not in s.reports[1]
+    assert old_passage in s.reports[0] and new_passage not in s.reports[0]
+
+
+async def exercise_two_originals(
+    s, monkeypatch, *, questions=None, source_urls=None, between_questions=None
+):
     owner = OwnedSearchRedis(Path(os.environ["OPENCODE_WORK_TEST_DIR"]), "inbox-761-two")
     evidence = Path(os.environ["OPENCODE_WORK_EVIDENCE_DIR"])
     with (evidence / f"inbox-two-browser-{uuid4().hex}.jsonl").open("xb") as log:
@@ -85,22 +196,27 @@ async def test_two_originals_desktop_phone_lost_second_ack(text_host, monkeypatc
                     assert received["stage"] == stage
                     return received
 
-                await send(json.dumps(packet))
+                await send(json.dumps({**packet, "questions": questions}))
                 first = await receive("first")
                 await asyncio.wait_for(s.entered.wait(), 10)
                 s.release.set()
                 assert await jobs(s) == ["completed"], s.errors
                 (x,) = await originals(s)
                 assert x["idempotency_key"] == first["key"]
-                assert (
-                    s.execution.encryption.decrypt(x["content"])
-                    == "Synthetic report X. First fixture."
+                first_report = report_for_browser(
+                    s,
+                    x,
+                    text="Synthetic report X. First fixture.",
+                    sources=source_urls[0] if source_urls else None,
                 )
                 s.release.clear()
                 s.entered.clear()
                 s.closed.clear()
-                s.synthetic_deltas = ("Synthetic report Y.", " Second fixture.")
-                await send(json.dumps(identity(x)))
+                if not questions:
+                    s.synthetic_deltas = ("Synthetic report Y.", " Second fixture.")
+                if between_questions is not None:
+                    between_questions()
+                await send(json.dumps(first_report))
                 second = await receive("second")
                 assert second["lost"] == 1
                 await asyncio.wait_for(s.entered.wait(), 10)
@@ -108,9 +224,18 @@ async def test_two_originals_desktop_phone_lost_second_ack(text_host, monkeypatc
                 assert actual_x == x
                 assert y["idempotency_key"] == second["key"] and y["status"] == "running"
                 assert y["id"] != x["id"] and y["conversation_id"] != x["conversation_id"]
+                running_effects = await effect_snapshot(s)
                 await send(json.dumps(identity(y)))
                 phone = await receive("phone")
                 assert phone["starts"] == 2 and phone["refreshed"]
+                assert await effect_snapshot(s) == running_effects
+                after_x, after_y = await originals(s)
+                assert after_x == x
+                assert (identity(after_y), after_y["epoch"], after_y["status"]) == (
+                    identity(y),
+                    y["epoch"],
+                    "running",
+                )
                 async with s.db.connection() as conn:
                     assert (
                         await conn.fetchval(
@@ -125,17 +250,27 @@ async def test_two_originals_desktop_phone_lost_second_ack(text_host, monkeypatc
                 actual_x, actual_y = await originals(s)
                 assert actual_x == x and identity(actual_y) == identity(y)
                 assert actual_y["epoch"] == y["epoch"] and actual_y["status"] == "completed"
-                assert (
-                    s.execution.encryption.decrypt(actual_y["content"])
-                    == "Synthetic report Y. Second fixture."
+                second_report = report_for_browser(
+                    s,
+                    actual_y,
+                    text="Synthetic report Y. Second fixture.",
+                    sources=source_urls[1] if source_urls else None,
                 )
+                terminal_effects = await effect_snapshot(s)
                 await send("second committed")
+                if questions:
+                    assert len(s.calls) == 4
+                    assert len(terminal_effects[1]) == 6
+                    assert all(r["status"] == "settled" for r in terminal_effects[1])
+                    await send(json.dumps(second_report))
+                    await check_research_auth(s, packet["backend"], actual_y, receive, send)
                 finished = await receive("finished")
                 assert finished["starts"] == 2 and finished["lost"] == 1
                 assert (finished["x"], finished["y"]) == (str(x["id"]), str(y["id"]))
                 await asyncio.wait_for(child.wait(), 20)
                 assert child.returncode == 0 and not s.errors
                 assert await originals(s) == [x, actual_y]
+                assert await effect_snapshot(s) == terminal_effects
         finally:
             if child is not None and child.returncode is None:
                 child.terminate()

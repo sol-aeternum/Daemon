@@ -391,6 +391,8 @@ class ComputeScope:
     # Only an original managed-restart runner requests retention. Observation
     # of a hold never settles it or prolongs its financial lifetime.
     retirement_holds: list[ReservationHold] | None = None
+    research_search_started: bool = False
+    research_search_ok: bool = False
 
     async def close_stream(self, hold: ReservationHold) -> None:
         """Close acquired transport even when its iterator was never advanced."""
@@ -1370,7 +1372,15 @@ class ToolCallCharge:
     only the initial state establishes a known zero provider outcome.
     """
 
-    __slots__ = ("_dispatch_aware", "_hold", "_state", "_units", "_invocation")
+    __slots__ = (
+        "_dispatch_aware",
+        "_hold",
+        "_state",
+        "_units",
+        "_invocation",
+        "_history_scope",
+        "_history_binding",
+    )
 
     def __init__(
         self,
@@ -1378,12 +1388,43 @@ class ToolCallCharge:
         dispatch_aware: bool = False,
         hold: ReservationHold | None = None,
         inference_invocation: InferenceInvocation | None = None,
+        history_scope: ComputeScope | None = None,
     ) -> None:
         self._dispatch_aware = dispatch_aware
         self._hold = hold
         self._state = "pre_dispatch"
         self._units = 1
         self._invocation = inference_invocation
+        self._history_scope = history_scope
+        self._history_binding = history_scope.history_binding if history_scope is not None else None
+
+    async def prepare_history_dispatch(self, *, deadline: float) -> bool:
+        """After pacing, stage the original H/native search Send before transport."""
+        scope = self._history_scope
+        if scope is None:
+            return False
+        scope.require_inference()
+        binding = scope.history_binding
+        if (
+            binding is None
+            or binding is not self._history_binding
+            or self._hold is None
+            or self._state != "pre_dispatch"
+            or self._hold.settlement is not None
+        ):
+            raise ObservationBlocked("history_search_dispatch_unavailable")
+        # An uncertain H/SQL mark is not a known-zero predispatch refusal.
+        self._hold.actual = None
+        self._state = "possible"
+        await binding.effects.mark(
+            binding.identity,
+            _hold_key(self._hold.reservation),
+            binding.state,
+            effect_kind="web_search",
+            deadline=min(deadline, time.monotonic() + 2.0),
+        )
+        scope.require_inference()
+        return True
 
     @property
     def confirmed(self) -> bool:
@@ -1408,7 +1449,13 @@ class ToolCallCharge:
         require_effect()
         if self._invocation is not None:
             self._invocation.require_send()
-        if self._state != "pre_dispatch":
+        if self._history_scope is not None:
+            self._history_scope.require_inference()
+            if self._history_scope.history_binding is not self._history_binding:
+                assert self._invocation is not None
+                self._invocation.block("history_search_dispatch_unavailable")
+                raise ObservationBlocked("history_search_dispatch_unavailable")
+        if self._state != ("possible" if self._history_scope is not None else "pre_dispatch"):
             raise RuntimeError("Tool dispatch was already marked or confirmed")
         if self._hold is not None:
             if self._hold.settlement is not None:
@@ -1439,6 +1486,7 @@ async def metered_tool_call(
     required_capability: str | None = None,
     dispatch_aware: bool = False,
     work_deadline: float | None = None,
+    history_tool: Any = None,
 ) -> AsyncIterator[ToolCallCharge]:
     """Reserve, then settle, exactly ONE fixed-price tool unit.
 
@@ -1479,8 +1527,30 @@ async def metered_tool_call(
     finish outside the work deadline and never dispatches provider work.
     """
     active = scope if scope is not None else current_scope()
+    history_scope = None
     if text_only_execution() or active.history_requirement is not None:
-        raise ComputeUnavailable("capability_unavailable", "Tools unavailable in text execution")
+        from orchestrator.tasks._history_binding import research_tool
+
+        tool = research_tool()
+        if (
+            tool is None
+            or history_tool is not tool
+            or active is not current_scope()
+            or active.completion_seq != 1
+            or active.research_search_started
+            or approval.service_id != "brave-web-search"
+            or approval.service != "web_search"
+            or approval.provider != "brave"
+            or approval.unit != "call"
+            or required_capability != "web_research"
+            or not dispatch_aware
+            or work_deadline is None
+        ):
+            raise ComputeUnavailable(
+                "capability_unavailable", "Tools unavailable in text execution"
+            )
+        active.research_search_started = True
+        history_scope = active
     active.require_inference()
     if type(dispatch_aware) is not bool:
         raise ValueError("Tool dispatch tracking must be explicitly boolean")
@@ -1607,6 +1677,8 @@ async def metered_tool_call(
                 first_extended = active.extended and not active.extended_started
                 if dispatch_aware:
                     acquisition = asyncio.create_task(acquire_and_register(first_extended))
+                    if history_scope is not None:
+                        active.cleanup_owners.add(acquisition)
                     try:
                         reservation = await asyncio.shield(acquisition)
                     except BaseException as exc:
@@ -1662,6 +1734,7 @@ async def metered_tool_call(
         dispatch_aware=dispatch_aware,
         hold=active.outstanding[_hold_key(reservation)] if dispatch_aware else None,
         inference_invocation=active.inference_invocation,
+        history_scope=history_scope,
     )
     try:
         approved_tool_service(
@@ -1683,6 +1756,9 @@ async def metered_tool_call(
         active.require_inference()
         yield charge
     finally:
+        if history_scope is not None and not charge.confirmed and not charge.known_not_dispatched:
+            assert active.inference_invocation is not None
+            active.inference_invocation.call_failed = True
         await _settle_tool_hold(active, reservation, approval, charge=charge)
 
 
@@ -2631,11 +2707,29 @@ async def guarded_completion(
     ``retryable`` classification a failed call raises.
     """
     scope = current_scope()
-    if (text_only_execution() or scope.history_requirement is not None) and any(
-        params.get(key) not in (None, [], "none")
-        for key in ("tools", "tool_choice", "functions", "function_call")
-    ):
-        raise ComputeUnavailable("capability_unavailable", "Tools unavailable in text execution")
+    if text_only_execution() or scope.history_requirement is not None:
+        from orchestrator.tasks._history_binding import research_tool
+
+        tool = research_tool()
+        has_tools = any(
+            params.get(key) not in (None, [], "none")
+            for key in ("tools", "tool_choice", "functions", "function_call")
+        )
+        if tool is None:
+            allowed = not has_tools
+        elif scope.completion_seq == 0:
+            allowed = (
+                params.get("tools") == [tool.to_openai_schema()]
+                and params.get("tool_choice") == "auto"
+                and params.get("functions") is None
+                and params.get("function_call") is None
+            )
+        else:
+            allowed = scope.completion_seq == 1 and scope.research_search_ok and not has_tools
+        if not allowed:
+            raise ComputeUnavailable(
+                "capability_unavailable", "Tools unavailable in text execution"
+            )
     scope.require_inference()
     started = asyncio.get_running_loop().time()
     deadline = started + get_settings().request_timeout_s
@@ -2973,9 +3067,17 @@ async def guarded_completion(
             token = inference_transport.current.set(evidence)
             try:
                 if scope.invocation_managed():
+                    model_transport = litellm.acompletion
+                    if (
+                        scope.history_binding is not None
+                        and scope.history_binding.effects._projection.profile == "inbox-research-v1"
+                    ):
+                        scope.require_inference()
+                        model_transport = scope.history_binding.research_model_transport
+                        assert model_transport is not None
                     call_started = True
                     response = await asyncio.wait_for(
-                        litellm.acompletion(**call),
+                        model_transport(**call),
                         timeout=max(0, dispatch_deadline - asyncio.get_running_loop().time()),
                     )
                 else:

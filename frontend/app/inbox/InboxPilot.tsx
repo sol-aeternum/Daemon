@@ -16,6 +16,7 @@ const PROMPTS: Record<Topic, string> = {
   Y: 'Do a deep dive on Y.',
 };
 const FOLLOWUP = 'How’s that going?';
+const QUESTION_LIMIT = 512;
 const TOPIC_FOLLOWUPS: Record<Topic, string> = {
   X: 'How’s X going?',
   Y: 'How’s Y going?',
@@ -32,37 +33,59 @@ const UUID = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/;
 type SingleSnapshot =
   | { kind: 'single'; state: Exclude<keyof typeof COPY, 'completed'> }
   | { kind: 'single'; state: 'completed'; conversation_id: string };
-type MultiSnapshot =
-  | { kind: 'multi'; state: 'empty'; can_start: Topic[] }
-  | { kind: 'multi'; state: 'missing'; topic: Topic; can_start: Topic[] }
+type SlotState =
+  | { state: 'empty'; can_start: Topic[] }
+  | { state: 'missing'; topic: Topic; can_start: Topic[] }
   | {
-      kind: 'multi';
       state: 'ambiguous';
       choices: Topic[];
       can_start: Topic[];
     }
   | {
-      kind: 'multi';
       state: 'queued' | 'running' | 'cancelled';
       topic: Topic;
       can_start: Topic[];
     }
   | {
-      kind: 'multi';
       state: 'completed';
       topic: Topic;
       conversation_id: string;
       can_start: Topic[];
     };
-type Snapshot = SingleSnapshot | MultiSnapshot;
+type MultiSnapshot = SlotState & { kind: 'multi' };
+type ResearchSnapshot = SlotState & {
+  kind: 'research';
+  questions: string[];
+};
+type Snapshot = SingleSnapshot | MultiSnapshot | ResearchSnapshot;
 type RequestOptions = {
   key?: string;
   topic?: Topic;
   requireMulti?: boolean;
+  question?: string;
 };
 
 function isTopic(value: unknown): value is Topic {
   return value === 'X' || value === 'Y';
+}
+
+function trimQuestion(text: string): string {
+  // Match Python str.strip() on the sealed question, including its four C0 separators.
+  return text.replace(
+    /^[\p{White_Space}\u001c-\u001f]+|[\p{White_Space}\u001c-\u001f]+$/gu,
+    '',
+  );
+}
+
+function validQuestion(value: unknown): value is string {
+  return (
+    typeof value === 'string' &&
+    value.length > 0 &&
+    trimQuestion(value) === value &&
+    !value.includes('\0') &&
+    !/[\uD800-\uDFFF]/u.test(value) &&
+    [...value].length <= QUESTION_LIMIT
+  );
 }
 
 function parseTopics(value: unknown): Topic[] {
@@ -80,8 +103,28 @@ function parseSnapshot(value: unknown, selectedTopic?: Topic): Snapshot {
   if (!value || typeof value !== 'object' || Array.isArray(value))
     throw Error('Invalid inbox state');
   const record = value as Record<string, unknown>;
+  if ('research_questions' in record) {
+    const original = parseSlot(record, selectedTopic);
+    const questions = record.research_questions;
+    if (
+      !Array.isArray(questions) ||
+      questions.length > 2 ||
+      new Set(questions).size !== questions.length ||
+      !questions.every(validQuestion) ||
+      (original.state === 'empty' && questions.length !== 0) ||
+      (original.state === 'ambiguous' && questions.length !== 2) ||
+      original.can_start.some((t) => t !== TOPICS[questions.length])
+    )
+      throw Error('Invalid research inbox');
+    if ('topic' in original) {
+      const exists = TOPICS.indexOf(original.topic) < questions.length;
+      if (exists !== (original.state !== 'missing'))
+        throw Error('Invalid research topic');
+    }
+    return { ...original, kind: 'research', questions };
+  }
   if ('can_start' in record || 'topic' in record || 'choices' in record) {
-    return parseMulti(record, selectedTopic);
+    return { ...parseSlot(record, selectedTopic), kind: 'multi' };
   }
   return parseSingle(record);
 }
@@ -110,10 +153,10 @@ function parseSingle(record: Record<string, unknown>): SingleSnapshot {
   throw Error('Invalid inbox state');
 }
 
-function parseMulti(
+function parseSlot(
   record: Record<string, unknown>,
   selectedTopic?: Topic,
-): MultiSnapshot {
+): SlotState {
   const can_start = parseTopics(record.can_start);
   const { state } = record;
   if (state === 'ambiguous') {
@@ -122,7 +165,7 @@ function parseMulti(
       throw Error('Invalid inbox state');
     if ('topic' in record || 'conversation_id' in record)
       throw Error('Invalid inbox state');
-    return { kind: 'multi', state, choices, can_start: [] };
+    return { state, choices, can_start: [] };
   }
   if (state === 'missing') {
     if (
@@ -133,12 +176,12 @@ function parseMulti(
     ) {
       throw Error('Invalid inbox state');
     }
-    return { kind: 'multi', state, topic: selectedTopic, can_start };
+    return { state, topic: selectedTopic, can_start };
   }
   if (state === 'empty') {
     if ('topic' in record || 'choices' in record || 'conversation_id' in record)
       throw Error('Invalid inbox state');
-    return { kind: 'multi', state, can_start };
+    return { state, can_start };
   }
   if (
     state !== 'queued' &&
@@ -165,7 +208,6 @@ function parseMulti(
       throw Error('Invalid inbox state');
     }
     return {
-      kind: 'multi',
       state,
       topic,
       conversation_id: record.conversation_id,
@@ -173,10 +215,16 @@ function parseMulti(
     };
   }
   if ('conversation_id' in record) throw Error('Invalid inbox state');
-  return { kind: 'multi', state, topic, can_start };
+  return { state, topic, can_start };
 }
 
 function statusText(snapshot: Snapshot, acknowledged: boolean): string {
+  if (snapshot.kind === 'research') {
+    if (acknowledged) return 'Accepted.';
+    if (snapshot.state === 'ambiguous') return 'Which question do you mean?';
+    if (snapshot.state === 'missing') return 'No matching research request.';
+    return COPY[snapshot.state];
+  }
   if (snapshot.kind === 'multi') {
     if (acknowledged && 'topic' in snapshot)
       return `${snapshot.topic}: Accepted.`;
@@ -206,6 +254,11 @@ function canStart(
 
 function placeholderFor(snapshot: Snapshot | null): string {
   if (!snapshot) return FOLLOWUP;
+  if (snapshot.kind === 'research') {
+    if (snapshot.state === 'empty') return 'Ask a research question';
+    if (snapshot.can_start.length) return 'Ask for status, or type Research: …';
+    return FOLLOWUP;
+  }
   if (snapshot.kind === 'single')
     return snapshot.state === 'empty' ? PROMPT : FOLLOWUP;
   if (snapshot.state === 'empty' || snapshot.state === 'missing') {
@@ -249,7 +302,7 @@ async function fetchSnapshot(
       : endpoint;
   const body =
     key && topic !== undefined
-      ? JSON.stringify({ text: PROMPTS[topic] })
+      ? JSON.stringify({ text: options.question ?? PROMPTS[topic] })
       : undefined;
   const response = await fetch(url, {
     method: key ? 'POST' : 'GET',
@@ -268,7 +321,7 @@ async function fetchSnapshot(
   });
   if (!response.ok) throw Error('Unverified inbox response');
   const snapshot = parseSnapshot(await response.json(), topic);
-  if (requireMulti && snapshot.kind !== 'multi')
+  if (requireMulti && snapshot.kind === 'single')
     throw Error('Unverified inbox response');
   if (key) {
     if (
@@ -278,9 +331,17 @@ async function fetchSnapshot(
     ) {
       throw Error('Unverified acceptance');
     }
+    if (
+      options.question !== undefined &&
+      (topic === undefined ||
+        snapshot.kind !== 'research' ||
+        snapshot.topic !== topic ||
+        snapshot.questions[TOPICS.indexOf(topic)] !== options.question)
+    )
+      throw Error('Unverified acceptance');
   } else if (topic !== undefined) {
     if (
-      snapshot.kind !== 'multi' ||
+      snapshot.kind === 'single' ||
       snapshot.state === 'empty' ||
       snapshot.state === 'ambiguous'
     ) {
@@ -392,6 +453,47 @@ function InboxSession({
     if (work.current || getAuthGeneration() !== generation) return;
     const text = input.trim().replaceAll("'", '’');
     const saved = status.kind === 'saved' ? status.snapshot : null;
+    if (mode.current === 'research') {
+      const raw = trimQuestion(input);
+      if (/^(how[’']?s (that|it) going|any updates?|status)\??$/i.test(raw)) {
+        begin({});
+        return;
+      }
+      const research = saved?.kind === 'research' ? saved : null;
+      const selected = research?.questions.indexOf(raw) ?? -1;
+      if (selected >= 0) {
+        begin({ topic: TOPICS[selected] });
+        return;
+      }
+      const question = /^research:/i.test(raw)
+        ? trimQuestion(raw.slice('Research:'.length))
+        : research?.state === 'empty'
+          ? raw
+          : '';
+      const next = research?.can_start[0];
+      if (question && research?.questions.includes(question)) {
+        setHint(
+          'This question already exists. Send its text to check its status.',
+        );
+        return;
+      }
+      if (question && !validQuestion(question)) {
+        setHint(`Use a text question of up to ${QUESTION_LIMIT} characters.`);
+        return;
+      }
+      if (!next || startKeys.current[next] || !question) {
+        setHint(
+          next
+            ? 'To start another question, type “Research:” followed by your question.'
+            : `Ask “${FOLLOWUP}” to check the saved request.`,
+        );
+        return;
+      }
+      const key = crypto.randomUUID();
+      startKeys.current[next] = key;
+      begin({ key, topic: next, question });
+      return;
+    }
     const startTopic = TOPICS.find((topic) => PROMPTS[topic] === text);
     if (startTopic !== undefined) {
       if (!saved || !canStart(saved, startTopic, startKeys.current)) {
@@ -436,6 +538,27 @@ function InboxSession({
         {status.kind === 'saved' && (
           <p>{statusText(status.snapshot, status.acknowledged)}</p>
         )}
+        {saved?.kind === 'research' &&
+          'topic' in saved &&
+          saved.state !== 'missing' && (
+            <p className="break-words">
+              {saved.questions[TOPICS.indexOf(saved.topic)]}
+            </p>
+          )}
+        {saved?.kind === 'research' && saved.state === 'ambiguous' && (
+          <ul>
+            {saved.questions.map((question, index) => (
+              <li key={question}>
+                <button
+                  className="min-h-11 break-words text-left underline"
+                  onClick={() => begin({ topic: TOPICS[index] })}
+                >
+                  {question}
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
         {report && (
           <Link
             href={`/?id=${report}`}
@@ -456,14 +579,23 @@ function InboxSession({
               id="inbox-pilot-message"
               className="min-h-11 min-w-0 flex-1 rounded-md border border-[var(--color-border)] bg-transparent px-3"
               placeholder={placeholderFor(saved)}
-              maxLength={128}
+              maxLength={
+                saved?.kind === 'research'
+                  ? 'Research: '.length + 2 * QUESTION_LIMIT
+                  : 128
+              }
               value={input}
               onChange={(event) => setInput(event.target.value)}
             />
             <button
               type="submit"
               aria-label="Send message"
-              disabled={status.kind === 'checking' || !input.trim()}
+              disabled={
+                status.kind === 'checking' ||
+                !(saved?.kind === 'research'
+                  ? trimQuestion(input)
+                  : input.trim())
+              }
               className="min-h-11 shrink-0 rounded-md border border-[var(--color-border)] px-4 disabled:opacity-50"
             >
               Send

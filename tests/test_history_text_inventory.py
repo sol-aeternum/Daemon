@@ -61,6 +61,7 @@ def test_omitted_native_claim_expectation_is_not_h_owned_join():
         ("orchestrator/tasks/runner.py", "model", "HistoryError"),
         ("orchestrator/tasks/store.py", "coordination", "HistoryOperation"),
         ("orchestrator/tasks/composition.py", "text_execution", "HistoryTextExecution"),
+        ("orchestrator/tasks/runner.py", "text_execution", "HistoryResearchExecution"),
     ],
 )
 def test_new_type_import_exceptions_require_exact_canonical_namespace(path, module, symbol):

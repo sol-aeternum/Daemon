@@ -462,11 +462,27 @@ async def completion_with_tools(
     max_output_tokens: int | None = None,
     call_overrides: dict[str, Any] | None = None,
 ) -> AsyncIterator[dict[str, Any]]:
-    from orchestrator.tasks._history_binding import text_only_execution
+    from orchestrator.tasks._history_binding import research_tool, text_only_execution
+    from orchestrator.tools.web_search import (
+        research_search_arguments,
+        validate_research_search_result,
+    )
 
     restricted = text_only_execution()
-    if restricted and len(registry):
+    research = research_tool()
+    if restricted and (
+        (research is None and len(registry))
+        or (
+            research is not None
+            and (len(registry) != 1 or registry.get("web_search") is not research)
+        )
+    ):
         raise ComputeUnavailable("capability_unavailable", "Tools unavailable in text execution")
+    if research is not None:
+        if max_tool_rounds < 1 or completion_dispatch is not None:
+            raise ComputeUnavailable("capability_unavailable", "Research search unavailable")
+        max_tool_rounds = 1
+        reasoning_fallback = False
     # The evaluation adapter observes this exact loop and keeps its dispatches
     # inside the ordinary qualification/accounting runtime. Normal callers use
     # the same guarded completion as before; no provider request is reimplemented.
@@ -588,6 +604,10 @@ async def completion_with_tools(
                         reasoning = _reasoning_text_from_details(reasoning_details)
 
                     if reasoning:
+                        if research is not None:
+                            raise ComputeUnavailable(
+                                "capability_unavailable", "Unsupported research response"
+                            )
                         yield {
                             "type": "thinking",
                             "content": reasoning,
@@ -597,6 +617,10 @@ async def completion_with_tools(
                     # 2. Handle Content
                     content_chunk = getattr(delta, "content", None) or delta.get("content")
                     if content_chunk:
+                        if research is not None:
+                            raise ComputeUnavailable(
+                                "capability_unavailable", "Research must search before synthesis"
+                            )
                         content_buffer.append(content_chunk)
                         # Yield incremental delta for real-time streaming
                         yield {
@@ -608,7 +632,7 @@ async def completion_with_tools(
                     # 3. Handle Tool Calls
                     tool_calls_chunk = getattr(delta, "tool_calls", None) or delta.get("tool_calls")
                     if tool_calls_chunk:
-                        if restricted:
+                        if restricted and research is None:
                             raise ComputeUnavailable(
                                 "capability_unavailable", "Provider requested unavailable tools"
                             )
@@ -635,6 +659,13 @@ async def completion_with_tools(
                                 tool_calls_buffer[idx]["function"]["name"] = func_name
                             if func_args:
                                 tool_calls_buffer[idx]["function"]["arguments"] += func_args
+                            if research is not None and (
+                                idx != 0
+                                or len(tool_calls_buffer[idx]["function"]["arguments"]) > 4096
+                            ):
+                                raise ComputeUnavailable(
+                                    "capability_unavailable", "Unsupported research tool calls"
+                                )
 
         except (ComputeUnavailable, EntitlementsError):
             raise
@@ -656,6 +687,25 @@ async def completion_with_tools(
         # End of stream for this round
         tool_calls = list(tool_calls_buffer.values())
         full_content = "".join(content_buffer)
+        if research is not None:
+            finish_evidence = provider_finish(response_stream)
+            if (
+                len(tool_calls) != 1
+                or tool_calls[0]["function"]["name"] != "web_search"
+                or type(tool_calls[0]["id"]) is not str
+                or not 1 <= len(tool_calls[0]["id"]) <= 128
+                or finish_evidence.get("state") != "confirmed"
+                or finish_evidence.get("reason") != "tool_calls"
+            ):
+                raise ComputeUnavailable(
+                    "capability_unavailable", "Research requires one native search"
+                )
+            try:
+                research_search_arguments(json.loads(tool_calls[0]["function"]["arguments"]))
+            except (ValueError, TypeError):
+                raise ComputeUnavailable(
+                    "capability_unavailable", "Invalid research search"
+                ) from None
 
         # If we had tool calls, process them
         if tool_calls:
@@ -794,6 +844,15 @@ async def completion_with_tools(
                     **invocation_metadata,
                     "id": str(uuid.uuid4()),
                 }
+
+                if research is not None:
+                    try:
+                        validate_research_search_result(json.loads(func_args), json.loads(result))
+                    except (ValueError, TypeError):
+                        raise ComputeUnavailable(
+                            "capability_unavailable", "Research search unsuccessful"
+                        ) from None
+                    current_scope().research_search_ok = True
 
                 current_messages.append(_tool_result_message(tc, result, native_tools_enabled))
             if context_exhausted or (
@@ -981,6 +1040,10 @@ async def completion_with_tools(
                     reasoning = _reasoning_text_from_details(reasoning_details)
 
                 if reasoning:
+                    if research is not None:
+                        raise ComputeUnavailable(
+                            "capability_unavailable", "Unsupported research synthesis"
+                        )
                     yield {
                         "type": "thinking",
                         "content": reasoning,
@@ -990,6 +1053,13 @@ async def completion_with_tools(
                 content_chunk = getattr(delta, "content", None) or (
                     delta.get("content") if isinstance(delta, dict) else None
                 )
+                if research is not None and (
+                    getattr(delta, "tool_calls", None)
+                    or (delta.get("tool_calls") if isinstance(delta, dict) else None)
+                ):
+                    raise ComputeUnavailable(
+                        "capability_unavailable", "Research synthesis cannot call tools"
+                    )
                 if content_chunk:
                     synthesis_content_buffer.append(content_chunk)
                     yield {

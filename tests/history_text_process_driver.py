@@ -31,10 +31,15 @@ from orchestrator.services.restore_history.model import Identity
 from orchestrator.services.restore_history.observation import HistoryObservation
 from orchestrator.services.restore_history.store import Ownership
 from orchestrator.services.restore_history.terminal_projection import (
+    InboxResearchHistoryProjection,
     InboxRetiredHistoryProjection,
     TerminalHistoryProjection,
 )
-from orchestrator.services.restore_history.text_execution import HistoryTextExecution
+from orchestrator.services.restore_history.text_execution import (
+    HistoryResearchExecution,
+    HistoryTextExecution,
+)
+from orchestrator.services.search_pacing import SearchPacer
 from orchestrator.tasks.runner import run_chat_task
 from orchestrator.tasks.store import TaskStore
 from tests.restore_history_support import KEY
@@ -87,14 +92,67 @@ async def main(packet, mode):
         channel.set_inheritable(False)
         with socket.fromfd(packet["listener_fd"], socket.AF_INET, socket.SOCK_STREAM) as listener:
             lineage = InboxChild(channel, listener, Path(packet["path"]), identity.history_id)
-    projection = (InboxRetiredHistoryProjection if lineage else TerminalHistoryProjection)(
+    research = packet.get("inbox_research", False)
+    projection_type = InboxRetiredHistoryProjection if lineage else TerminalHistoryProjection
+    if research:
+        assert not lineage and mode in {"start", "ui-reopen"}
+        projection_type = InboxResearchHistoryProjection
+        from orchestrator.entitlements.policy import parse_inference_policy
+        from tests.test_metered_web_search import _approved_document
+
+        # The original route and the native tool admission both use this fixture policy.
+        policy = cast(Any, runtime.load_inference_policy())
+        policy.tool_service = parse_inference_policy(_approved_document()).tool_service
+        patch.setattr(runtime, "load_inference_policy", lambda: policy)
+    projection = projection_type(
         identity, acceptor="md_acceptor", worker="md_app", publisher="reserved_p"
     )
     histories = [
         HistoryCoordinator(Path(packet["path"]), identity, ownership, profile=projection.profile)
         for _ in range(3)
     ]
-    execution = HistoryTextExecution(w, encryption, settings, histories[2], projection)
+    calls = 0
+    if isinstance(projection, InboxResearchHistoryProjection):
+
+        def no_search(request):
+            raise AssertionError("Process interruption before search must never reach transport")
+
+        async def interrupted_model(**kwargs):
+            nonlocal calls
+            calls += 1
+            assert mode == "start" and calls == 1
+            assert [tool["function"]["name"] for tool in kwargs["tools"]] == ["web_search"]
+            attempt = runtime.current_scope().inference_identity
+            assert attempt is not None
+            content = await w.fetchval(
+                "SELECT m.content FROM tasks t JOIN messages m ON m.id=t.result_message_id "
+                "WHERE t.id=$1",
+                attempt.task_id,
+            )
+            print(
+                json.dumps(
+                    {
+                        "task": str(attempt.task_id),
+                        "partial": encryption.decrypt(content),
+                        "calls": calls,
+                    }
+                ),
+                flush=True,
+            )
+            await asyncio.Future()  # The owning test kills this exact interpreter.
+
+        execution = HistoryResearchExecution(
+            w,
+            encryption,
+            settings,
+            histories[2],
+            projection,
+            model_transport=interrupted_model,
+            search_transport=httpx.MockTransport(no_search),
+            search_pacer=SearchPacer(client_factory=None),
+        )
+    else:
+        execution = HistoryTextExecution(w, encryption, settings, histories[2], projection)
     host = IsolatedAcceptanceHost(
         HistoryAcceptance(
             TaskStore(a, encryption, MemoryStore(a, encryption), cover_new_inference=True),
@@ -113,12 +171,12 @@ async def main(packet, mode):
         inbox_two_jobs=packet.get("inbox_two_jobs", False),
         _inbox_child=lineage,
     )
-    calls = 0
     observations = {}
     patch.setattr(runtime.inference_transport, "observe_stream_finish", observations.get)
 
     async def provider(**kwargs):
         nonlocal calls
+        assert not research, "Research dispatch must use its explicitly constructed transport"
         calls += 1
         assert mode in ("start", "complete", "managed") and calls == 1
         scope = runtime.current_scope()
@@ -294,7 +352,7 @@ async def main(packet, mode):
                             "Authorization": packet["authorization"],
                             "Idempotency-Key": "stable",
                         },
-                        json={"text": "Do a deep dive on X."},
+                        json={"text": packet.get("question", "Do a deep dive on X.")},
                     )
                     assert response.status_code == 200
                 task_id = next(iter(execution._scheduled))

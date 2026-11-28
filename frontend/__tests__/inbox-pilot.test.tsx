@@ -83,6 +83,132 @@ function send(text: string) {
   fireEvent.click(screen.getByRole('button', { name: 'Send message' }));
 }
 
+it('sends the original question verbatim and resolves research choices by read only', async () => {
+  const question = "Which library's Sunday hours changed?";
+  const second = 'Which branches offer bicycle parking?';
+  const fetcher = vi
+    .fn()
+    .mockResolvedValueOnce(
+      Response.json({
+        state: 'empty',
+        research_questions: [],
+        can_start: ['X'],
+      }),
+    )
+    .mockResolvedValueOnce(
+      Response.json({
+        state: 'running',
+        research_questions: [question],
+        topic: 'X',
+        can_start: [],
+      }),
+    )
+    .mockResolvedValueOnce(
+      Response.json({
+        state: 'ambiguous',
+        research_questions: [question, second],
+        choices: ['X', 'Y'],
+        can_start: [],
+      }),
+    )
+    .mockResolvedValueOnce(
+      Response.json({
+        state: 'completed',
+        research_questions: [question, second],
+        topic: 'Y',
+        can_start: [],
+        conversation_id: reportId,
+      }),
+    );
+  vi.stubGlobal('fetch', fetcher);
+  render(<InboxPilot endpoint={endpoint} />);
+  await screen.findByPlaceholderText('Ask a research question');
+  send(`\u0085${question}\u001c`);
+  await screen.findByText('Accepted.');
+  expect(JSON.parse(fetcher.mock.calls[1][1].body)).toEqual({ text: question });
+  send("How's that going?");
+  await screen.findByText('Which question do you mean?');
+  expect(screen.queryByRole('link')).toBeNull();
+  fireEvent.click(screen.getByRole('button', { name: second }));
+  expect(
+    (await screen.findByRole('link', { name: 'Open report' })).getAttribute(
+      'href',
+    ),
+  ).toBe(`/?id=${reportId}`);
+  expect(fetcher.mock.calls.map(([, init]) => init.method)).toEqual([
+    'GET',
+    'POST',
+    'GET',
+    'GET',
+  ]);
+  expect(fetcher.mock.calls[3][0]).toBe(`${endpoint}?topic=Y`);
+});
+
+it('does not acknowledge a research POST when the sealed question differs', async () => {
+  const fetcher = vi
+    .fn()
+    .mockResolvedValueOnce(
+      Response.json({
+        state: 'empty',
+        research_questions: [],
+        can_start: ['X'],
+      }),
+    )
+    .mockResolvedValueOnce(
+      Response.json({
+        state: 'completed',
+        research_questions: ['Different question'],
+        topic: 'X',
+        can_start: [],
+        conversation_id: reportId,
+      }),
+    );
+  vi.stubGlobal('fetch', fetcher);
+  render(<InboxPilot endpoint={endpoint} />);
+  await screen.findByPlaceholderText('Ask a research question');
+  send('Which footbridge reopened?');
+  await screen.findByText('Status unavailable');
+  expect(screen.queryByRole('link')).toBeNull();
+  send('Which footbridge reopened?');
+  expect(fetcher).toHaveBeenCalledTimes(2);
+});
+
+it('requires an explicit second research start and never replaces an unacknowledged one', async () => {
+  const first = 'When did the station open?';
+  const second = 'Who funded the footbridge?';
+  const completed = {
+    state: 'completed',
+    research_questions: [first],
+    topic: 'X',
+    can_start: ['Y'],
+    conversation_id: reportId,
+  };
+  const fetcher = vi
+    .fn()
+    .mockResolvedValueOnce(Response.json(completed))
+    .mockRejectedValueOnce(new TypeError('Lost acknowledgement'))
+    .mockResolvedValueOnce(Response.json(completed));
+  vi.stubGlobal('fetch', fetcher);
+  render(<InboxPilot endpoint={endpoint} />);
+  await screen.findByRole('link', { name: 'Open report' });
+  send(second);
+  expect(fetcher).toHaveBeenCalledTimes(1);
+  send(`Research: ${first}`);
+  expect(fetcher).toHaveBeenCalledTimes(1);
+  send(`Research: ${second}`);
+  await screen.findByText('Status unavailable');
+  expect(screen.queryByRole('link')).toBeNull();
+  send('Any updates?');
+  await screen.findByRole('link', { name: 'Open report' });
+  send(`Research: ${second}`);
+  expect(fetcher.mock.calls.map(([, opts]) => opts.method)).toEqual([
+    'GET',
+    'POST',
+    'GET',
+  ]);
+  expect(JSON.parse(fetcher.mock.calls[1][1].body)).toEqual({ text: second });
+});
+
 it('keeps a lost start unacknowledged and follows the original with reads only', async () => {
   const fetcher = vi
     .fn()

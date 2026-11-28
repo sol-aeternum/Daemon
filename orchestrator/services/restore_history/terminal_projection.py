@@ -123,6 +123,12 @@ class TerminalV4HistoryProjection(TerminalHistoryProjection):
     _kinds = (*TerminalHistoryProjection._kinds, NonsuccessOutputPrepare)
 
 
+class InboxResearchHistoryProjection(TerminalHistoryProjection):
+    """Explicit bounded research composition over the unchanged v3 SQL interface."""
+
+    _profile: Profile = "inbox-research-v1"
+
+
 INBOX_RETIRED_CATALOG = _replace(
     TERMINAL_CATALOG,
     "count(*)=16 AND bool_and(p.proowner",
@@ -258,4 +264,5 @@ TERMINAL_PROFILES: dict[type[AcceptanceProjection], Profile] = {
     TerminalHistoryProjection: "terminal-v3",
     TerminalV4HistoryProjection: "terminal-v4",
     InboxRetiredHistoryProjection: "inbox-retired-v1",
+    InboxResearchHistoryProjection: "inbox-research-v1",
 }

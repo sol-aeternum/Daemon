@@ -5,7 +5,7 @@ import { chromium } from "../frontend/node_modules/playwright/index.mjs";
 
 const lines = createInterface({ input: process.stdin });
 const frames = lines[Symbol.asyncIterator]();
-const { ui, backend, bootstrap, managedRestart } = JSON.parse((await frames.next()).value);
+const { ui, backend, bootstrap, managedRestart, questions } = JSON.parse((await frames.next()).value);
 const browser = await chromium.launch();
 const pilot = backend + "/tasks/inbox-pilot";
 const receipt = (stage, values = {}) => console.log(JSON.stringify({ stage, ...values }));
@@ -13,7 +13,10 @@ let phase = "setup";
 let starts = 0;
 let lost = 0;
 const external = [];
-const prompt = (topic) => `Do a deep dive on ${topic}.`;
+const prompt = (topic) => questions
+  ? `Research: ${questions[topic === "X" ? 0 : 1]}`
+  : `Do a deep dive on ${topic}.`;
+const clarification = questions ? /Which question do you mean/ : /Do you mean research X or Y/;
 const isPilot = (url) => new URL(url).origin + new URL(url).pathname === pilot;
 const composer = (page) => page.getByRole("textbox", { name: "Message Daemon" });
 const button = (page) => page.getByRole("button", { name: "Send message" });
@@ -67,7 +70,14 @@ async function ask(page, message, expectedTopic, expectedState) {
   const response = page.waitForResponse((r) =>
     isPilot(r.url()) && r.request().method() === "GET" &&
     new URL(r.url()).searchParams.get("topic") === expectedTopic);
-  await send(page, message, "GET");
+  if (questions && expectedTopic) {
+    const question = questions[expectedTopic === "X" ? 0 : 1];
+    const choice = page.getByRole("button", {name: question, exact: true});
+    if (await choice.count()) await choice.click();
+    else await send(page, question, "GET");
+  } else {
+    await send(page, message, "GET");
+  }
   const result = await response;
   receipt("diagnostic", { phase, status: result.status() });
   assert.equal(result.status(), 200);
@@ -95,7 +105,17 @@ async function readReport(page, original, content) {
   assert.equal(saved.latest_task.id, original.task);
   assert.equal(saved.messages.at(-1).id, original.message);
   assert.equal(saved.messages.at(-1).content, content);
-  await page.getByLabel("Conversation messages").getByText(content, { exact: true }).waitFor();
+  const messages = page.getByLabel("Conversation messages");
+  if (questions) {
+    // Markdown rendering splits prose from citation anchors. Compare the saved
+    // body above byte-for-byte, then verify the actual source links in the DOM.
+    assert.ok(original.sources.length > 0);
+    for (const source of original.sources) {
+      await messages.locator(`a[href="${source}"]`).first().waitFor();
+    }
+  } else {
+    await messages.getByText(content, { exact: true }).waitFor();
+  }
 }
 
 async function enrollPhone(enrollment) {
@@ -168,10 +188,11 @@ try {
   phase = "phone-reopen";
   await composer(page).waitFor();
   await page.goto(ui + "/inbox");
-  await status(page).getByText(/Do you mean research X or Y/).waitFor();
+  await status(page).getByText(clarification).waitFor();
   phase = "phone-generic-followup";
   const ambiguous = await ask(page, "How’s that going?", null, "ambiguous");
   assert.deepEqual(ambiguous.data.choices, ["X", "Y"]);
+  if (questions) assert.deepEqual(ambiguous.data.research_questions, questions);
   assert.equal(await link(page).count(), 0);
   phase = "phone-select-running";
   await ask(page, "Y", "Y", "running");
@@ -179,7 +200,7 @@ try {
   assert.equal(await link(page).count(), 0);
   phase = "phone-reload";
   await page.reload();
-  await status(page).getByText(/Do you mean research X or Y/).waitFor();
+  await status(page).getByText(clarification).waitFor();
   phase = "phone-expiry";
   // The existing global auth coordination gate may temporarily unmount all
   // protected children during refresh. Reopen must be a generic read, not a
@@ -192,22 +213,45 @@ try {
   assert.equal(refresh.status(), 200);
   const rotated = (await refresh.json()).access_token;
   assert.ok((await afterRefresh.result.request().headerValue("authorization")) === "Bearer " + rotated);
-  await status(page).getByText(/Do you mean research X or Y/).waitFor();
+  await status(page).getByText(clarification).waitFor();
   assert.equal(await link(page).count(), 0);
   await page.clock.setFixedTime(new Date());
   phase = "phone-select-after-refresh";
   const ready = await ask(page, "X", "X", "completed");
   assert.ok((await ready.result.request().headerValue("authorization")) === "Bearer " + rotated);
   phase = "phone-first-report";
-  await readReport(page, x, "Synthetic report X. First fixture.");
+  await readReport(page, x, questions ? x.content : "Synthetic report X. First fixture.");
   assert.equal(starts, 2);
   receipt("phone", { refreshed: true, starts });
   assert.equal((await frames.next()).value, "second committed");
   phase = "second-report";
   await page.goto(ui + "/inbox");
-  await status(page).getByText(/Do you mean research X or Y/).waitFor();
+  await status(page).getByText(clarification).waitFor();
   await ask(page, "Y", "Y", "completed");
-  await readReport(page, y, "Synthetic report Y. Second fixture.");
+  const finalY = questions ? JSON.parse((await frames.next()).value) : y;
+  assert.equal(finalY.task, y.task);
+  await readReport(page, finalY, questions ? finalY.content : "Synthetic report Y. Second fixture.");
+  if (questions) {
+    const protectedReads = [pilot + "?topic=Y", backend + "/conversations/" + y.conversation];
+    for (const change of ["expired", "revoked"]) {
+      receipt("auth-check", { change });
+      assert.equal((await frames.next()).value, change);
+      const statuses = await page.evaluate(async ({ urls, token }) => {
+        const responses = [];
+        for (const url of urls) {
+          const response = await fetch(url, {
+            headers: { Authorization: `Bearer ${token}` },
+            cache: "no-store",
+            credentials: "omit",
+            redirect: "error",
+          });
+          responses.push(response.status);
+        }
+        return responses;
+      }, { urls: protectedReads, token: rotated });
+      assert.deepEqual(statuses, [401, 401]);
+    }
+  }
   assert.equal(starts, 2);
   assert.deepEqual(external, []);
   receipt("finished", { starts, lost, x: x.task, y: y.task });
