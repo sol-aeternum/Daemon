@@ -46,7 +46,6 @@ from orchestrator.services.restore_history.terminal_projection import (
     TerminalV4HistoryProjection,
 )
 from orchestrator.services.restore_history.text_execution import (
-    HistoryOwnedIndexExecution,
     HistoryResearchExecution,
     HistorySourcesExecution,
     HistoryTextExecution,
@@ -612,7 +611,7 @@ async def text_host(projection_db, tmp_path, monkeypatch, request):
                 TaskStore(w, enc, MemoryStore(w, enc)), reader_history, projection, KEY
             )
             execution = (
-                HistoryOwnedIndexExecution(
+                HistorySourcesExecution.for_owned_index(
                     w,
                     enc,
                     settings,
@@ -628,7 +627,7 @@ async def text_host(projection_db, tmp_path, monkeypatch, request):
                     enc,
                     settings,
                     worker_history,
-                    projection,
+                    cast(InboxSourcesHistoryProjection, projection),
                     model_transport=research_provider,
                     search_transport=MockTransport(research_search),
                     search_pacer=state.research_pacer,

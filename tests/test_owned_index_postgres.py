@@ -2,14 +2,23 @@
 
 import asyncio
 import gzip
+from copy import copy
+from dataclasses import replace
 from hashlib import sha256
 from pathlib import Path
+from typing import Any, cast
 
 import pytest
 
+from orchestrator.auth import _verify_access_token
 from orchestrator.services.fetch.extract import html_to_markdown
-from orchestrator.services.restore_history.model import SendPossible
+from orchestrator.services.restore_history.model import HistoryError, SendPossible
+from orchestrator.services.restore_history.observation import HistoryObservation
+from orchestrator.services.restore_history.terminal_projection import InboxSourcesHistoryProjection
+from orchestrator.services.restore_history.text_execution import HistorySourcesExecution
 from tests.history_inbox_two_jobs_browser_postgres import effect_snapshot, originals
+from tests.restore_history_support import KEY
+from tests.test_history_composition_postgres import deadline
 from tests.test_history_inbox_research_postgres import client, facts, start, status
 from tests.test_history_text_execution_postgres import (
     db as db,
@@ -122,6 +131,7 @@ async def test_owned_index_original_settles_and_reopens(text_host):
     _, phone = await device(s, s.account)
     s.release.set()
     async with s.make(), client(s) as http:
+        assert type(s.execution) is HistorySourcesExecution
         assert (await start(http, desktop, "What about urgent passports?")).status_code != 200
         assert not s.calls and not (await effect_snapshot(s))[0]
         assert (await start(http, desktop, QUESTION)).status_code == 200
@@ -165,6 +175,24 @@ async def test_owned_index_original_settles_and_reopens(text_host):
 
     s.research_observer = True
     async with s.make(), client(s) as http:
+        # Both modes use the same v6 wire profile. Only the reader matching
+        # the committed research purpose can expose the original report.
+        reader = s.host._reader
+        projection = reader._projection
+        ordinary = InboxSourcesHistoryProjection(
+            s.identity,
+            acceptor=projection.acceptor,
+            worker=projection.worker,
+            publisher=projection.publisher,
+        )
+        wrong_mode = HistoryObservation(reader._tasks, reader._history, ordinary, reader._key)
+        auth = await _verify_access_token(s.w, phone["Authorization"].removeprefix("Bearer "))
+        assert auth is not None
+        key = original["idempotency_key"]
+        assert (await reader.lookup(auth, key, deadline=deadline())).kind == "task"
+        refused = await wrong_mode.lookup(auth, key, deadline=deadline())
+        assert refused.kind == "recovery" and refused.snapshot is None
+        assert await effect_snapshot(s) == before
         path = f"/conversations/{original['conversation_id']}"
         async with s.db.connection() as conn:
             await conn.execute("UPDATE web_snapshots SET expires_at=now()")
@@ -184,6 +212,67 @@ async def test_owned_index_original_settles_and_reopens(text_host):
             assert changed == "UPDATE 1"
         assert (await http.get(path, headers=phone)).status_code == 409
         assert len(s.calls) == 3 and await effect_snapshot(s) == expired
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("text_host", ["owned-index"], indirect=True)
+async def test_source_constructors_reject_crossed_modes_before_admission(text_host):
+    s = text_host
+    async with s.make():
+        host = s.execution
+        common = (host.pool, host.encryption, host.settings, host.history)
+        kwargs = {"model_transport": host.model_transport, "source_key": KEY}
+        owned = host.projection
+        ordinary = InboxSourcesHistoryProjection(
+            s.identity, acceptor=owned.acceptor, worker=owned.worker, publisher=owned.publisher
+        )
+        before = await effect_snapshot(s)
+        with pytest.raises(HistoryError, match="owned_index_execution_refused"):
+            HistorySourcesExecution(*common, owned, **kwargs)
+        with pytest.raises(HistoryError, match="owned_index_execution_refused"):
+            HistorySourcesExecution.for_owned_index(
+                *common, cast(Any, ordinary), captures=s.owned_captures, **kwargs
+            )
+        assert await effect_snapshot(s) == before and not s.calls
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("text_host", ["owned-index"], indirect=True)
+@pytest.mark.parametrize("swap", ["approval", "tool"])
+async def test_owned_lookup_requires_original_tool_and_approval(text_host, monkeypatch, swap):
+    from orchestrator.services.restore_history import owned_index
+
+    s = text_host
+    _, desktop = await device(s, s.account)
+    meter = owned_index.metered_tool_call
+    substitutions = []
+
+    def substitute(approval, **kwargs):
+        if swap == "approval":
+            other = replace(approval)
+            assert other == approval and other is not approval
+            approval = other
+        else:
+            tool = kwargs["history_tool"]
+            kwargs["history_tool"] = copy(tool)
+            assert kwargs["history_tool"] is not tool
+        substitutions.append(swap)
+        return meter(approval, **kwargs)
+
+    monkeypatch.setattr(owned_index, "metered_tool_call", substitute)
+    s.release.set()
+    async with s.make(), client(s) as http:
+        assert (await start(http, desktop, QUESTION)).status_code == 200
+        assert await jobs(s) != ["completed"]
+        assert substitutions == [swap] and len(s.calls) == 1
+        assert not s.search_calls and not s.source_calls and not s.reports
+        sends = [
+            entry.command.data.effect_kind
+            for entry in await facts(s)
+            if isinstance(entry.command.data, SendPossible)
+        ]
+        assert sends == ["completion"]
+        assert len((await effect_snapshot(s))[1]) == 1
 
 
 @pytest.mark.asyncio

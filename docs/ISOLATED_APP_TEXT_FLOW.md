@@ -590,6 +590,13 @@ One original question, asked by an adult in the UK using standard service:
 Use the two-entry local index only. Titles and neutral descriptions are discovery aids.
 Neither the expected answer below nor the scoring rubric belongs in the model prompt.
 
+**Execution boundary.** The disposable host constructs the existing
+`HistorySourcesExecution`. Its original `SourceRun` binds the local lookup to the
+owned projection and its specific tool and approval. The worker uses the same
+binding call as for ordinary source research. Sharing that execution path does
+not make the two reports interchangeable: a reader must match the committed purpose.
+The production isolation inventory and its negative tests apply unchanged.
+
 | Official page | Captured UTC (no credentials; HTTP 200, no redirect) | Raw HTML SHA-256 | First 1,000 extracted code points, UTF-8 SHA-256 |
 |---|---|---|---|
 | [GOV.UK — Passport fees](https://www.gov.uk/passport-fees) | 2026-11-28 08:50:34 | `70f8289e019cc19f8ec81458b64198194526e2b4d5c41c78767a257d9878bb96` | `97996fd316f3c246a2cb14523e746cbabf7579b929a573513ee1a13fcba4c2c5` |

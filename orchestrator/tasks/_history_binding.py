@@ -17,9 +17,8 @@ if TYPE_CHECKING:
     from orchestrator.tasks._invocation import InferenceInvocation
     from orchestrator.tasks.composition import WorkerComposition
     from orchestrator.tasks.inference import InferenceRecovery
-    from orchestrator.tools.web_search import WebSearchTool
+    from orchestrator.tools.registry import Tool
     from orchestrator.services.restore_history.source_execution import SourceRun
-    from orchestrator.services.restore_history.owned_index import OwnedIndexSearchTool
 
 
 # Set only by the original runner, before claim, independently of compute arguments.
@@ -43,7 +42,7 @@ def text_only_execution() -> bool:
     return current is not None or captured is not None
 
 
-def research_tool() -> WebSearchTool | OwnedIndexSearchTool | None:
+def research_tool() -> Tool | None:
     """Exact original scoped research tool, never a broader registry grant."""
     from orchestrator.compute_runtime import _scope
 
@@ -73,7 +72,7 @@ class ComputeHistoryBinding:
     recovery: InferenceRecovery
     identity: AttemptIdentity
     state: InferenceInvocation
-    research_tool: WebSearchTool | OwnedIndexSearchTool | None = None
+    research_tool: Tool | None = None
     research_model_transport: Callable[..., Awaitable[Any]] | None = None
     source_run: SourceRun | None = None
 
@@ -81,10 +80,6 @@ class ComputeHistoryBinding:
         from orchestrator.services.restore_history.effects import HistoryEffects
         from orchestrator.tools.web_search import WebSearchTool
         from orchestrator.services.restore_history.source_execution import SourceRun
-        from orchestrator.services.restore_history.owned_index import OwnedIndexSearchTool
-        from orchestrator.services.restore_history.terminal_projection import (
-            InboxOwnedIndexHistoryProjection,
-        )
         import httpx
 
         current = invocation.get()
@@ -108,32 +103,23 @@ class ComputeHistoryBinding:
                 != (self.research_tool is not None)
                 or (self.effects._projection.profile == "inbox-sources-v1")
                 != (type(self.source_run) is SourceRun)
-                or (self.source_run is not None and self.source_run.effects is not self.effects)
+                or (self.source_run is not None and type(self.source_run) is not SourceRun)
                 or (self.research_tool is not None) != (self.research_model_transport is not None)
                 or (
                     self.research_tool is not None
+                    and self.source_run is None
                     and (
-                        (
-                            type(self.effects._projection) is InboxOwnedIndexHistoryProjection
-                            and (
-                                type(self.research_tool) is not OwnedIndexSearchTool
-                                or self.research_tool._projection is not self.effects._projection
-                            )
-                        )
-                        or (
-                            type(self.effects._projection) is not InboxOwnedIndexHistoryProjection
-                            and (
-                                type(self.research_tool) is not WebSearchTool
-                                or type(self.research_tool._transport) is not httpx.MockTransport
-                                or self.research_tool._pacer is None
-                                or self.research_tool.provider != "brave"
-                            )
-                        )
+                        type(self.research_tool) is not WebSearchTool
+                        or type(self.research_tool._transport) is not httpx.MockTransport
+                        or self.research_tool._pacer is None
+                        or self.research_tool.provider != "brave"
                         or not inspect.iscoroutinefunction(self.research_model_transport)
                     )
                 )
             ):
                 raise ObservationBlocked("history_binding_unavailable")
+            if self.source_run is not None:
+                self.source_run.validate_binding(self)
             self.state.require_effect()
         except BaseException:
             self.state.block("history_binding_unavailable")

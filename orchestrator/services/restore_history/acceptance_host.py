@@ -107,7 +107,6 @@ from .terminal_projection import (
     TerminalHistoryProjection,
 )
 from .text_execution import (
-    HistoryOwnedIndexExecution,
     HistoryResearchExecution,
     HistorySourcesExecution,
     HistoryTextExecution,
@@ -352,7 +351,6 @@ class IsolatedAcceptanceHost:
                     in (
                         HistoryResearchExecution,
                         HistorySourcesExecution,
-                        HistoryOwnedIndexExecution,
                     )
                 )
             )
@@ -389,7 +387,6 @@ class IsolatedAcceptanceHost:
                 HistoryTextExecution,
                 HistoryResearchExecution,
                 HistorySourcesExecution,
-                HistoryOwnedIndexExecution,
             )
             or type(ap) not in TERMINAL_PROFILES
             or execution.pool is not w._pool

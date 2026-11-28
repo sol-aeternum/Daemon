@@ -927,25 +927,19 @@ async def _execute(ctx: dict[str, Any], store: TaskStore, state: AttemptState) -
         requirement = required_history.get()
         if requirement is not None:
             from orchestrator.services.restore_history.text_execution import (
-                HistoryOwnedIndexExecution,
                 HistoryResearchExecution,
                 HistorySourcesExecution,
             )
-            from orchestrator.services.restore_history.terminal_projection import research_purpose
             from orchestrator.tasks.inputs import (
                 _INBOX_OWNED_INDEX_PURPOSE,
                 _is_inbox_pilot_request,
             )
 
             execution_owner = ctx["history_text_execution"]
-            research = type(execution_owner) in (
-                HistoryResearchExecution,
-                HistorySourcesExecution,
-                HistoryOwnedIndexExecution,
-            )
+            research = type(execution_owner) in (HistoryResearchExecution, HistorySourcesExecution)
             assert execution_owner.effects is not None
             canonical = json.loads(task_input.get("_request", "{}"))
-            purpose = research_purpose(execution_owner.effects._projection)
+            purpose = execution_owner.research_purpose()
             if (
                 canonical.get("purpose") == _INBOX_OWNED_INDEX_PURPOSE
                 and purpose != _INBOX_OWNED_INDEX_PURPOSE
@@ -984,7 +978,7 @@ async def _execute(ctx: dict[str, Any], store: TaskStore, state: AttemptState) -
                 execution_owner.search_tool if research else None,
                 execution_owner.model_transport if research else None,
                 execution_owner.original_source(claim)
-                if type(execution_owner) in (HistorySourcesExecution, HistoryOwnedIndexExecution)
+                if type(execution_owner) is HistorySourcesExecution
                 else None,
             )
             state.history_binding.validate(required_history.get())
