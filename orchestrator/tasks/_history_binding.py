@@ -118,8 +118,8 @@ class ComputeHistoryBinding:
                 )
             ):
                 raise ObservationBlocked("history_binding_unavailable")
-            if self.source_run is not None:
-                self.source_run.validate_binding(self)
+            if self.source_run is not None and not self.source_run.matches_binding(self):
+                raise ObservationBlocked("history_binding_unavailable")
             self.state.require_effect()
         except BaseException:
             self.state.block("history_binding_unavailable")

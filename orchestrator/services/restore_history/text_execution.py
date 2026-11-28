@@ -18,7 +18,6 @@ from orchestrator.config import Settings
 from orchestrator.entitlements.models import ReservationStatus, Settlement
 from orchestrator.memory.encryption import ContentEncryption
 from orchestrator.services.connection_cleanup import pool_connection, retain_pool_cleanup
-from orchestrator.services.account_control.transaction import ObservationBlocked
 from orchestrator.tasks.composition import WorkerComposition, qualify_worker_composition
 from orchestrator.tasks.runner import AttemptState, run_chat_task
 from orchestrator.tasks.states import TaskStatus
@@ -244,9 +243,7 @@ class HistoryTextExecution:
                 )
             ):
                 return False
-            try:
-                source.validate_binding(binding)
-            except ObservationBlocked:
+            if not source.matches_binding(binding):
                 return False
         beat = state.heartbeat
         if not (

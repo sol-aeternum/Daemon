@@ -21,7 +21,6 @@ from orchestrator.services.fetch.service import FetchService
 from orchestrator.services.web_snapshots import WebSnapshot, WebSnapshotStore
 from orchestrator.tools.web_fetch import WebFetchTool
 from orchestrator.tools.web_search import WebSearchTool, validate_research_search_result
-from orchestrator.services.account_control.transaction import ObservationBlocked
 
 from .model import (
     AcceptPrepare,
@@ -239,7 +238,7 @@ class SourceRun:
     def owned_index(self) -> bool:
         return type(self.effects._projection) is InboxOwnedIndexHistoryProjection
 
-    def validate_binding(self, binding: ComputeHistoryBinding) -> None:
+    def matches_binding(self, binding: ComputeHistoryBinding) -> bool:
         """Only the retained original's exact collaborators constitute a binding."""
         from .owned_index import INDEX_ROUTE, OwnedIndexSearchTool
         from .text_execution import HistorySourcesExecution
@@ -276,27 +275,25 @@ class SourceRun:
             or identity.task_id != self.claim.task_id
             or identity.epoch != self.claim.epoch
         ):
-            raise ObservationBlocked("history_binding_unavailable")
+            return False
         if self.owned_index:
-            if (
-                type(tool) is not OwnedIndexSearchTool
-                or tool._projection is not self.effects._projection
-                or tool._approval is not inputs.search_approval
-                or tool._approval
-                != ToolServiceApproval(INDEX_ROUTE, "web_search", "owned", "call", 0, 0)
-            ):
-                raise ObservationBlocked("history_binding_unavailable")
-        elif (
-            type(self.effects._projection) is not InboxSourcesHistoryProjection
-            or type(tool) is not WebSearchTool
-            or type(tool._transport) is not httpx.MockTransport
-            or tool._transport is not inputs.search_transport
-            or tool._pacer is not inputs.search_pacer
-            or tool._pacer is None
-            or tool.provider != "brave"
-            or inputs.search_approval is not None
-        ):
-            raise ObservationBlocked("history_binding_unavailable")
+            return (
+                type(tool) is OwnedIndexSearchTool
+                and tool._projection is self.effects._projection
+                and tool._approval is inputs.search_approval
+                and tool._approval
+                == ToolServiceApproval(INDEX_ROUTE, "web_search", "owned", "call", 0, 0)
+            )
+        return (
+            type(self.effects._projection) is InboxSourcesHistoryProjection
+            and type(tool) is WebSearchTool
+            and type(tool._transport) is httpx.MockTransport
+            and tool._transport is inputs.search_transport
+            and tool._pacer is inputs.search_pacer
+            and tool._pacer is not None
+            and tool.provider == "brave"
+            and inputs.search_approval is None
+        )
 
     def owned_capability(self) -> SourceRun | None:
         """Expose the owned-only policy through the validated original scope."""
