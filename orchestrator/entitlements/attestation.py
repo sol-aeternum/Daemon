@@ -5,7 +5,8 @@ expiry. It stays approved while this module confirms that what it was approved
 against still holds, and is revoked when that changes:
 
 * the exact model and pinned provider endpoint must stay in OpenRouter's public ZDR
-  endpoint listing (revocation reason ``left_zdr_listing``);
+  endpoint listing (revocation reason ``left_zdr_listing``), with an explicit
+  ``safety_retention: false`` (revocation reason ``endpoint_safety_retention_enabled``);
 * the pinned provider's published data policy must keep the values recorded in
   the route's ``zdr_baseline`` (revocation reason ``provider_policy_changed:<key>``).
 
@@ -24,10 +25,10 @@ across restarts and to the other process. Admission reads an in-process snapshot
   so an unmonitored route is an unapproved route;
 * before the snapshot has loaded at all, every monitored route fails closed.
 
-A failed or unreadable check (network error, changed metadata format, missing
-provider) records ``check_failed`` and revokes nothing; only staleness can then
-close the route. The check sends no credentials and no route-specific data: it
-fetches two public listings.
+Unknown evidence (network error, changed metadata format, missing provider)
+records ``check_failed`` unless independently readable evidence requires
+revocation. Unknown evidence never renews a confirmation. The check sends no
+credentials and no route-specific data: it fetches two public listings.
 """
 
 from __future__ import annotations
@@ -118,11 +119,15 @@ class RouteCheck:
     observed: Mapping[str, Any] = field(default_factory=dict)
 
 
-def _listing_entries(payload: object) -> list[tuple[str, str]] | None:
+_UNAVAILABLE = object()
+_MISSING = object()
+
+
+def _listing_entries(payload: object) -> dict[tuple[str, str], list[object]] | None:
     data = payload.get("data") if isinstance(payload, dict) else None
     if not isinstance(data, list) or not data:
         return None
-    entries: list[tuple[str, str]] = []
+    entries: dict[tuple[str, str], list[object]] = {}
     for item in data:
         # Any unreadable entry makes the whole listing unreadable: skipping it could
         # turn missing metadata into a sticky "left the listing" revocation.
@@ -131,35 +136,22 @@ def _listing_entries(payload: object) -> list[tuple[str, str]] | None:
         model_id, tag = item.get("model_id"), item.get("tag")
         if not isinstance(model_id, str) or not isinstance(tag, str) or not model_id or not tag:
             return None
-        entries.append((model_id, tag))
+        entries.setdefault((model_id, tag), []).append(item.get("safety_retention", _MISSING))
     return entries
 
 
-def _provider_policies(payload: object) -> dict[str, Mapping[str, Any] | None] | None:
+def _provider_policies(payload: object) -> dict[str, list[Mapping[str, Any] | None]] | None:
     data = payload.get("data") if isinstance(payload, dict) else payload
     if not isinstance(data, list) or not data:
         return None
-    policies: dict[str, Mapping[str, Any] | None] = {}
+    policies: dict[str, list[Mapping[str, Any] | None]] = {}
     for item in data:
         if isinstance(item, dict) and isinstance(item.get("slug"), str):
             slug = item["slug"]
-            if slug in policies:
-                # Two records for one provider are ambiguous evidence, whatever their
-                # shape: a later matching record must not mask an earlier one.
-                return None
             policy = item.get("dataPolicy")
             # An unreadable policy is kept as None: it is never evidence of a match.
-            policies[slug] = policy if isinstance(policy, dict) else None
+            policies.setdefault(slug, []).append(policy if isinstance(policy, dict) else None)
     return policies or None
-
-
-def _is_listed(entries: Iterable[tuple[str, str]], model: str, tag: str) -> bool:
-    """The exact requested model id at the exact pinned provider tag.
-
-    Neither a sibling model (``<model>-pro``) nor a dated revision listed without the
-    requested id is evidence that the requested model is still served ZDR there.
-    """
-    return (model, tag) in set(entries)
 
 
 def _storable(value: object) -> object:
@@ -188,24 +180,17 @@ def evaluate(
     monitored = [route for route in routes if is_monitored(route)]
     entries = _listing_entries(zdr_payload)
     policies = _provider_policies(providers_payload)
+    # Retain the catalog-level ambiguity guard for positive confirmation. A
+    # duplicate elsewhere must not erase an independently trustworthy adverse
+    # fact from this route's own unambiguous provider or endpoint.
+    duplicate_provider = policies is not None and any(
+        len(records) > 1 for records in policies.values()
+    )
     checks: list[RouteCheck] = []
     for route in monitored:
         baseline = route.zdr_baseline
         assert baseline is not None
         fingerprint = baseline_fingerprint(route)
-        if entries is None or policies is None:
-            checks.append(
-                RouteCheck(route.route_id, fingerprint, "check_failed", ("metadata_malformed",))
-            )
-            continue
-        policy = policies.get(baseline.provider_slug)
-        if policy is None:
-            checks.append(
-                RouteCheck(
-                    route.route_id, fingerprint, "check_failed", ("provider_policy_missing",)
-                )
-            )
-            continue
         if route.provider != MONITORED_PROVIDER or route.endpoint != MONITORED_ENDPOINT:
             # Defence in depth: the parser already refuses this. OpenRouter's listings
             # are no evidence about any other host.
@@ -221,38 +206,69 @@ def evaluate(
                 RouteCheck(route.route_id, fingerprint, "check_failed", ("provider_pin_invalid",))
             )
             continue
-        missing = sorted(key for key in baseline.data_policy if key not in policy)
-        if missing:
-            # A pinned field the provider no longer publishes is unreadable evidence,
-            # not an unchanged value: never attest it, and never read it as None.
-            checks.append(
-                RouteCheck(
-                    route.route_id,
-                    fingerprint,
-                    "check_failed",
-                    tuple(f"provider_policy_field_missing:{key}" for key in missing),
-                )
-            )
-            continue
+        unknown: list[str] = []
+        adverse: list[str] = []
+        observed: dict[str, Any] = {}
         model = route.model.removeprefix("openrouter/")
         tag = pins[0]
-        listed = _is_listed(entries, model, tag)
-        observed = {key: _storable(policy[key]) for key in baseline.data_policy}
-        reasons: list[str] = [] if listed else ["left_zdr_listing"]
-        reasons.extend(
-            f"provider_policy_changed:{key}"
-            for key, approved in sorted(baseline.data_policy.items())
-            if not _same_value(policy[key], approved)
-        )
-        checks.append(
-            RouteCheck(
-                route.route_id,
-                fingerprint,
-                "revoked" if reasons else "attested",
-                tuple(reasons),
-                {"zdr_listed": listed, "data_policy": observed},
+        if entries is None:
+            unknown.append(
+                "metadata_unavailable" if zdr_payload is _UNAVAILABLE else "metadata_malformed"
             )
-        )
+        else:
+            # Siblings, dated revisions and other endpoint tags are not evidence
+            # about this exact route. Multiple exact records are ambiguous.
+            matching = entries.get((model, tag), [])
+            observed["zdr_listed"] = bool(matching)
+            if not matching:
+                adverse.append("left_zdr_listing")
+            elif len(matching) != 1:
+                unknown.append("endpoint_listing_ambiguous")
+            else:
+                safety_retention = matching[0]
+                if safety_retention is _MISSING:
+                    unknown.append("endpoint_safety_retention_missing")
+                else:
+                    observed["safety_retention"] = _storable(safety_retention)
+                    if safety_retention is True:
+                        adverse.append("endpoint_safety_retention_enabled")
+                    elif safety_retention is not False:
+                        unknown.append("endpoint_safety_retention_invalid")
+
+        if policies is None:
+            unknown.append(
+                "metadata_unavailable"
+                if providers_payload is _UNAVAILABLE
+                else "metadata_malformed"
+            )
+        else:
+            matching_policies = policies.get(baseline.provider_slug, [])
+            policy = matching_policies[0] if len(matching_policies) == 1 else None
+            if duplicate_provider:
+                unknown.append("provider_policy_ambiguous")
+            if not matching_policies or (len(matching_policies) == 1 and policy is None):
+                unknown.append("provider_policy_missing")
+            if policy is not None:
+                observed_policy: dict[str, object] = {}
+                for key, approved in sorted(baseline.data_policy.items()):
+                    if key not in policy:
+                        # An omitted value is unknown, not an explicit null.
+                        unknown.append(f"provider_policy_field_missing:{key}")
+                        continue
+                    observed_policy[key] = _storable(policy[key])
+                    if not _same_value(policy[key], approved):
+                        adverse.append(f"provider_policy_changed:{key}")
+                observed["data_policy"] = observed_policy
+
+        # Unknowns cannot mask separately established adverse facts.
+        if adverse:
+            outcome = "revoked"
+        elif unknown:
+            outcome = "check_failed"
+        else:
+            outcome = "attested"
+        reasons = tuple(dict.fromkeys(adverse + unknown))
+        checks.append(RouteCheck(route.route_id, fingerprint, outcome, reasons, observed))
     return checks
 
 
@@ -346,7 +362,9 @@ def attestation_reasons(route: MonitorableRoute, *, now: datetime) -> tuple[str,
     if key in current.revoked:
         return ("zdr_attestation_revoked",)
     confirmed = current.attested_at.get(key)
-    if confirmed is None or now - confirmed > STALE_AFTER:
+    if confirmed is None or confirmed > now:
+        return ("zdr_attestation_unknown",)
+    if now - confirmed > STALE_AFTER:
         return ("zdr_attestation_stale",)
     return ()
 
@@ -354,7 +372,12 @@ def attestation_reasons(route: MonitorableRoute, *, now: datetime) -> tuple[str,
 _LATEST_SQL: Final[str] = """
     SELECT route_id, baseline_sha256, outcome, max(checked_at) AS checked_at
     FROM inference_route_attestations
-    WHERE outcome IN ('attested', 'revoked')
+    WHERE outcome = 'revoked'
+       OR (
+           outcome = 'attested'
+           AND observed->'zdr_listed' = 'true'::jsonb
+           AND observed->'safety_retention' = 'false'::jsonb
+       )
     GROUP BY route_id, baseline_sha256, outcome
 """
 
@@ -559,14 +582,21 @@ async def run_check(pool: Any, client: Any, routes: Iterable[MonitorableRoute]) 
     candidates = [route for route in routes if is_monitored(route)]
     if not candidates:
         return {"routes": 0}
+    fetched: list[tuple[object, bytes]] = []
+    for url in (ZDR_LISTING_URL, PROVIDERS_URL):
+        try:
+            fetched.append(await _fetch_json(client, url))
+        except Exception as exc:
+            logger.warning(
+                "Route attestation check could not read metadata: %s", type(exc).__name__
+            )
+            fetched.append((_UNAVAILABLE, b""))
+    (zdr_payload, zdr_body), (providers_payload, providers_body) = fetched
     evidence: str | None = None
-    try:
-        zdr_payload, zdr_body = await _fetch_json(client, ZDR_LISTING_URL)
-        providers_payload, providers_body = await _fetch_json(client, PROVIDERS_URL)
+    if zdr_body or providers_body:
         evidence = hashlib.sha256(zdr_body + b"\n" + providers_body).hexdigest()
         checks = evaluate(candidates, zdr_payload, providers_payload)
-    except Exception as exc:
-        logger.warning("Route attestation check could not read metadata: %s", type(exc).__name__)
+    else:
         checks = failed_checks(candidates, "metadata_unavailable")
     # Enforce revocations before any fallible I/O; confirmations wait for the
     # recorded history to be read back by refresh().

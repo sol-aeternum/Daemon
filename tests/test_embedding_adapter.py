@@ -296,7 +296,7 @@ def test_shared_monitor_covers_embedding_route_and_sticky_revocation(installed):
     assert route in attestation._monitored_routes()
     checks = attestation.evaluate(
         [route],
-        {"data": [{"model_id": adapter.MODEL, "tag": "azure"}]},
+        {"data": [{"model_id": adapter.MODEL, "tag": "azure", "safety_retention": False}]},
         {"data": [{"slug": "azure", "dataPolicy": {"training": False, "retainsPrompts": False}}]},
     )
     assert checks[0].outcome == "attested"

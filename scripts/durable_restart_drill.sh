@@ -347,8 +347,9 @@ PY
 [[ -s "$WORK/routes" ]] || fail "no monitored routes in the policy"
 while read -r route baseline; do
   compose exec -T postgres psql -q -U daemon -d daemon -c \
-    "INSERT INTO inference_route_attestations (route_id, baseline_sha256, outcome, reasons)
-     VALUES ('$route', '$baseline', 'attested', '{drill_fixture}')" >/dev/null
+    "INSERT INTO inference_route_attestations (route_id, baseline_sha256, outcome, reasons, observed)
+     VALUES ('$route', '$baseline', 'attested', '{drill_fixture}',
+             '{\"zdr_listed\":true,\"safety_retention\":false}'::jsonb)" >/dev/null
 done <"$WORK/routes"
 compose restart backend >>"$LOG" 2>&1
 wait_health
