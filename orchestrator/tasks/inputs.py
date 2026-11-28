@@ -20,6 +20,12 @@ _INBOX_PILOT_TEXT: Final = "Do a deep dive on X."
 _INBOX_TWO_JOB_PURPOSE: Final = "isolated-inbox-research-v2"
 _INBOX_TWO_JOB_TEXTS: Final = (_INBOX_PILOT_TEXT, "Do a deep dive on Y.")
 _INBOX_RESEARCH_PURPOSE: Final = "isolated-inbox-native-research-v1"
+_INBOX_OWNED_INDEX_PURPOSE: Final = "isolated-inbox-owned-uk-passport-20261128-v1"
+_INBOX_OWNED_INDEX_QUESTION: Final = (
+    "For a standard 34-page adult UK passport, what are the online and paper fees, "
+    "how long does it usually take, and when does that clock start? "
+    "Do the two official pages agree about the extra paper cost?"
+)
 
 
 def valid_research_question(value: Any) -> bool:
@@ -48,6 +54,9 @@ def _is_inbox_pilot_request(value: dict[str, Any], purpose: str = _INBOX_PILOT_P
             return False
     elif purpose == _INBOX_RESEARCH_PURPOSE:
         if not valid_research_question(message):
+            return False
+    elif purpose == _INBOX_OWNED_INDEX_PURPOSE:
+        if message != _INBOX_OWNED_INDEX_QUESTION:
             return False
     else:
         return False
@@ -120,6 +129,7 @@ def chat_request_fingerprint(
             _INBOX_PILOT_PURPOSE,
             _INBOX_TWO_JOB_PURPOSE,
             _INBOX_RESEARCH_PURPOSE,
+            _INBOX_OWNED_INDEX_PURPOSE,
         ):
             raise ValueError("unsupported request purpose")
         accepted["purpose"] = purpose

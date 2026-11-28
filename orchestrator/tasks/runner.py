@@ -927,18 +927,34 @@ async def _execute(ctx: dict[str, Any], store: TaskStore, state: AttemptState) -
         requirement = required_history.get()
         if requirement is not None:
             from orchestrator.services.restore_history.text_execution import (
+                HistoryOwnedIndexExecution,
                 HistoryResearchExecution,
                 HistorySourcesExecution,
             )
-            from orchestrator.tasks.inputs import _INBOX_RESEARCH_PURPOSE, _is_inbox_pilot_request
+            from orchestrator.services.restore_history.terminal_projection import research_purpose
+            from orchestrator.tasks.inputs import (
+                _INBOX_OWNED_INDEX_PURPOSE,
+                _is_inbox_pilot_request,
+            )
 
             execution_owner = ctx["history_text_execution"]
-            research = type(execution_owner) in (HistoryResearchExecution, HistorySourcesExecution)
+            research = type(execution_owner) in (
+                HistoryResearchExecution,
+                HistorySourcesExecution,
+                HistoryOwnedIndexExecution,
+            )
             assert execution_owner.effects is not None
+            canonical = json.loads(task_input.get("_request", "{}"))
+            purpose = research_purpose(execution_owner.effects._projection)
+            if (
+                canonical.get("purpose") == _INBOX_OWNED_INDEX_PURPOSE
+                and purpose != _INBOX_OWNED_INDEX_PURPOSE
+            ):
+                raise ObservationBlocked("history_research_input_required")
             if research:
-                canonical = json.loads(task_input["_request"])
+                assert purpose is not None
                 if (
-                    not _is_inbox_pilot_request(canonical, _INBOX_RESEARCH_PURPOSE)
+                    not _is_inbox_pilot_request(canonical, purpose)
                     or task_input.get("message") != canonical["message"]
                     or task_input.get("provider") is not None
                     or task_input.get("disable_memory_write") is not True
@@ -968,7 +984,7 @@ async def _execute(ctx: dict[str, Any], store: TaskStore, state: AttemptState) -
                 execution_owner.search_tool if research else None,
                 execution_owner.model_transport if research else None,
                 execution_owner.original_source(claim)
-                if type(execution_owner) is HistorySourcesExecution
+                if type(execution_owner) in (HistorySourcesExecution, HistoryOwnedIndexExecution)
                 else None,
             )
             state.history_binding.validate(required_history.get())

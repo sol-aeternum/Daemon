@@ -391,10 +391,25 @@ class InboxSourcesHistoryProjection(TerminalHistoryProjection):
             raise HistoryError("projection_unavailable", uncertain=True) from None
 
 
+class InboxOwnedIndexHistoryProjection(InboxSourcesHistoryProjection):
+    """Separate exact composition, reusing the protected v6 source wire and ACLs."""
+
+
 TERMINAL_PROFILES: dict[type[AcceptanceProjection], Profile] = {
     TerminalHistoryProjection: "terminal-v3",
     TerminalV4HistoryProjection: "terminal-v4",
     InboxRetiredHistoryProjection: "inbox-retired-v1",
     InboxResearchHistoryProjection: "inbox-research-v1",
     InboxSourcesHistoryProjection: "inbox-sources-v1",
+    InboxOwnedIndexHistoryProjection: "inbox-sources-v1",
 }
+
+
+def research_purpose(projection: AcceptanceProjection) -> str | None:
+    from orchestrator.tasks.inputs import _INBOX_OWNED_INDEX_PURPOSE, _INBOX_RESEARCH_PURPOSE
+
+    if type(projection) is InboxOwnedIndexHistoryProjection:
+        return _INBOX_OWNED_INDEX_PURPOSE
+    if type(projection) in (InboxResearchHistoryProjection, InboxSourcesHistoryProjection):
+        return _INBOX_RESEARCH_PURPOSE
+    return None

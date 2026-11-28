@@ -19,6 +19,7 @@ if TYPE_CHECKING:
     from orchestrator.tasks.inference import InferenceRecovery
     from orchestrator.tools.web_search import WebSearchTool
     from orchestrator.services.restore_history.source_execution import SourceRun
+    from orchestrator.services.restore_history.owned_index import OwnedIndexSearchTool
 
 
 # Set only by the original runner, before claim, independently of compute arguments.
@@ -42,7 +43,7 @@ def text_only_execution() -> bool:
     return current is not None or captured is not None
 
 
-def research_tool() -> WebSearchTool | None:
+def research_tool() -> WebSearchTool | OwnedIndexSearchTool | None:
     """Exact original scoped research tool, never a broader registry grant."""
     from orchestrator.compute_runtime import _scope
 
@@ -72,7 +73,7 @@ class ComputeHistoryBinding:
     recovery: InferenceRecovery
     identity: AttemptIdentity
     state: InferenceInvocation
-    research_tool: WebSearchTool | None = None
+    research_tool: WebSearchTool | OwnedIndexSearchTool | None = None
     research_model_transport: Callable[..., Awaitable[Any]] | None = None
     source_run: SourceRun | None = None
 
@@ -80,6 +81,10 @@ class ComputeHistoryBinding:
         from orchestrator.services.restore_history.effects import HistoryEffects
         from orchestrator.tools.web_search import WebSearchTool
         from orchestrator.services.restore_history.source_execution import SourceRun
+        from orchestrator.services.restore_history.owned_index import OwnedIndexSearchTool
+        from orchestrator.services.restore_history.terminal_projection import (
+            InboxOwnedIndexHistoryProjection,
+        )
         import httpx
 
         current = invocation.get()
@@ -108,10 +113,22 @@ class ComputeHistoryBinding:
                 or (
                     self.research_tool is not None
                     and (
-                        type(self.research_tool) is not WebSearchTool
-                        or type(self.research_tool._transport) is not httpx.MockTransport
-                        or self.research_tool._pacer is None
-                        or self.research_tool.provider != "brave"
+                        (
+                            type(self.effects._projection) is InboxOwnedIndexHistoryProjection
+                            and (
+                                type(self.research_tool) is not OwnedIndexSearchTool
+                                or self.research_tool._projection is not self.effects._projection
+                            )
+                        )
+                        or (
+                            type(self.effects._projection) is not InboxOwnedIndexHistoryProjection
+                            and (
+                                type(self.research_tool) is not WebSearchTool
+                                or type(self.research_tool._transport) is not httpx.MockTransport
+                                or self.research_tool._pacer is None
+                                or self.research_tool.provider != "brave"
+                            )
+                        )
                         or not inspect.iscoroutinefunction(self.research_model_transport)
                     )
                 )

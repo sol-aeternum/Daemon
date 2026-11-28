@@ -33,7 +33,7 @@ from .model import (
     _pairs,
     canonical,
 )
-from .terminal_projection import InboxSourcesHistoryProjection
+from .terminal_projection import InboxOwnedIndexHistoryProjection, InboxSourcesHistoryProjection
 
 if TYPE_CHECKING:
     from orchestrator.compute_runtime import ComputeScope
@@ -42,9 +42,14 @@ if TYPE_CHECKING:
     from .effects import HistoryEffects
 
 
-def source_key_material(key: bytes, history: UUID) -> bytes:
+def source_key_material(key: bytes, history: UUID, *, owned_index: bool = False) -> bytes:
     """Only a fixture-specific derivative reaches the original source owner."""
-    return hmac.digest(key, b"daemon.inbox.sources.key.v1\n" + history.bytes, "sha256")
+    domain = (
+        b"daemon.inbox.owned-uk-passport-20261128.key.v1\n"
+        if owned_index
+        else b"daemon.inbox.sources.key.v1\n"
+    )
+    return hmac.digest(key, domain + history.bytes, "sha256")
 
 
 def source_mac(
@@ -208,6 +213,7 @@ class SourceRun:
         settings: Settings,
     ):
         self.claim, self.effects, self.key, self.transport = claim, effects, key, transport
+        self.owned_index = type(effects._projection) is InboxOwnedIndexHistoryProjection
         self.search: str | None = None
         self.selected: list[str] = []
         self.call_ids: list[str] = []
@@ -249,6 +255,10 @@ class SourceRun:
         validate_research_search_result(
             json.loads(call["function"]["arguments"]), json.loads(result)
         )
+        if self.owned_index:
+            from .owned_index import validate_lookup
+
+            validate_lookup(json.loads(call["function"]["arguments"]), json.loads(result))
         self.search = result
         self.search_id = call["id"]
         self.search_call = json.loads(canonical(call))
@@ -285,6 +295,11 @@ class SourceRun:
                 raise HistoryError("source_selection_refused")
             urls.append(url)
             ids.append(ident)
+        if self.owned_index:
+            from .owned_index import URLS
+
+            if tuple(urls) != URLS:
+                raise HistoryError("source_selection_refused")
         self.selected, self.call_ids = urls, ids
         self.selection_calls = json.loads(canonical(calls))
 
@@ -369,7 +384,7 @@ class SourceRun:
         holds = scope.retirement_holds
         assert holds is not None
         rows = await conn.fetch(
-            "SELECT id,user_id,scope_id,provider,route_id,model,status,reserved_microusd,actual_microusd,overage_microusd,period_key "
+            "SELECT id,user_id,scope_id,provider,route_id,model,status,reserved_microusd,actual_microusd,overage_microusd,period_key,usage "
             "FROM public.entitlement_reservations WHERE scope_id=$1",
             binding.identity.financial_scope_id,
         )
@@ -385,6 +400,10 @@ class SourceRun:
                 raise HistoryError("source_terminal_refused")
             settlement = hold.settlement.result()
             row = by_id[sent.reservation_id]
+            if self.owned_index:
+                from .owned_index import validate_reservation
+
+                validate_reservation(row, sent.effect_kind)
             if (
                 not settlement.applied
                 or settlement.status is not ReservationStatus.SETTLED
@@ -403,9 +422,14 @@ class SourceRun:
                 or (
                     sent.effect_kind == "web_search"
                     and (
-                        (row["provider"], row["route_id"], row["model"])
-                        != ("brave", "brave-web-search", None)
-                        or settlement.actual_microusd != BRAVE_FIXED_MICROUSD
+                        (
+                            not self.owned_index
+                            and (
+                                (row["provider"], row["route_id"], row["model"])
+                                != ("brave", "brave-web-search", None)
+                                or settlement.actual_microusd != BRAVE_FIXED_MICROUSD
+                            )
+                        )
                         or hold.stream is not None
                     )
                 )
@@ -569,7 +593,14 @@ class SourceRun:
         ):
             raise HistoryError("source_transport_stopped")
         self.transport_entered = True
-        return await self.transport.handle_async_request(request)
+        response = await self.transport.handle_async_request(request)
+        if self.owned_index:
+            from .owned_index import validate_capture
+
+            if response.status_code != 200:
+                raise HistoryError("owned_index_capture_refused")
+            validate_capture(str(request.url), response.content)
+        return response
 
     async def publish(
         self,
@@ -587,6 +618,10 @@ class SourceRun:
         passage = content[:1000]
         if not passage or kwargs["source_url"] != url or kwargs["final_url"] != url:
             raise HistoryError("source_pin_refused")
+        if self.owned_index:
+            from .owned_index import validate_passage
+
+            validate_passage(possible.ordinal, url, passage)
         now = datetime.now(timezone.utc)
         effects = self.effects
         projection = effects._projection

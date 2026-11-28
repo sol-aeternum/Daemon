@@ -70,7 +70,7 @@ from orchestrator.tasks._invocation import block
 from orchestrator.tasks.inputs import (
     _INBOX_PILOT_PURPOSE,
     _INBOX_PILOT_TEXT,
-    _INBOX_RESEARCH_PURPOSE,
+    _INBOX_OWNED_INDEX_QUESTION,
     _INBOX_TWO_JOB_PURPOSE,
     _INBOX_TWO_JOB_TEXTS,
     chat_request_fingerprint,
@@ -99,12 +99,19 @@ from .read_supervisor import _observe, qualify_read_history
 from .store import _check_time
 from .terminal_projection import (
     TERMINAL_PROFILES,
+    InboxOwnedIndexHistoryProjection,
     InboxRetiredHistoryProjection,
     InboxResearchHistoryProjection,
     InboxSourcesHistoryProjection,
+    research_purpose,
     TerminalHistoryProjection,
 )
-from .text_execution import HistoryResearchExecution, HistorySourcesExecution, HistoryTextExecution
+from .text_execution import (
+    HistoryOwnedIndexExecution,
+    HistoryResearchExecution,
+    HistorySourcesExecution,
+    HistoryTextExecution,
+)
 from .model import (
     AcceptPrepare,
     Command,
@@ -245,7 +252,9 @@ class IsolatedAcceptanceHost:
         self._inbox_research = type(acceptance._projection) in (
             InboxResearchHistoryProjection,
             InboxSourcesHistoryProjection,
+            InboxOwnedIndexHistoryProjection,
         )
+        self._owned_index = type(acceptance._projection) is InboxOwnedIndexHistoryProjection
         self._inbox_child = _inbox_child
         self._original_receipt: _Submission | None = None
         self._retired_record: UUID | None = None
@@ -329,14 +338,23 @@ class IsolatedAcceptanceHost:
         research_profile = type(ap) in (
             InboxResearchHistoryProjection,
             InboxSourcesHistoryProjection,
+            InboxOwnedIndexHistoryProjection,
         )
         if (
             self._inbox_research != research_profile
+            or self._owned_index != (type(ap) is InboxOwnedIndexHistoryProjection)
             or (research_profile and not self._inbox_two_jobs)
             or (
                 execution is not None
                 and research_profile
-                != (type(execution) in (HistoryResearchExecution, HistorySourcesExecution))
+                != (
+                    type(execution)
+                    in (
+                        HistoryResearchExecution,
+                        HistorySourcesExecution,
+                        HistoryOwnedIndexExecution,
+                    )
+                )
             )
         ):
             raise HistoryError("isolated_host_refused")
@@ -367,7 +385,12 @@ class IsolatedAcceptanceHost:
             raise HistoryError("isolated_host_refused")
         if execution is not None and (
             type(execution)
-            not in (HistoryTextExecution, HistoryResearchExecution, HistorySourcesExecution)
+            not in (
+                HistoryTextExecution,
+                HistoryResearchExecution,
+                HistorySourcesExecution,
+                HistoryOwnedIndexExecution,
+            )
             or type(ap) not in TERMINAL_PROFILES
             or execution.pool is not w._pool
             or execution.encryption is not w._enc
@@ -667,7 +690,7 @@ class IsolatedAcceptanceHost:
                     if admission is not None:
                         captured = admission[1]
                     purpose = (
-                        _INBOX_RESEARCH_PURPOSE
+                        research_purpose(self._acceptance._projection)
                         if self._inbox_research
                         else _INBOX_TWO_JOB_PURPOSE
                         if self._inbox_two_jobs
@@ -789,6 +812,7 @@ class IsolatedAcceptanceHost:
                     permitted = (
                         bool(allowed)
                         and valid_research_question(message)
+                        and (not self._owned_index or message == _INBOX_OWNED_INDEX_QUESTION)
                         and all(message != o.messages[0]["content"] for o in originals)
                     )
                 else:
@@ -825,7 +849,10 @@ class IsolatedAcceptanceHost:
             for e in state.entries
             if type(e.command.data) is AcceptPrepare and e.command.data.account_id == auth.user_id
         ]
-        if len(accepted) > 2:
+        if len(accepted) > 2 or (
+            self._owned_index
+            and sum(type(e.command.data) is AcceptPrepare for e in state.entries) > 1
+        ):
             return self._ui_recovery()
         try:
             current = (
@@ -901,7 +928,7 @@ class IsolatedAcceptanceHost:
                             next(c for c in convs if c["id"] == a.conversation_id),
                             [m for m in messages if m["conversation_id"] == a.conversation_id],
                             expected_purpose=(
-                                _INBOX_RESEARCH_PURPOSE
+                                research_purpose(self._acceptance._projection)
                                 if self._inbox_research
                                 else _INBOX_TWO_JOB_PURPOSE
                             ),
@@ -957,6 +984,7 @@ class IsolatedAcceptanceHost:
             or self._acceptance._history._blocked
             or self._reader._history._blocked
             or len(originals) >= 2
+            or (self._owned_index and (await operation.verify()).entries)
         ):
             return []
         try:

@@ -33,6 +33,7 @@ from .read_supervisor import _observe, qualify_read_history
 from .store import _check_time
 from .terminal_projection import (
     TERMINAL_PROFILES,
+    InboxOwnedIndexHistoryProjection,
     InboxResearchHistoryProjection,
     InboxSourcesHistoryProjection,
     TerminalHistoryProjection,
@@ -75,6 +76,8 @@ class HistoryTextExecution:
             != (type(self) is HistoryResearchExecution)
             or (type(projection) is InboxSourcesHistoryProjection)
             != (type(self) is HistorySourcesExecution)
+            or (type(projection) is InboxOwnedIndexHistoryProjection)
+            != (type(self) is HistoryOwnedIndexExecution)
         ):
             raise HistoryError("text_execution_refused")
         self.pool, self.encryption, self.settings = pool, encryption, settings
@@ -111,6 +114,11 @@ class HistoryTextExecution:
             await self.history.open(deadline=deadline)
             async with self.history.operation(deadline=deadline) as operation:
                 await qualify_read_history(operation, self.pool, self.projection, deadline=deadline)
+                if (
+                    type(self.projection) is InboxOwnedIndexHistoryProjection
+                    and (await operation.verify()).entries
+                ):
+                    raise HistoryError("owned_index_original_exists")
                 async with retain_pool_cleanup():
                     async with pool_connection(self.pool) as conn:
                         async with conn.transaction(isolation="read_committed"):
@@ -216,6 +224,10 @@ class HistoryTextExecution:
                 or not source.synthesis_checked
                 or source.report is None
                 or not 1 <= len(source.pins) == len(source.selected) <= 2
+                or (
+                    type(self.projection) is InboxOwnedIndexHistoryProjection
+                    and len(source.pins) != 2
+                )
             ):
                 return False
         beat = state.heartbeat
@@ -267,7 +279,12 @@ class HistoryTextExecution:
                 return False
             stream = hold.stream
             if index == 1:
-                if stream is not None or result.actual_microusd != BRAVE_FIXED_MICROUSD:
+                owned_index = type(self.projection) is InboxOwnedIndexHistoryProjection
+                if (
+                    stream is not None
+                    or result.actual_microusd != (0 if owned_index else BRAVE_FIXED_MICROUSD)
+                    or (owned_index and hold.reservation.reserved_microusd != 0)
+                ):
                     return False
             elif (
                 stream is None
@@ -384,6 +401,8 @@ class HistoryTextExecution:
         self.validate_worker(ctx, self.worker)
         if task in self._scheduled:
             raise HistoryError("text_execution_duplicate")
+        if type(self.projection) is InboxOwnedIndexHistoryProjection and self._scheduled:
+            raise HistoryError("owned_index_original_exists")
         self._scheduled.add(task)
         call = run_chat_task(ctx, str(task))
         try:
@@ -523,6 +542,47 @@ class HistorySourcesExecution(HistoryResearchExecution):
         )
         self.source_transport = source_transport
         self.source_key = source_key_material(source_key, projection.expected.history_id)
+
+    def original_source(self, claim):
+        from .source_execution import SourceRun
+
+        assert self.effects is not None
+        return SourceRun(claim, self.effects, self.source_key, self.source_transport, self.settings)
+
+
+class HistoryOwnedIndexExecution(HistoryTextExecution):
+    """Explicit one-original composition over the existing v6 native source runner."""
+
+    def __init__(
+        self,
+        pool: asyncpg.Pool,
+        encryption: ContentEncryption,
+        settings: Settings,
+        history: HistoryCoordinator,
+        projection: InboxOwnedIndexHistoryProjection,
+        *,
+        model_transport: Callable[..., Awaitable[Any]],
+        captures: tuple[bytes, bytes],
+        source_key: bytes,
+    ) -> None:
+        from .owned_index import OwnedIndexCorpus, OwnedIndexSearchTool
+        from .source_execution import source_key_material
+
+        if (
+            type(projection) is not InboxOwnedIndexHistoryProjection
+            or not inspect.iscoroutinefunction(model_transport)
+            or settings.mock_llm
+        ):
+            raise HistoryError("owned_index_execution_refused")
+        projection.expected.verify_key(source_key)
+        super().__init__(pool, encryption, settings, history, projection)
+        corpus = OwnedIndexCorpus(captures)
+        self.model_transport = model_transport
+        self.search_tool = OwnedIndexSearchTool(projection)
+        self.source_transport = httpx.MockTransport(corpus.respond)
+        self.source_key = source_key_material(
+            source_key, projection.expected.history_id, owned_index=True
+        )
 
     def original_source(self, claim):
         from .source_execution import SourceRun

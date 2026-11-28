@@ -566,7 +566,7 @@ PYTHONPATH=. uv run pytest -q --compute-metadata-postgres \
   tests/test_history_ui_process_postgres.py tests/history_inbox_two_jobs_browser_postgres.py
 ```
 
-**Separate live acceptance plan (not run or authorized).** One public question:
+**Original live acceptance plan (not run; corpus and question superseded below).** One public question:
 as of the evaluation date, which US passport product can a first-time adult
 applicant use for international air travel versus land crossings, and what
 application and acceptance fees apply to each? Use the State Department eligibility
@@ -582,6 +582,121 @@ One attempt, no automatic retry. Pass only if each travel-use and itemized fee
 claim maps to a dated retrieved passage, conflict or missing evidence is
 disclosed, citations are real, and another device opens the exact saved report
 with no new dispatch or charge. Record latency and reconcile the original ledger.
+
+### Owned-index pre-registration (28 November 2026; no live acceptance yet)
+
+One original question, asked by an adult in the UK using standard service:
+**“For a standard 34-page adult UK passport, what are the online and paper fees, how long does it usually take, and when does that clock start? Do the two official pages agree about the extra paper cost?”**
+Use the two-entry local index only. Titles and neutral descriptions are discovery aids.
+Neither the expected answer below nor the scoring rubric belongs in the model prompt.
+
+| Official page | Captured UTC (no credentials; HTTP 200, no redirect) | Raw HTML SHA-256 | First 1,000 extracted code points, UTF-8 SHA-256 |
+|---|---|---|---|
+| [GOV.UK — Passport fees](https://www.gov.uk/passport-fees) | 2026-11-28 08:50:34 | `70f8289e019cc19f8ec81458b64198194526e2b4d5c41c78767a257d9878bb96` | `97996fd316f3c246a2cb14523e746cbabf7579b929a573513ee1a13fcba4c2c5` |
+| [HM Passport Office — About our services](https://www.gov.uk/government/organisations/hm-passport-office/about/about-our-services) | 2026-11-28 08:50:35 | `6e382339dd4d0820c0421202f49c31b12fe6b5a063e46e5007c295a387617d17` | `eddc1ce8f75a1ca20f326a5ef87218e3759ac0ae42727288554988a3f58a0ef5` |
+
+The two compressed captures in `tests/fixtures/uk_passport/` omit request-specific
+anti-forgery and CSP metadata/attributes. The native HTML-to-Markdown extractor produced
+identical complete articles before and after removal. The constructor verifies the
+decompressed, sanitized HTML SHA-256: fees `fe49432932de1e8046d785a8e3b2322a1e2503a1e8db03c25967dc64c33ded84`,
+services `d05bc92c316294b69f8ff36c3bbe2881f48074aca51467f05cd418b45c2d31c6`.
+The URL is the official origin;
+the time of an offline snapshot is not a new visit to GOV.UK. Contains public sector
+information licensed under the [Open Government Licence v3.0](https://www.nationalarchives.gov.uk/doc/open-government-licence/version/3/).
+
+**Answer key and decision rule.** Offsets are half-open Unicode code-point ranges
+in the native article, not offsets into HTML:
+
+- Fees `[174,214)` gives the online/paper column order; `[229,295)` gives the adult
+  standard 34-page row: **£102 online, £115.50 on paper**, a difference of **£13.50**.
+- Services `[138,186)` says **usually within three weeks**, not a guarantee.
+  `[604,667)` starts processing **when HM Passport Office receives the documents**.
+  `[188,313)` explains that an interview or a request for more information can extend it.
+- Services `[772,902)` says paper costs **an extra £16.00**. Report the discrepancy
+  against the fee table. Do not invent a reason, revised fee or guaranteed travel date.
+- All four answers must follow from the actual selected, dated snapshot passages.
+  Verify quoted substrings, URLs, offsets and meaning independently. Any omitted central
+  fact, hidden conflict, invented citation or unsupported resolution fails quality,
+  even if the model's format validates.
+- Require confirmed `stop`, timely closure and one reconciled original-period row for
+  each of three model sends plus the zero-cost lookup. Unknown usage after send uses
+  the ceiling and cannot earn a measured-accounting pass. Compare IDs and saved UTF-8
+  report bytes across independently enrolled clients, with no change to sends, pins,
+  retention, holds or spend. No retry, successor or dispatch by a reader.
+
+**Route decision ([#803](https://github.com/sol-aeternum/Daemon/issues/803), 28 November 2026): no live dispatch.**
+The pinned candidate is OpenRouter `POST https://openrouter.ai/api/v1/chat/completions`,
+model `deepseek/deepseek-v4.1-flash-1017`, only/order `coreweave/fp8`,
+`allow_fallbacks=false`, `require_parameters=true`, `data_collection=deny`,
+`zdr=true`, no plugins. The [exact endpoint](https://openrouter.ai/api/v1/models/deepseek/deepseek-v4.1-flash-1017/endpoints)
+and [ZDR catalog](https://openrouter.ai/api/v1/endpoints/zdr) agree; this row
+reports `safety_retention=false`. Two distinct content-retention exceptions remain:
+
+- [Gateway terms](https://openrouter.ai/docs/guides/features/zdr) allow flagged
+  content retention for CSAM review, reporting and legal preservation. The key's
+  effective account/guardrail choice for “All other models” also matters.
+- [CoreWeave's serverless terms](https://docs.coreweave.com/products/inference/serverless/privacy-and-security)
+  allow content fragments in diagnostic logs for **up to 14 days** on exceptional
+  errors. Agent Lens may store content if enabled. Operational billing/latency
+  metadata is distinct from content. No applicable upstream contractual override
+  is established. Neither a public `attested` result nor the operator's historical
+  account-logging attestation proves that the effective account excludes these cases.
+  CoreWeave's terms apply to first-party-served models. The matching checkpoint and
+  price support, but do not prove, the upstream contract for OpenRouter traffic.
+  The [W&B MSA](https://wandb.ai/site/wb-terms) grants broader service-improvement
+  rights; its free/academic terms also allow testing and development. No evidence
+  establishes which negotiated provisions govern this route.
+
+In the [offline monitor check](https://github.com/sol-aeternum/Daemon/issues/803#issuecomment-7236941765),
+changing **only** `safety_retention` to `true` still returned `attested`.
+Before seeking live approval, require dated, non-secret evidence of the key's effective
+ZDR-only restrictions, disabled prompt logging/tracing, applicable content-retention terms
+at both hops, and all account charges. No account settings were inspected or changed.
+
+**Priced alternative, not an authorized substitute:** direct
+`POST https://api.inceptron.io/v1/chat/completions`, **`deepseek-ai/DeepSeek-V4.1-Flash-1017`**.
+The [provider's own model catalog](https://api.inceptron.io/v1/models) lists FP4,
+tools and structured outputs, $0.10/M prompt, $0.60/M completion, $0 per request.
+[Terms §6.2](https://www.inceptron.io/termsofservice) and the
+[privacy policy](https://www.inceptron.io/privacy) specify transient payload
+processing, no training and default zero retention, unless logging is enabled or
+otherwise agreed. Metadata telemetry is separate. Direct routing avoids the
+OpenRouter gateway exception. No current Daemon direct-account attestation, credential
+binding, billing agreement or approved native route exists in this qualification.
+Do not infer that a member of the OpenRouter catalog qualifies the direct endpoint.
+
+| Maximum for one original | Per model send | Three sends |
+|---|---:|---:|
+| Candidate: 32,000 bounded input × $0.30/M + 4,000 output (including reasoning) × $1.20/M | $0.014400 | $0.043200 |
+| Direct alternative, same limits: $0.10/M input + $0.60/M output | $0.005600 | $0.016800 |
+
+Use integer micro-USD, full uncached rates, one zero-cost owned lookup and at most
+two zero-cost owned reads. No top-up, paid source/egress service, new hosting, external
+search, retry, provider substitution or priced tool. These are whole-run maxima **only
+if the account incurs no additional charge**; unknown fees/tax or inadequate credit
+refuse admission. On the proposed route 206,800 µUSD already spent/held plus 43,200
+equals the 250,000 µUSD ceiling; one more µUSD refuses. Quote all three maxima before
+the original starts, then include outstanding, settled and remaining legs before
+each send; unknown post-send usage costs the full bound. Today's authorized live spend
+is zero. A separate owner decision and current account evidence are required.
+
+**Offline acceptance.** Against disposable PostgreSQL and loopback browsers, the
+synthetic model completed one original with three model reservations and one settled
+zero-cost lookup. Two sequential native reads pinned the registered passages. A
+separately enrolled browser opened the same conversation, message and UTF-8 report
+without changing sends, holds, spend or snapshot expiry. Tests also cover a successor
+request, a changed lookup reservation after snapshot expiry, Stop before the first
+page transport, incomplete synthesis, a whole-attempt budget shortfall of one µUSD,
+and a missing usage tail charged to the send's full hold before any lookup.
+Run these checks with:
+
+```sh
+PYTHONPATH=. uv run pytest -q --compute-metadata-postgres tests/test_owned_index_postgres.py \
+  tests/history_inbox_two_jobs_browser_postgres.py::test_owned_index_original_reopens_on_independently_enrolled_browser
+```
+
+These checks establish the offline execution path and compare a scripted answer
+with the rubric. Live answer quality, provider latency and account billing are unmeasured.
 
 ## How partial text reaches the current page
 

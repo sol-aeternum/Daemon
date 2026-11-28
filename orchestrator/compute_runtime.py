@@ -1478,6 +1478,25 @@ class ToolCallCharge:
         self._state = "confirmed"
 
 
+def _owned_index_approval(active: ComputeScope, tool: Any, approval: ToolServiceApproval) -> bool:
+    """Zero is admitted only for the exact constructor-owned local index capability."""
+    from orchestrator.services.restore_history.owned_index import INDEX_ROUTE, OwnedIndexSearchTool
+    from orchestrator.services.restore_history.terminal_projection import (
+        InboxOwnedIndexHistoryProjection,
+    )
+
+    binding = active.history_binding
+    return (
+        binding is not None
+        and type(binding.effects._projection) is InboxOwnedIndexHistoryProjection
+        and type(tool) is OwnedIndexSearchTool
+        and tool is binding.research_tool
+        and tool._projection is binding.effects._projection
+        and approval is tool._approval
+        and approval == ToolServiceApproval(INDEX_ROUTE, "web_search", "owned", "call", 0, 0)
+    )
+
+
 @asynccontextmanager
 async def metered_tool_call(
     approval: ToolServiceApproval,
@@ -1528,19 +1547,28 @@ async def metered_tool_call(
     """
     active = scope if scope is not None else current_scope()
     history_scope = None
+    owned_index = False
     if text_only_execution() or active.history_requirement is not None:
         from orchestrator.tasks._history_binding import research_tool
+        from orchestrator.services.restore_history.owned_index import OwnedIndexSearchTool
 
         tool = research_tool()
+        owned_index = _owned_index_approval(active, tool, approval)
         if (
             tool is None
             or history_tool is not tool
             or active is not current_scope()
             or active.completion_seq != 1
             or active.research_search_started
-            or approval.service_id != "brave-web-search"
+            or (
+                not owned_index
+                and (
+                    type(tool) is OwnedIndexSearchTool
+                    or approval.service_id != "brave-web-search"
+                    or approval.provider != "brave"
+                )
+            )
             or approval.service != "web_search"
-            or approval.provider != "brave"
             or approval.unit != "call"
             or required_capability != "web_research"
             or not dispatch_aware
@@ -1551,6 +1579,8 @@ async def metered_tool_call(
             )
         active.research_search_started = True
         history_scope = active
+    if not owned_index and (approval.fixed_microusd <= 0 or approval.ceiling_microusd <= 0):
+        raise ComputeUnavailable("tool_service_unavailable", "Approved tool service unavailable")
     active.require_inference()
     if type(dispatch_aware) is not bool:
         raise ValueError("Tool dispatch tracking must be explicitly boolean")
@@ -1737,13 +1767,18 @@ async def metered_tool_call(
         history_scope=history_scope,
     )
     try:
-        approved_tool_service(
-            service_id=approval.service_id,
-            service=approval.service,
-            provider=approval.provider,
-            unit=approval.unit,
-            fixed_microusd=approval.fixed_microusd,
-        )
+        if owned_index:
+            if not _owned_index_approval(active, history_tool, approval):
+                raise ObservationBlocked("history_search_dispatch_unavailable")
+            active.require_inference_effect()
+        else:
+            approved_tool_service(
+                service_id=approval.service_id,
+                service=approval.service,
+                provider=approval.provider,
+                unit=approval.unit,
+                fixed_microusd=approval.fixed_microusd,
+            )
         if work_deadline is not None and time.monotonic() >= work_deadline:
             raise TimeoutError
     except BaseException:
@@ -2707,10 +2742,28 @@ async def guarded_completion(
     ``retryable`` classification a failed call raises.
     """
     scope = current_scope()
+    owned_index = False
     if text_only_execution() or scope.history_requirement is not None:
         from orchestrator.tasks._history_binding import research_tool, source_run
+        from orchestrator.services.restore_history.owned_index import (
+            MAX_OUTPUT,
+            MODEL,
+            MODEL_ROUTE,
+            OwnedIndexSearchTool,
+        )
 
         tool = research_tool()
+        owned_index = type(tool) is OwnedIndexSearchTool
+        if owned_index:
+            # The composition has no externally selectable model or route. All
+            # three legs use the same exact qualified candidate, without retry.
+            if _route_id not in (None, MODEL_ROUTE) or not params.get("stream"):
+                raise ComputeUnavailable(
+                    "route_unavailable", "Approved inference route unavailable"
+                )
+            params["model"] = MODEL
+            params["max_tokens"] = MAX_OUTPUT
+            _route_id, _exact_model = MODEL_ROUTE, True
         sources = source_run()
         has_tools = any(
             params.get(key) not in (None, [], "none")
@@ -2749,6 +2802,37 @@ async def guarded_completion(
     deadline = started + get_settings().request_timeout_s
     dispatch_deadline = started + _dispatch_budget_s(_dispatch_timeout_s, deadline - started)
     policy = await scope.service.resolve(scope.user_id)
+    if owned_index:
+        from orchestrator.services.restore_history.owned_index import MAX_HOLD as LEG_MAX_HOLD
+
+        binding = scope.history_binding
+        if (
+            binding is None
+            or scope.profile != "routine"
+            or scope.operation != "chat"
+            or scope.extended
+            or scope.background
+            or scope.account_allow_premium
+            or scope.outstanding
+            or scope.streams
+            or scope.retirement_holds is None
+            or scope.completion_seq not in (0, 1, 2)
+            or (scope.expected_period is not None and scope.expected_period != policy.period_key)
+            or await binding.composition.pool.fetchval(
+                "SELECT EXISTS(SELECT 1 FROM public.entitlement_reservations "
+                "WHERE user_id=$1 AND status='open')",
+                scope.user_id,
+            )
+            is not False
+        ):
+            raise ComputeUnavailable("account_unavailable", "Owned-index account unavailable")
+        remaining_hold = LEG_MAX_HOLD * (3 - scope.completion_seq)
+        if remaining_hold > min(
+            policy.remaining_for(False),
+            250_000 - policy.period_spent_microusd - policy.period_reserved_microusd,
+        ):
+            raise ComputeUnavailable("budget_exceeded", "Owned-index budget unavailable")
+        scope.expected_period = policy.period_key
     if "chat" not in policy.capabilities:
         raise ComputeUnavailable("capability_unavailable", "Chat unavailable")
     if (
@@ -2779,6 +2863,11 @@ async def guarded_completion(
         raise ComputeUnavailable("capacity_unavailable", "Unsupported completion parameters")
 
     input_size = _request_bound(params)
+    if owned_index:
+        from orchestrator.services.restore_history.owned_index import MAX_INPUT_BOUND
+
+        if input_size.bound > MAX_INPUT_BOUND:
+            raise ComputeUnavailable("context_limit", "Request exceeds the context limit")
     requested = params.get("model")
     if type(_exact_model) is not bool or (
         _exact_model and (not isinstance(requested, str) or requested in {"", "auto"})
@@ -2826,6 +2915,28 @@ async def guarded_completion(
             # limits or budget. The model-level diagnostics below would describe
             # other routes, so the pin is refused on its own terms.
             raise ComputeUnavailable("route_unavailable", "Approved inference route unavailable")
+        if owned_index:
+            from orchestrator.services.restore_history.owned_index import (
+                MAX_HOLD,
+                MAX_OUTPUT as OWNED_MAX_OUTPUT,
+            )
+
+            if (
+                selected[0] > MAX_HOLD
+                or selected[1] != OWNED_MAX_OUTPUT
+                or pinned.price_ceiling is None
+                or pinned.price_ceiling.microusd_per_1m_prompt != 300_000
+                or pinned.price_ceiling.microusd_per_1m_completion != 1_200_000
+                or pinned.endpoint != "https://openrouter.ai/api/v1"
+                or pinned.route_class != "routine"
+                or pinned.transport.provider_only != ("coreweave/fp8",)
+                or pinned.transport.provider_order != ("coreweave/fp8",)
+                or pinned.transport.allow_fallbacks is not False
+                or pinned.transport.multi_provider
+            ):
+                raise ComputeUnavailable(
+                    "route_unavailable", "Approved inference route unavailable"
+                )
         # Exactly one dispatch: an exact pin never falls back to another route or
         # another model, so a failure is raised rather than walked outward.
         candidates = [selected]
@@ -3334,6 +3445,10 @@ async def guarded_completion(
                     emitted = True
                     attempt_holds[index].output_released = True
                     yield chunk
+                if owned_index and settlement is None:
+                    # The original's usage tail is missing. The finalizer charges
+                    # this send's full hold; no later lookup or model leg may start.
+                    raise ComputeUnavailable("capacity_unavailable", "Model usage unavailable")
                 completed = True
                 outcome(index, "completed", "none", output_released=emitted)
             except Exception as failure:
