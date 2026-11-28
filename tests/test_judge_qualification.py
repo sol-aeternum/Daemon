@@ -83,7 +83,15 @@ class FictionalServer:
             assert "authorization" not in request.headers
             self.gets.append(str(request.url))
             if str(request.url) == screen.attestation.ZDR_LISTING_URL:
-                data = {"data": [{"model_id": "openai/gpt-6-luna", "tag": "azure/eu"}]}
+                data = {
+                    "data": [
+                        {
+                            "model_id": "openai/gpt-6-luna",
+                            "tag": "azure/eu",
+                            "safety_retention": False,
+                        }
+                    ]
+                }
             else:
                 data = {
                     "data": [

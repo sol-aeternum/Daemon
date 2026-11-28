@@ -645,7 +645,10 @@ async def test_partial_fetch_failure_does_not_mask_revocation(
 
 
 @pytest.mark.asyncio
-async def test_unknown_check_preserves_but_does_not_renew_a_recent_confirmation() -> None:
+@pytest.mark.parametrize("partial_fetch", [False, True])
+async def test_unknown_check_preserves_but_does_not_renew_a_recent_confirmation(
+    partial_fetch: bool,
+) -> None:
     pool, route = _Pool(), _route()
     key = (route.route_id, attestation.baseline_fingerprint(route))
     old = NOW - timedelta(hours=71)
@@ -658,9 +661,16 @@ async def test_unknown_check_preserves_but_does_not_renew_a_recent_confirmation(
             "observed": {"zdr_listed": True, "safety_retention": False},
         }
     )
-    counts = await attestation.run_check(
-        pool, _Client(_with_safety_retention(None), _providers()), [route]
+    client = (
+        _Client(
+            LISTED,
+            None,
+            responses={attestation.PROVIDERS_URL: _Response(None, status=503)},
+        )
+        if partial_fetch
+        else _Client(_with_safety_retention(None), _providers())
     )
+    counts = await attestation.run_check(pool, client, [route])
     assert counts["check_failed"] == 1
     assert attestation.snapshot().attested_at[key] == old
     assert attestation.attestation_reasons(route, now=NOW) == ()
@@ -757,12 +767,19 @@ async def _attested_pool(route: RoutePolicy) -> _Pool:
 
 
 @pytest.mark.asyncio
-async def test_revocation_is_enforced_even_when_it_cannot_be_recorded() -> None:
+@pytest.mark.parametrize(
+    "client",
+    [
+        _Client(LISTED, _providers(training=True)),
+        _Client(_with_safety_retention(True), _providers()),
+    ],
+)
+async def test_revocation_is_enforced_even_when_it_cannot_be_recorded(client: _Client) -> None:
     route = _route()
     pool = await _attested_pool(route)
     pool.conn.fail_execute = True
     with pytest.raises(ConnectionError):
-        await attestation.run_check(pool, _Client(LISTED, _providers(training=True)), [route])
+        await attestation.run_check(pool, client, [route])
     policy = parse_inference_policy(_monitored_policy())
     now = attestation.utcnow()
     assert route.rejection_reasons(policy.requirements, now=now) == ("zdr_attestation_revoked",)
@@ -979,6 +996,15 @@ def test_a_missing_pinned_policy_field_is_a_failed_check_not_a_value() -> None:
     )
 
 
+def test_a_missing_pinned_policy_field_cannot_mask_an_explicit_adverse_value() -> None:
+    providers = {"data": [{"slug": "azure", "dataPolicy": {"training": True}}]}
+    [check] = attestation.evaluate([_route()], LISTED, providers)
+    assert (check.outcome, check.reasons) == (
+        "revoked",
+        ("provider_policy_changed:training", "provider_policy_field_missing:retainsPrompts"),
+    )
+
+
 @pytest.mark.asyncio
 async def test_restart_with_an_unreadable_pool_fails_closed() -> None:
     route = _route()
@@ -1097,6 +1123,20 @@ async def test_untrustworthy_metadata_is_a_failed_check(response: _Response) -> 
     client = _Client(LISTED, _providers(), responses={attestation.PROVIDERS_URL: response})
     counts = await attestation.run_check(pool, client, [route])
     assert counts["check_failed"] == 1 and counts["attested"] == 0
+    assert pool.conn.inserted[0][2:4] == ("check_failed", ["metadata_unavailable"])
+
+
+@pytest.mark.asyncio
+async def test_duplicate_safety_retention_json_members_are_unavailable_not_last_wins() -> None:
+    response = _Response(
+        None,
+        raw=b'{"data": [{"model_id": "openai/gpt-6-luna", "tag": "azure", '
+        b'"safety_retention": true, "safety_retention": false}]}',
+    )
+    pool, route = _Pool(), _route()
+    client = _Client(LISTED, _providers(), responses={attestation.ZDR_LISTING_URL: response})
+    counts = await attestation.run_check(pool, client, [route])
+    assert counts["check_failed"] == 1 and counts["revoked"] == counts["attested"] == 0
     assert pool.conn.inserted[0][2:4] == ("check_failed", ["metadata_unavailable"])
 
 
